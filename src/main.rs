@@ -280,6 +280,8 @@ pub enum Token {
     RightBracket,
     LeftBrace,
     RightBrace,
+    And,
+    Or,
     For,
     If,
     Else,
@@ -303,6 +305,8 @@ pub enum Expr {
     Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
     Index(Box<Expr>, Box<Expr>), // TODO: or slice
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
+    And(Box<Expr>, Box<Expr>),
+    Or(Box<Expr>, Box<Expr>),
     Assign(Box<Lvalue>, Box<Expr>),
     OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
@@ -405,6 +409,8 @@ pub fn lex(code: &str) -> Vec<Token> {
                         "if" => Token::If,
                         "else" => Token::Else,
                         "for" => Token::For,
+                        "and" => Token::And,
+                        "or" => Token::Or,
                         _ => Token::Ident(acc),
                     })
                 } else if OPERATOR_SYMBOLS.contains(&c) {
@@ -428,11 +434,16 @@ pub fn lex(code: &str) -> Vec<Token> {
                             tokens.push(Token::Ident(acc));
                             tokens.push(Token::Assign)
                         }
-                        ("", ':') => tokens.push(Token::Colon),
-                        (":", ':') => tokens.push(Token::DoubleColon), // "::"
-                        ("..", '.') => tokens.push(Token::Ellipsis), // "..."
                         (_, _) => {
-                            acc.push(last); tokens.push(Token::Ident(acc))
+                            acc.push(last);
+                            tokens.push(match acc.as_str() {
+                                "&&" => Token::And,
+                                "||" => Token::Or,
+                                ":" => Token::Colon,
+                                "::" => Token::DoubleColon,
+                                "..." => Token::Ellipsis,
+                                _ => Token::Ident(acc)
+                            })
                         }
                     }
                 }
@@ -494,7 +505,7 @@ impl Parser {
                 }
                 Token::LeftBracket => {
                     self.advance();
-                    let (exs, _) = self.comma_separated_chains()?;
+                    let (exs, _) = self.comma_separated()?;
                     self.require(Token::RightBracket, "list expr".to_string())?;
                     Ok(Expr::List(exs))
                 }
@@ -505,17 +516,17 @@ impl Parser {
                     let mut def = None;
                     if self.peek() == Some(Token::Colon) {
                         self.advance();
-                        def = Some(Box::new(self.chain()?));
+                        def = Some(Box::new(self.single()?));
                         if !self.peek_csc_stopper() {
                             self.require(Token::Comma, "dict expr".to_string())?;
                         }
                     }
 
                     while !self.peek_csc_stopper() {
-                        let c1 = Box::new(self.chain()?);
+                        let c1 = Box::new(self.single()?);
                         let c2 = if self.peek() == Some(Token::Colon) {
                             self.advance();
-                            Some(Box::new(self.chain()?))
+                            Some(Box::new(self.single()?))
                         } else {
                             None
                         };
@@ -531,10 +542,10 @@ impl Parser {
                 Token::RightParen => Err("unexpected right paren".to_string()),
                 Token::Lambda => {
                     self.advance();
-                    let (params0, _) = self.comma_separated_chains()?;
+                    let (params0, _) = self.comma_separated()?;
                     let params = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
                     self.require(Token::Colon, "lambda start".to_string())?;
-                    let body = self.chain()?;
+                    let body = self.single()?;
                     Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
                 }
                 Token::If => {
@@ -584,13 +595,13 @@ impl Parser {
             match self.peek() {
                 Some(Token::LeftParen) => {
                     self.advance();
-                    let (cs, _) = self.comma_separated_chains()?;
+                    let (cs, _) = self.comma_separated()?;
                     self.require(Token::RightParen, "call expr".to_string())?;
                     cur = Expr::Call(Box::new(cur), cs);
                 }
                 Some(Token::LeftBracket) => {
                     self.advance();
-                    let c = self.chain()?;
+                    let c = self.single()?;
                     self.require(Token::RightBracket, "index expr".to_string())?;
                     cur = Expr::Index(Box::new(cur), Box::new(c));
                 }
@@ -644,15 +655,33 @@ impl Parser {
         }
     }
 
+    fn logic_and(&mut self) -> Result<Expr, String> {
+        let mut op1 = self.chain()?;
+        while self.peek() == Some(Token::And) {
+            self.advance();
+            op1 = Expr::And(Box::new(op1), Box::new(self.chain()?));
+        }
+        Ok(op1)
+    }
+
+    fn single(&mut self) -> Result<Expr, String> {
+        let mut op1 = self.logic_and()?;
+        while self.peek() == Some(Token::Or) {
+            self.advance();
+            op1 = Expr::Or(Box::new(op1), Box::new(self.logic_and()?));
+        }
+        Ok(op1)
+    }
+
     // No semicolons allowed, but can be empty. List literals; function declarations; LHSes of
     // assignments. Not for function calls, I think? f(x; y) might actually be ok...
     // bool is whether a comma was found, to distinguish (x) from (x,)
-    fn comma_separated_chains(&mut self) -> Result<(Vec<Box<Expr>>, bool), String> {
+    fn comma_separated(&mut self) -> Result<(Vec<Box<Expr>>, bool), String> {
         if self.peek_csc_stopper() {
             return Ok((Vec::new(), false));
         }
 
-        let mut xs = vec![Box::new(self.chain()?)];
+        let mut xs = vec![Box::new(self.single()?)];
         let mut comma = false;
         while self.peek() == Some(Token::Comma) {
             self.i += 1;
@@ -660,14 +689,14 @@ impl Parser {
             if self.peek_csc_stopper() {
                 return Ok((xs, comma))
             }
-            xs.push(Box::new(self.chain()?));
+            xs.push(Box::new(self.single()?));
         }
         return Ok((xs, comma))
     }
 
     // Comma-separated things. No semicolons or assigns allowed
     fn pattern(&mut self) -> Result<Expr, String> {
-        let (mut exs, comma) = self.comma_separated_chains()?;
+        let (mut exs, comma) = self.comma_separated()?;
         Ok(if exs.len() == 1 && !comma {
             *exs.swap_remove(0)
         } else {
@@ -1032,6 +1061,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::IntLit(n) => Ok(Obj::Int(*n)),
         Expr::StringLit(s) => Ok(Obj::String(Rc::clone(s))),
         Expr::Ident(s) => env.borrow_mut().get_var(s),
+        Expr::Index(x, i) => {
+            let xr = evaluate(env, x)?;
+            let ir = evaluate(env, i)?;
+            index(xr, ir)
+        }
         Expr::Chain(op1, ops) => {
             let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
             for (oper, opd) in ops {
@@ -1046,6 +1080,22 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 }
             }
             ev.finish()
+        }
+        Expr::And(lhs, rhs) => {
+            let lr = evaluate(env, lhs)?;
+            if lr.truthy() {
+                evaluate(env, rhs)
+            } else {
+                Ok(lr)
+            }
+        }
+        Expr::Or(lhs, rhs) => {
+            let lr = evaluate(env, lhs)?;
+            if lr.truthy() {
+                Ok(lr)
+            } else {
+                evaluate(env, rhs)
+            }
         }
         Expr::Assign(pat, rhs) => {
             let p = eval_lvalue(env, pat)?;
@@ -1071,11 +1121,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 }
                 _ => Err(NErr::TypeError(format!("can't opassign non-function {:?}", opv))),
             }
-        }
-        Expr::Index(x, i) => {
-            let xr = evaluate(env, x)?;
-            let ir = evaluate(env, i)?;
-            index(xr, ir)
         }
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
@@ -1342,7 +1387,8 @@ fn main() {
     // let s = "1 < 2 < 3";
     // let s = "==(1, 2, 3)";
     // let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
-    let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
+    // let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
+    let s = "print(3 or x, 0 and x)";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
