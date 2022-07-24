@@ -249,6 +249,7 @@ pub enum Expr {
     ForItem(Box<Expr>, Box<Expr>, Box<Expr>),
     Sequence(Vec<Box<Expr>>),
     Lambda(Vec<Box<Expr>>, Box<Expr>),
+    Splat(Box<Expr>),
 }
 
 pub fn lex(code: &str) -> Vec<Token> {
@@ -367,6 +368,10 @@ impl Parser {
                 Token::Ident(s) => {
                     self.advance();
                     Ok(Expr::Ident(s.to_string()))
+                }
+                Token::Ellipsis => {
+                    self.advance();
+                    Ok(Expr::Splat(Box::new(self.atom()?)))
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -601,7 +606,7 @@ impl Env {
     }
 }
 
-fn assign_all(env: &mut Env, lhs: &Vec<Box<Expr>>, rhs: &Vec<Obj>, insert: bool) -> NRes<()> {
+fn assign_all_basic(env: &mut Env, lhs: &[Box<Expr>], rhs: &[Obj], insert: bool) -> NRes<()> {
     if lhs.len() == rhs.len() {
         for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
             assign(env, lhs1, rhs1, insert)?;
@@ -609,6 +614,29 @@ fn assign_all(env: &mut Env, lhs: &Vec<Box<Expr>>, rhs: &Vec<Obj>, insert: bool)
         Ok(())
     } else {
         Err(NErr::TypeError(format!("can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
+    }
+}
+
+fn assign_all(env: &mut Env, lhs: &[Box<Expr>], rhs: &[Obj], insert: bool) -> NRes<()> {
+    let mut splat = None;
+    for (i, lhs1) in lhs.iter().enumerate() {
+        match &**lhs1 {
+            Expr::Splat(inner) => match splat {
+                Some(_) => return Err(NErr::TypeError(format!("can't have two splats in assign lhs"))),
+                None => {
+                    splat = Some((i, inner));
+                }
+            }
+            _ => {}
+        }
+    }
+    match splat {
+        Some((si, inner)) => {
+            assign_all_basic(env, &lhs[..si], &rhs[..si], insert)?;
+            assign(env, inner, &Obj::List(Rc::new(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec())), insert)?;
+            assign_all_basic(env, &lhs[si + 1..], &rhs[rhs.len() - lhs.len() + si + 1..], insert)
+        }
+        None => assign_all_basic(env, lhs, rhs, insert),
     }
 }
 
@@ -712,6 +740,24 @@ impl ChainEvaluator {
     }
 }
 
+// allow splats
+fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
+    let mut acc = Vec::new();
+    for x in exprs {
+        match &**x {
+            Expr::Splat(inner) => {
+                let res = evaluate(env, inner)?;
+                match res {
+                    Obj::List(mut xx) => acc.append(Rc::make_mut(&mut xx)),
+                    _ => Err(NErr::TypeError(format!("can't splat non-list {:?}", res)))?
+                }
+            }
+            _ => acc.push(evaluate(env, x)?)
+        }
+    }
+    Ok(acc)
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::Int(*n)),
@@ -734,14 +780,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         }
         Expr::Assign(pat, rhs) => {
             let res = match &**rhs {
-                Expr::CommaSeq(xs) => {
-                    let mut acc = Vec::new();
-                    for x in xs {
-                        acc.push(evaluate(env, x)?);
-                    }
-                    Ok(Obj::List(Rc::new(acc)))
-                }
-                _ => evaluate(env, rhs)
+                Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
+                _ => evaluate(env, rhs),
             }?;
             assign(&mut env.borrow_mut(), pat, &res, false)
         }
@@ -749,19 +789,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             let fr = evaluate(env, f)?;
             match fr {
                 Obj::Func(ff) => {
-                    let a = args.iter().map(|arg| evaluate(env, arg)).collect::<Result<Vec<Obj>, NErr>>()?;
+                    let a = eval_seq(env, args)?;
                     ff.run(a)
                 }
                 _ => Err(NErr::TypeError(format!("can't call non-function {:?}", fr))),
             }
         }
         Expr::CommaSeq(_) => Err(NErr::ParseError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
+        Expr::Splat(_) => Err(NErr::ParseError("Splats only allowed on an assignment-related place".to_string())),
         Expr::List(xs) => {
-            let mut acc = Vec::new();
-            for x in xs {
-                acc.push(evaluate(env, x)?);
-            }
-            Ok(Obj::List(Rc::new(acc)))
+            Ok(Obj::List(Rc::new(eval_seq(env, xs)?)))
         }
         Expr::Sequence(xs) => {
             for x in &xs[..xs.len() - 1] {
@@ -923,7 +960,7 @@ fn main() {
     // let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
     // let s = "1 < 2 < 3";
     // let s = "==(1, 2, 3)";
-    let s = "x = 1; y = 2; x, y = y, x; print('x:', x, 'y:', y)";
+    let s = "x, ...y, z = 1, 2, 3, 4, 5; print(y); t = [3, 4, 5, 6]; print(+(...t))";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
