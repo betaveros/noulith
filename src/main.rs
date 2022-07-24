@@ -304,6 +304,7 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>), // TODO: or slice
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     Assign(Box<Lvalue>, Box<Expr>),
+    OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     For(Box<Lvalue>, Box<Expr>, Box<Expr>),
     ForItem(Box<Lvalue>, Box<Expr>, Box<Expr>),
@@ -407,19 +408,33 @@ pub fn lex(code: &str) -> Vec<Token> {
                         _ => Token::Ident(acc),
                     })
                 } else if OPERATOR_SYMBOLS.contains(&c) {
-                    let mut acc = c.to_string();
+                    // Most operators ending in = parse weird. It's hard to pop the last character
+                    // off a String because of UTF-8 stuff so keep them separate until the last
+                    // possible moment.
+                    let mut last = c;
+                    let mut acc = String::new();
 
                     while let Some(cc) = chars.peek().filter(|c| OPERATOR_SYMBOLS.contains(c)) {
-                        acc.push(*cc);
+                        acc.push(last);
+                        last = *cc;
                         chars.next();
                     }
-                    tokens.push(match acc.as_str() {
-                        "=" => Token::Assign,
-                        ":" => Token::Colon,
-                        "::" => Token::DoubleColon,
-                        "..." => Token::Ellipsis,
-                        _ => Token::Ident(acc),
-                    })
+                    match (acc.as_str(), last) {
+                        ("!" | "<" | ">" | "=", '=') => {
+                            acc.push(last); tokens.push(Token::Ident(acc))
+                        }
+                        ("", '=') => tokens.push(Token::Assign),
+                        (_, '=') => {
+                            tokens.push(Token::Ident(acc));
+                            tokens.push(Token::Assign)
+                        }
+                        ("", ':') => tokens.push(Token::Colon),
+                        (":", ':') => tokens.push(Token::DoubleColon), // "::"
+                        ("..", '.') => tokens.push(Token::Ellipsis), // "..."
+                        (_, _) => {
+                            acc.push(last); tokens.push(Token::Ident(acc))
+                        }
+                    }
                 }
             }
         }
@@ -665,7 +680,22 @@ impl Parser {
 
         if self.peek() == Some(Token::Assign) {
             self.i += 1;
-            Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+            match pat {
+                Expr::Call(lhs, mut op) => {
+                    if op.len() == 1 {
+                        Ok(Expr::OpAssign(
+                            Box::new(to_lvalue(*lhs)?),
+                            Box::new(*op.swap_remove(0)),
+                            Box::new(self.pattern()?),
+                        ))
+                    } else {
+                        Err("call w not 1 arg is not assignop".to_string())
+                    }
+                }
+                _ => {
+                    Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+                }
+            }
         } else {
             Ok(pat)
         }
@@ -954,6 +984,49 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     }
 }
 
+fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
+    match (&xr, &ir) {
+        (Obj::List(xx), Obj::Int(ii)) => {
+            // FIXME overflow?
+            match xx.get(*ii as usize) {
+                Some(e) => Ok(e.clone()),
+                None => match xx.get((*ii + (xx.len() as i64)) as usize) {
+                    Some(e) => Ok(e.clone()),
+                    None => Err(NErr::IndexError(format!("index out of bounds {:?} {:?}", xx, ii))),
+                }
+            }
+        }
+        (Obj::Dict(xx, def), _) => {
+            let k = to_key(ir)?;
+            match xx.get(&k) {
+                Some(e) => Ok(e.clone()),
+                None => match def {
+                    Some(d) => Ok((&**d).clone()),
+                    None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", xx, k))),
+                }
+            }
+        }
+        _ => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
+    }
+}
+
+fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
+    match expr {
+        Lvalue::IndexedIdent(s, v) => {
+            let mut sr = env.borrow_mut().get_var(s)?;
+            for ix in v {
+                sr = index(sr, evaluate(env, ix)?)?.clone();
+            }
+            Ok(sr)
+        },
+        Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
+            v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
+        ))),
+        // maybe if commaseq eagerly looks for splats...
+        Lvalue::Splat(_) => Err(NErr::TypeError("can't eval splat on lhs??".to_string())),
+    }
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::Int(*n)),
@@ -975,39 +1048,34 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             ev.finish()
         }
         Expr::Assign(pat, rhs) => {
+            let p = eval_lvalue(env, pat)?;
             let res = match &**rhs {
                 Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                 _ => evaluate(env, rhs),
             }?;
-            let p = eval_lvalue(env, pat)?;
             assign(&mut env.borrow_mut(), &p, &res, false)
+        }
+        Expr::OpAssign(pat, op, rhs) => {
+            let pv = eval_lvalue_as_obj(env, pat)?;
+            let p = eval_lvalue(env, pat)?;
+            let opv = evaluate(env, op)?;
+
+            match opv {
+                Obj::Func(ff) => {
+                    let res = match &**rhs {
+                        Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
+                        _ => evaluate(env, rhs),
+                    }?;
+                    let fres = ff.run(vec![pv, res])?;
+                    assign(&mut env.borrow_mut(), &p, &fres, false)
+                }
+                _ => Err(NErr::TypeError(format!("can't opassign non-function {:?}", opv))),
+            }
         }
         Expr::Index(x, i) => {
             let xr = evaluate(env, x)?;
             let ir = evaluate(env, i)?;
-            match (&xr, &ir) {
-                (Obj::List(xx), Obj::Int(ii)) => {
-                    // FIXME overflow?
-                    match xx.get(*ii as usize) {
-                        Some(e) => Ok(e.clone()),
-                        None => match xx.get((*ii + (xx.len() as i64)) as usize) {
-                            Some(e) => Ok(e.clone()),
-                            None => Err(NErr::IndexError(format!("index out of bounds {:?} {:?}", xx, ii))),
-                        }
-                    }
-                }
-                (Obj::Dict(xx, def), _) => {
-                    let k = to_key(ir)?;
-                    match xx.get(&k) {
-                        Some(e) => Ok(e.clone()),
-                        None => match def {
-                            Some(d) => Ok((&**d).clone()),
-                            None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", xx, k))),
-                        }
-                    }
-                }
-                _ => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
-            }
+            index(xr, ir)
         }
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
@@ -1196,6 +1264,40 @@ fn main() {
         }
     });
     env.insert_builtin(Builtin {
+        name: "max".to_string(),
+        body: |args| match args.split_first() {
+            None => Err(NErr::TypeError("max 0".to_string())),
+            Some((a, rest)) => {
+                // TODO: if rest is empty, iterate over a
+                let mut ret = a;
+                for b in rest {
+                    match ncmp(b, a)? {
+                        Ordering::Greater => { ret = b }
+                        _ => {}
+                    }
+                }
+                Ok(ret.clone())
+            }
+        }
+    });
+    env.insert_builtin(Builtin {
+        name: "min".to_string(),
+        body: |args| match args.split_first() {
+            None => Err(NErr::TypeError("min 0".to_string())),
+            Some((a, rest)) => {
+                // TODO: if rest is empty, iterate over a
+                let mut ret = a;
+                for b in rest {
+                    match ncmp(b, a)? {
+                        Ordering::Less => { ret = b }
+                        _ => {}
+                    }
+                }
+                Ok(ret.clone())
+            }
+        }
+    });
+    env.insert_builtin(Builtin {
         name: "print".to_string(),
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
@@ -1239,7 +1341,8 @@ fn main() {
     // let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
     // let s = "1 < 2 < 3";
     // let s = "==(1, 2, 3)";
-    let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
+    // let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
+    let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
