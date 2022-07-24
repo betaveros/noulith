@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
 
 use num_iter;
 
@@ -51,7 +52,6 @@ impl Display for Obj {
     }
 }
 
-
 #[derive(Debug)]
 pub enum NErr {
     TypeError(String),
@@ -62,7 +62,7 @@ pub enum NErr {
 pub type NRes<T> = Result<T, NErr>;
 
 pub trait Block : Debug {
-    fn run(&self, env: &mut Env, args: Vec<Obj>) -> NRes<Obj>;
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,7 @@ pub struct Builtin {
 }
 
 impl Block for Builtin {
-    fn run(&self, _: &mut Env, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args)
     }
 }
@@ -83,11 +83,33 @@ pub struct IntsBuiltin {
 }
 
 impl Block for IntsBuiltin {
-    fn run(&self, _: &mut Env, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args.iter().map(|x| match x {
             Obj::Int(n) => Ok(*n),
             _ => Err(NErr::TypeError(format!("{} only accepts ints, got {:?}", self.name, x))),
         }).collect::<NRes<Vec<i64>>>()?)
+    }
+}
+
+struct Closure {
+    params: Vec<Box<Expr>>,
+    body: Expr,
+    env: Rc<RefCell<Env>>,
+}
+
+// directly debug-printing env can easily recurse infinitely
+impl Debug for Closure {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "Closure {{ params: {:?}, body: {:?}, env: ... }}", self.params, self.body)
+    }
+}
+
+impl Block for Closure {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        let mut env = Env { vars: HashMap::new(), parent: Some(Rc::clone(&self.env)) };
+        assign_all(&mut env, &self.params, &args, true)?;
+        let e = Rc::new(RefCell::new(env));
+        evaluate(&e, &self.body)
     }
 }
 
@@ -96,7 +118,7 @@ pub enum Token {
     IntLit(i64),
     // FloatLit(f64),
     StringLit(Rc<String>),
-    Identifier(String),
+    Ident(String),
     LeftParen,
     RightParen,
     LeftBracket,
@@ -116,11 +138,11 @@ pub enum Token {
     // Newline,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     IntLit(i64),
     StringLit(Rc<String>),
-    Identifier(String),
+    Ident(String),
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
     // Slice(Box<Expr>, Vec<Box<Expr>>),
@@ -131,6 +153,7 @@ pub enum Expr {
     For(Box<Expr>, Box<Expr>, Box<Expr>),
     ForItem(Box<Expr>, Box<Expr>, Box<Expr>),
     Sequence(Vec<Box<Expr>>),
+    Lambda(Vec<Box<Expr>>, Box<Expr>),
 }
 
 pub fn lex(code: &str) -> Vec<Token> {
@@ -187,7 +210,7 @@ pub fn lex(code: &str) -> Vec<Token> {
                         "if" => Token::If,
                         "else" => Token::Else,
                         "for" => Token::For,
-                        _ => Token::Identifier(acc),
+                        _ => Token::Ident(acc),
                     })
                 } else if OPERATOR_SYMBOLS.contains(&c) {
                     let mut acc = c.to_string();
@@ -201,7 +224,7 @@ pub fn lex(code: &str) -> Vec<Token> {
                         ":" => Token::Colon,
                         "::" => Token::DoubleColon,
                         "..." => Token::Ellipsis,
-                        _ => Token::Identifier(acc),
+                        _ => Token::Ident(acc),
                     })
                 }
             }
@@ -246,9 +269,9 @@ impl Parser {
                     self.advance();
                     Ok(Expr::StringLit(s))
                 }
-                Token::Identifier(s) => {
+                Token::Ident(s) => {
                     self.advance();
-                    Ok(Expr::Identifier(s.to_string()))
+                    Ok(Expr::Ident(s.to_string()))
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -263,7 +286,13 @@ impl Parser {
                     Ok(Expr::List(exs))
                 }
                 Token::RightParen => Err("unexpected right paren".to_string()),
-                Token::Lambda => Err("lambda not implemented".to_string()),
+                Token::Lambda => {
+                    self.advance();
+                    let (params, _) = self.comma_separated_chains()?;
+                    self.require(Token::Colon, "lambda start".to_string())?;
+                    let body = self.chain()?;
+                    Ok(Expr::Lambda(params, Box::new(body)))
+                }
                 Token::If => {
                     self.advance();
                     self.require(Token::LeftParen, "if start".to_string())?;
@@ -315,27 +344,48 @@ impl Parser {
         Ok(cur)
     }
 
-    fn chain(&mut self) -> Result<Expr, String> {
-        let op1 = self.operand()?;
-        let mut ops = Vec::<(String, Box<Expr>)>::new();
-        while let Some(Token::Identifier(op)) = self.peek() {
-            self.i += 1;
-            ops.push((op.to_string(), Box::new(self.operand()?)));
-        }
-        Ok(if ops.is_empty() {
-            op1
-        } else {
-            Expr::Chain(Box::new(op1), ops)
-        })
-    }
-
     fn peek_csc_stopper(&self) -> bool {
         match self.peek() {
             Some(Token::RightParen) => true,
             Some(Token::RightBracket) => true,
             Some(Token::RightBrace) => true,
             Some(Token::Assign) => true,
+            Some(Token::Colon) => true,
+            Some(Token::Semicolon) => true,
+            None => true,
             _ => false,
+        }
+    }
+
+    fn chain(&mut self) -> Result<Expr, String> {
+        let op1 = self.operand()?;
+        // We'll specially allow some two-chains, (a b), as calls, so that negative number literals
+        // and just writing an expression like "-x" works. But we will be aggressive-ish about
+        // checking that the chain ends afterwards so we don't get runaway syntax errors.
+        match self.peek() {
+            Some(Token::IntLit(_) | Token::StringLit(_)) => {
+                let ret = Expr::Call(Box::new(op1), vec![Box::new(self.atom()?)]);
+                if !self.peek_csc_stopper() {
+                    Err(format!("saw literal in operator position: these chains must be short, got {:?} after", self.peek()))
+                } else {
+                    Ok(ret)
+                }
+            }
+            Some(Token::Ident(op)) => {
+                self.advance();
+                if self.peek_csc_stopper() {
+                    Ok(Expr::Call(Box::new(op1), vec![Box::new(Expr::Ident(op))]))
+                } else {
+                    let mut ops = vec![(op.to_string(), Box::new(self.operand()?))];
+
+                    while let Some(Token::Ident(op)) = self.peek() {
+                        self.advance();
+                        ops.push((op.to_string(), Box::new(self.operand()?)));
+                    }
+                    Ok(Expr::Chain(Box::new(op1), ops))
+                }
+            }
+            _ => Ok(op1),
         }
     }
 
@@ -400,37 +450,76 @@ pub fn parse(code: &str) -> Result<Expr, String> {
     p.expression()
 }
 
+#[derive(Debug)]
 pub struct Env {
-    vars: HashMap<String, Obj>
+    vars: HashMap<String, Obj>,
+    parent: Option<Rc<RefCell<Env>>>,
 }
 impl Env {
     fn new() -> Env {
-        Env { vars: HashMap::new() }
+        Env { vars: HashMap::new(), parent: None }
     }
-    fn get_var(self: &Env, s: &str) -> NRes<&Obj> {
-        self.vars.get(s).ok_or(NErr::NameError(s.to_string()))
+    fn get_var(self: &Env, s: &str) -> NRes<Obj> {
+        match self.vars.get(s) {
+            Some(v) => Ok(v.clone()),
+            None => match &self.parent {
+                Some(p) => p.borrow().get_var(s),
+                None => Err(NErr::NameError(s.to_string()))
+            }
+        }
+    }
+
+    // internal-ish; "return value" is whether it consumes val
+    fn set_existing_var(self: &mut Env, key: &str, val: &mut Option<Obj>) {
+        if val.is_some() {
+            match self.vars.get_mut(key) {
+                Some(target) => *target = val.take().unwrap(),
+                None => match &self.parent {
+                    Some(p) => p.borrow_mut().set_existing_var(key, val),
+                    None => (),
+                }
+            }
+        }
+    }
+    fn set(self: &mut Env, key: String, val: Obj) {
+        let mut v = Some(val);
+        self.set_existing_var(&key, &mut v);
+        match v {
+            Some(vv) => self.insert(key, vv),
+            None => (),
+        }
     }
     fn insert(self: &mut Env, key: String, val: Obj) {
         self.vars.insert(key, val);
     }
 }
-fn assign(env: &mut Env, lhs: &Expr, rhs: &Obj) -> NRes<Obj> {
+
+fn assign_all(env: &mut Env, lhs: &Vec<Box<Expr>>, rhs: &Vec<Obj>, insert: bool) -> NRes<()> {
+    if lhs.len() == rhs.len() {
+        for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
+            assign(env, lhs1, rhs1, insert)?;
+        }
+        Ok(())
+    } else {
+        Err(NErr::TypeError(format!("can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
+    }
+}
+
+fn assign(env: &mut Env, lhs: &Expr, rhs: &Obj, insert: bool) -> NRes<Obj> {
     match lhs {
-        Expr::Identifier(s) => {
-            env.vars.insert(s.to_string(), rhs.clone());
+        Expr::Ident(s) => {
+            if insert {
+                env.insert(s.to_string(), rhs.clone());
+            } else {
+                env.set(s.to_string(), rhs.clone());
+            }
             Ok(rhs.clone())
         }
         Expr::CommaSeq(ss) => {
             match rhs {
                 Obj::List(ls) => {
-                    if ss.len() == ls.len() {
-                        for (lhs1, rhs1) in ss.iter().zip(ls.iter()) {
-                            assign(env, lhs1, rhs1)?;
-                        }
-                        Ok(rhs.clone())
-                    } else {
-                        Err(NErr::TypeError(format!("can't unpack into mismatched length {:?} {} != {:?} {}", lhs, ss.len(), rhs, ls.len())))
-                    }
+                    assign_all(env, ss, ls, insert)?;
+                    Ok(rhs.clone())
                 }
                 _ => Err(NErr::TypeError(format!("can't unpack non-list {:?}", rhs))),
             }
@@ -473,17 +562,17 @@ impl ChainEvaluator {
         ChainEvaluator { operands: vec![operand], operators: Vec::new() }
     }
 
-    fn run_top(&mut self, env: &mut Env) -> NRes<()> {
+    fn run_top(&mut self) -> NRes<()> {
         let (op, _) = self.operators.pop().expect("sync");
         let rhs = self.operands.pop().expect("sync");
         let lhs = self.operands.pop().expect("sync");
-        self.operands.push(op.run(env, vec![lhs, rhs])?);
+        self.operands.push(op.run(vec![lhs, rhs])?);
         Ok(())
     }
 
-    fn give(&mut self, env: &mut Env, operator: Rc<dyn Block>, precedence: u8, operand: Obj) -> NRes<()> {
+    fn give(&mut self, operator: Rc<dyn Block>, precedence: u8, operand: Obj) -> NRes<()> {
         while self.operators.last().map_or(false, |t| t.1 >= precedence) {
-            self.run_top(env)?;
+            self.run_top()?;
         }
 
         self.operators.push((operator, precedence));
@@ -491,9 +580,9 @@ impl ChainEvaluator {
         Ok(())
     }
 
-    fn finish(&mut self, env: &mut Env) -> NRes<Obj> {
+    fn finish(&mut self) -> NRes<Obj> {
         while !self.operators.is_empty() {
-            self.run_top(env)?;
+            self.run_top()?;
         }
         if self.operands.len() == 1 {
             Ok(self.operands.swap_remove(0))
@@ -503,34 +592,36 @@ impl ChainEvaluator {
     }
 }
 
-pub fn evaluate(env: &mut Env, expr: &Expr) -> NRes<Obj> {
+pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::Int(*n)),
         Expr::StringLit(s) => Ok(Obj::String(Rc::clone(s))),
-        Expr::Identifier(s) => env.get_var(s).cloned(),
+        Expr::Ident(s) => env.borrow_mut().get_var(s),
         Expr::Chain(op1, ops) => {
             let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
             for (oper, opd) in ops {
-                if let Obj::Func(b) = env.get_var(oper).cloned()? {
+                // make sure this borrow_mut goes out of scope
+                let oprr = env.borrow_mut().get_var(oper)?;
+                if let Obj::Func(b) = oprr {
                     let prec = precedence(oper)?;
                     let oprd = evaluate(env, opd)?;
-                    ev.give(env, b, prec, oprd)?;
+                    ev.give(b, prec, oprd)?;
                 } else {
                     return Err(NErr::TypeError("no chaining nonblock".to_string()))
                 }
             }
-            ev.finish(env)
+            ev.finish()
         }
         Expr::Assign(pat, rhs) => {
             let res = evaluate(env, rhs)?;
-            assign(env, pat, &res)
+            assign(&mut env.borrow_mut(), pat, &res, false)
         }
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
             match fr {
                 Obj::Func(ff) => {
                     let a = args.iter().map(|arg| evaluate(env, arg)).collect::<Result<Vec<Obj>, NErr>>()?;
-                    ff.run(env, a)
+                    ff.run(a)
                 }
                 _ => Err(NErr::TypeError(format!("can't call non-function {:?}", fr))),
             }
@@ -565,7 +656,7 @@ pub fn evaluate(env: &mut Env, expr: &Expr) -> NRes<Obj> {
             match itr {
                 Obj::List(ls) => {
                     for x in ls.iter() {
-                        assign(env, pat, x)?;
+                        assign(&mut env.borrow_mut(), pat, x, false)?;
                         evaluate(env, body)?;
                     }
                     Ok(Obj::Null)
@@ -578,13 +669,17 @@ pub fn evaluate(env: &mut Env, expr: &Expr) -> NRes<Obj> {
             match itr {
                 Obj::List(ls) => {
                     for (i, x) in ls.iter().enumerate() {
-                        assign(env, pat, &Obj::List(Rc::new(vec![Obj::Int(i as i64), x.clone()])))?;
+                        assign(&mut env.borrow_mut(), pat, &Obj::List(Rc::new(vec![Obj::Int(i as i64), x.clone()])), false)?;
                         evaluate(env, body)?;
                     }
                     Ok(Obj::Null)
                 }
                 _ => Err(NErr::TypeError(format!("can't iterate {:?}", itr)))
             }
+        }
+        Expr::Lambda(params, body) => {
+            // TODO is this a good body clone?
+            Ok(Obj::Func(Rc::new(Closure { params: params.clone(), body: (**body).clone(), env: Rc::clone(env) })))
         }
     }
 }
@@ -661,6 +756,16 @@ fn main() {
             _ => Err(NErr::TypeError("to: 2 args only".to_string()))
         }
     })));
+    env.insert("map".to_string(), Obj::Func(Rc::new(Builtin {
+        body: |args| match args.as_slice() {
+            [Obj::List(a), Obj::Func(b)] => {
+                Ok(Obj::List(Rc::new(
+                a.iter().map(|e| b.run(vec![e.clone()])).collect::<NRes<Vec<Obj>>>()?
+                )))
+            }
+            _ => Err(NErr::TypeError("map: 2 args only".to_string()))
+        }
+    })));
     env.insert("print".to_string(), Obj::Func(Rc::new(Builtin { body: |args| {
         println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
         Ok(Obj::Null)
@@ -677,8 +782,11 @@ fn main() {
         Ok(Obj::String(Rc::new(acc)))
     }})));
 
-    let s = "for (x : 1 to 100) (o = ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o = o ++ s; print(if (o == '') x else o))";
+    let e = Rc::new(RefCell::new(env));
+
+    // let s = "for (x : 1 to 100) (o = ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o = o ++ s; print(if (o == '') x else o))";
+    let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
-    println!("{:?}", evaluate(&mut env, &parse(s).unwrap()));
+    println!("{:?}", evaluate(&e, &parse(s).unwrap()));
 }
