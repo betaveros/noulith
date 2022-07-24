@@ -187,8 +187,8 @@ impl Block for IntsBuiltin {
 }
 
 struct Closure {
-    params: Vec<Box<Expr>>,
-    body: Expr,
+    params: Rc<Vec<Box<Expr>>>,
+    body: Rc<Expr>,
     env: Rc<RefCell<Env>>,
 }
 
@@ -233,7 +233,7 @@ pub enum Token {
     // Newline,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Expr {
     IntLit(i64),
     StringLit(Rc<String>),
@@ -248,7 +248,8 @@ pub enum Expr {
     For(Box<Expr>, Box<Expr>, Box<Expr>),
     ForItem(Box<Expr>, Box<Expr>, Box<Expr>),
     Sequence(Vec<Box<Expr>>),
-    Lambda(Vec<Box<Expr>>, Box<Expr>),
+    // these get cloned in particular
+    Lambda(Rc<Vec<Box<Expr>>>, Rc<Expr>),
     Splat(Box<Expr>),
 }
 
@@ -391,7 +392,7 @@ impl Parser {
                     let (params, _) = self.comma_separated_chains()?;
                     self.require(Token::Colon, "lambda start".to_string())?;
                     let body = self.chain()?;
-                    Ok(Expr::Lambda(params, Box::new(body)))
+                    Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
                 }
                 Token::If => {
                     self.advance();
@@ -844,8 +845,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
         }
         Expr::Lambda(params, body) => {
-            // TODO is this a good body clone?
-            Ok(Obj::Func(Rc::new(Closure { params: params.clone(), body: (**body).clone(), env: Rc::clone(env) })))
+            Ok(Obj::Func(Rc::new(Closure {
+                params: Rc::clone(params),
+                body: Rc::clone(body),
+                env: Rc::clone(env),
+            })))
         }
     }
 }
