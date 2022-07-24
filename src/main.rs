@@ -1,5 +1,6 @@
 #[macro_use] extern crate lazy_static;
 
+use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Debug;
@@ -63,16 +64,106 @@ pub type NRes<T> = Result<T, NErr>;
 
 pub trait Block : Debug {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
+
+    // Should only be Some for builtins, used for them to identify each other
+    fn builtin_name(&self) -> Option<&str> {
+        None
+    }
+
+    fn try_chain(&self, _other: &Rc<dyn Block>) -> Option<Rc<dyn Block>> {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ComparisonOperator {
+    name: Option<String>,
+    chained: Vec<Rc<dyn Block>>,
+    accept: fn(Ordering) -> bool,
+}
+
+impl ComparisonOperator {
+    fn of(name: &str, accept: fn(Ordering) -> bool) -> ComparisonOperator {
+        ComparisonOperator {
+            name: Some(name.to_string()),
+            chained: Vec::new(),
+            accept,
+        }
+    }
+}
+
+fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
+    match (aa, bb) {
+        (Obj::Int(a), Obj::Int(b)) => Ok(a.cmp(b)),
+        (Obj::String(a), Obj::String(b)) => Ok(a.cmp(b)),
+        _ => Err(NErr::TypeError(format!("can't compare {:?} {:?}", aa, bb))),
+    }
+}
+
+impl Block for ComparisonOperator {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        if self.chained.is_empty() {
+            if args.len() >= 2 {
+                for i in 0 .. args.len() - 1 {
+                    if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
+                        return Ok(Obj::Int(0))
+                    }
+                }
+                Ok(Obj::Int(1))
+            } else {
+                Err(NErr::TypeError(format!("comparison operator {:?} needs 2+ args", self.name)))
+            }
+        } else {
+            if self.chained.len() + 2 == args.len() {
+                if !(self.accept)(ncmp(&args[0], &args[1])?) {
+                    return Ok(Obj::Int(0))
+                }
+                for i in 0 .. self.chained.len() {
+                    let res = self.chained[i].run(vec![args[i+1].clone(), args[i+2].clone()])?;
+                    if !res.truthy() {
+                        return Ok(res)
+                    }
+                }
+                Ok(Obj::Int(1))
+            } else {
+                Err(NErr::TypeError(format!("chained comparison operator wrong args")))
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> Option<&str> {
+        self.name.as_ref().map(|x| &**x)
+    }
+
+    fn try_chain(&self, other: &Rc<dyn Block>) -> Option<Rc<dyn Block>> {
+        match other.builtin_name() {
+            Some("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Rc::new(ComparisonOperator {
+                name: None,
+                chained: {
+                    let mut k = self.chained.clone();
+                    k.push(Rc::clone(other));
+                    k
+                },
+                accept: self.accept,
+            })),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Builtin {
+    name: String,
     body: fn(args: Vec<Obj>) -> NRes<Obj>,
 }
 
 impl Block for Builtin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args)
+    }
+
+    fn builtin_name(&self) -> Option<&str> {
+        Some(&self.name)
     }
 }
 
@@ -88,6 +179,10 @@ impl Block for IntsBuiltin {
             Obj::Int(n) => Ok(*n),
             _ => Err(NErr::TypeError(format!("{} only accepts ints, got {:?}", self.name, x))),
         }).collect::<NRes<Vec<i64>>>()?)
+    }
+
+    fn builtin_name(&self) -> Option<&str> {
+        Some(&self.name)
     }
 }
 
@@ -492,6 +587,18 @@ impl Env {
     fn insert(self: &mut Env, key: String, val: Obj) {
         self.vars.insert(key, val);
     }
+    fn insert_builtin(self: &mut Env, b: Builtin) {
+        let name = b.name.to_string();
+        self.insert(name, Obj::Func(Rc::new(b)))
+    }
+    fn insert_ints_builtin(self: &mut Env, b: IntsBuiltin) {
+        let name = b.name.to_string();
+        self.insert(name, Obj::Func(Rc::new(b)))
+    }
+    fn insert_comparison(self: &mut Env, b: ComparisonOperator) {
+        let name = b.name.as_ref().unwrap().to_string();
+        self.insert(name, Obj::Func(Rc::new(b)))
+    }
 }
 
 fn assign_all(env: &mut Env, lhs: &Vec<Box<Expr>>, rhs: &Vec<Obj>, insert: bool) -> NRes<()> {
@@ -553,30 +660,43 @@ fn precedence(name: &str) -> NRes<u8> {
 }
 
 struct ChainEvaluator {
-    operands: Vec<Obj>,
+    operands: Vec<Vec<Obj>>,
     operators: Vec<(Rc<dyn Block>, u8)>,
 }
 
 impl ChainEvaluator {
     fn new(operand: Obj) -> ChainEvaluator {
-        ChainEvaluator { operands: vec![operand], operators: Vec::new() }
+        ChainEvaluator { operands: vec![vec![operand]], operators: Vec::new() }
+    }
+
+    fn run_top_popped(&mut self, op: Rc<dyn Block>) -> NRes<()> {
+        let mut rhs = self.operands.pop().expect("sync");
+        let mut lhs = self.operands.pop().expect("sync");
+        lhs.append(&mut rhs); // concats and drains rhs of elements
+        self.operands.push(vec![op.run(lhs)?]);
+        Ok(())
     }
 
     fn run_top(&mut self) -> NRes<()> {
         let (op, _) = self.operators.pop().expect("sync");
-        let rhs = self.operands.pop().expect("sync");
-        let lhs = self.operands.pop().expect("sync");
-        self.operands.push(op.run(vec![lhs, rhs])?);
-        Ok(())
+        self.run_top_popped(op)
     }
 
     fn give(&mut self, operator: Rc<dyn Block>, precedence: u8, operand: Obj) -> NRes<()> {
         while self.operators.last().map_or(false, |t| t.1 >= precedence) {
-            self.run_top()?;
+            let (top, prec) = self.operators.pop().expect("sync");
+            match top.try_chain(&operator) {
+                Some(new_op) => {
+                    self.operators.push((new_op, prec));
+                    self.operands.last_mut().expect("sync").push(operand);
+                    return Ok(())
+                }
+                None => { self.run_top_popped(top)?; }
+            }
         }
 
         self.operators.push((operator, precedence));
-        self.operands.push(operand);
+        self.operands.push(vec![operand]);
         Ok(())
     }
 
@@ -585,7 +705,7 @@ impl ChainEvaluator {
             self.run_top()?;
         }
         if self.operands.len() == 1 {
-            Ok(self.operands.swap_remove(0))
+            Ok(self.operands.swap_remove(0).swap_remove(0))
         } else {
             panic!("chain eval out of sync")
         }
@@ -613,7 +733,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             ev.finish()
         }
         Expr::Assign(pat, rhs) => {
-            let res = evaluate(env, rhs)?;
+            let res = match &**rhs {
+                Expr::CommaSeq(xs) => {
+                    let mut acc = Vec::new();
+                    for x in xs {
+                        acc.push(evaluate(env, x)?);
+                    }
+                    Ok(Obj::List(Rc::new(acc)))
+                }
+                _ => evaluate(env, rhs)
+            }?;
             assign(&mut env.borrow_mut(), pat, &res, false)
         }
         Expr::Call(f, args) => {
@@ -626,7 +755,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 _ => Err(NErr::TypeError(format!("can't call non-function {:?}", fr))),
             }
         }
-        Expr::CommaSeq(_) => Err(NErr::TypeError("comma seq not impl yet".to_string())),
+        Expr::CommaSeq(_) => Err(NErr::ParseError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
         Expr::List(xs) => {
             let mut acc = Vec::new();
             for x in xs {
@@ -686,11 +815,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
 
 fn main() {
     let mut env = Env::new();
-    env.insert("+".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    env.insert_ints_builtin(IntsBuiltin {
         name: "+".to_string(),
         body: |args| { Ok(Obj::Int(args.iter().sum())) },
-    })));
-    env.insert("-".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "-".to_string(),
         body: |args| match args.split_first() {
             None => Err(NErr::TypeError("- 0 args".to_string())),
@@ -704,59 +833,56 @@ fn main() {
                 }
             }
         }
-    })));
-    env.insert("*".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "*".to_string(),
         body: |args| { Ok(Obj::Int(args.iter().product())) },
-    })));
-    env.insert("==".to_string(), Obj::Func(Rc::new(Builtin { body: |args| {
-        match args.as_slice() {
-            [a, b] => match (a, b) {
-                (Obj::Int(a), Obj::Int(b)) => Ok(Obj::Int(if a == b { 1 } else { 0 })),
-                (Obj::String(a), Obj::String(b)) => Ok(Obj::Int(if a == b { 1 } else { 0 })),
-                _ => Err(NErr::TypeError("== not yet impl".to_string()))
-            }
-            _ => Err(NErr::TypeError("== 2 args only".to_string()))
-        }
-    }})));
-    env.insert("/".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_comparison(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
+    env.insert_comparison(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
+    env.insert_comparison(ComparisonOperator::of("<",  |ord| ord == Ordering::Less));
+    env.insert_comparison(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
+    env.insert_comparison(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
+    env.insert_comparison(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
+    env.insert_ints_builtin(IntsBuiltin {
         name: "/".to_string(),
         body: |args| match args.as_slice() {
             [a, b] => Ok(Obj::Int(a / b)),
             _ => Err(NErr::TypeError("/: 2 args only".to_string()))
         }
-    })));
-    env.insert("%".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "%".to_string(),
         body: |args| match args.as_slice() {
             [a, b] => Ok(Obj::Int(a % b)),
             _ => Err(NErr::TypeError("%: 2 args only".to_string()))
         }
-    })));
-    env.insert("%%".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "%%".to_string(),
         body: |args| match args.as_slice() {
             [a, b] => Ok(Obj::Int(a.rem_euclid(*b))),
             _ => Err(NErr::TypeError("%%: 2 args only".to_string()))
         }
-    })));
-    env.insert("til".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "til".to_string(),
         body: |args| match args.as_slice() {
             // TODO: should be lazy
             [a, b] => Ok(Obj::List(Rc::new(num_iter::range(*a, *b).map(|x| Obj::Int(x)).collect()))),
             _ => Err(NErr::TypeError("til: 2 args only".to_string()))
         }
-    })));
-    env.insert("to".to_string(), Obj::Func(Rc::new(IntsBuiltin {
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "to".to_string(),
         body: |args| match args.as_slice() {
             // TODO: should be lazy
             [a, b] => Ok(Obj::List(Rc::new(num_iter::range_inclusive(*a, *b).map(|x| Obj::Int(x)).collect()))),
             _ => Err(NErr::TypeError("to: 2 args only".to_string()))
         }
-    })));
-    env.insert("map".to_string(), Obj::Func(Rc::new(Builtin {
+    });
+    env.insert_builtin(Builtin {
+        name: "map".to_string(),
         body: |args| match args.as_slice() {
             [Obj::List(a), Obj::Func(b)] => {
                 Ok(Obj::List(Rc::new(
@@ -765,27 +891,39 @@ fn main() {
             }
             _ => Err(NErr::TypeError("map: 2 args only".to_string()))
         }
-    })));
-    env.insert("print".to_string(), Obj::Func(Rc::new(Builtin { body: |args| {
-        println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
-        Ok(Obj::Null)
-    }})));
-    env.insert("debug".to_string(), Obj::Func(Rc::new(Builtin { body: |args| {
-        println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
-        Ok(Obj::Null)
-    }})));
-    env.insert("++".to_string(), Obj::Func(Rc::new(Builtin { body: |args| {
-        let mut acc = String::new();
-        for arg in args {
-            acc += format!("{}", arg).as_str();
+    });
+    env.insert_builtin(Builtin {
+        name: "print".to_string(),
+        body: |args| {
+            println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
+            Ok(Obj::Null)
         }
-        Ok(Obj::String(Rc::new(acc)))
-    }})));
+    });
+    env.insert_builtin(Builtin {
+        name: "debug".to_string(),
+        body: |args| {
+            println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
+            Ok(Obj::Null)
+        }
+    });
+    env.insert_builtin(Builtin {
+        name: "++".to_string(),
+        body: |args| {
+            let mut acc = String::new();
+            for arg in args {
+                acc += format!("{}", arg).as_str();
+            }
+            Ok(Obj::String(Rc::new(acc)))
+        }
+    });
 
     let e = Rc::new(RefCell::new(env));
 
     // let s = "for (x : 1 to 100) (o = ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o = o ++ s; print(if (o == '') x else o))";
-    let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
+    // let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
+    // let s = "1 < 2 < 3";
+    // let s = "==(1, 2, 3)";
+    let s = "x = 1; y = 2; x, y = y, x; print('x:', x, 'y:', y)";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
