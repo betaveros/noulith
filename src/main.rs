@@ -17,7 +17,16 @@ pub enum Obj {
     // Float(f64),
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
+    Dict(Rc<HashMap<ObjKey, Obj>>, Option<Rc<Obj>>), // default value
     Func(Rc<dyn Block>),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
+pub enum ObjKey {
+    Null,
+    Int(i64),
+    String(Rc<String>),
+    List(Rc<Vec<ObjKey>>),
 }
 
 impl Obj {
@@ -27,8 +36,20 @@ impl Obj {
             Obj::Int(x) => x != &0,
             Obj::String(x) => !x.is_empty(),
             Obj::List(x) => !x.is_empty(),
+            Obj::Dict(x, _) => !x.is_empty(),
             Obj::Func(_) => true,
         }
+    }
+}
+
+fn to_key(obj: Obj) -> NRes<ObjKey> {
+    match obj {
+        Obj::Null => Ok(ObjKey::Null),
+        Obj::Int(x) => Ok(ObjKey::Int(x)),
+        Obj::String(x) => Ok(ObjKey::String(x)),
+        Obj::List(x) => Ok(ObjKey::List(Rc::new(x.iter().map(|e| to_key(e.clone())).collect::<NRes<Vec<ObjKey>>>()?))),
+        Obj::Dict(..) => Err(NErr::TypeError("dict can't be key".to_string())),
+        Obj::Func(_) => Err(NErr::TypeError("func can't be key".to_string())),
     }
 }
 
@@ -48,7 +69,44 @@ impl Display for Obj {
                 }
                 write!(formatter, "]")
             }
+            Obj::Dict(xs, def) => {
+                write!(formatter, "{{")?;
+                let mut started = false;
+                match def {
+                    Some(v) => {
+                        started = true;
+                        write!(formatter, "(default: {})", v)?;
+                    }
+                    None => {}
+                }
+                for (k, v) in xs.iter() {
+                    if started { write!(formatter, ", ")?; }
+                    started = true;
+                    write!(formatter, "{}: {}", k, v)?;
+                }
+                write!(formatter, "}}")
+            }
             Obj::Func(f) => write!(formatter, "{:?}", f),
+        }
+    }
+}
+
+impl Display for ObjKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ObjKey::Null => write!(formatter, "null"),
+            ObjKey::Int(n) => write!(formatter, "{}", n),
+            ObjKey::String(s) => write!(formatter, "{}", s),
+            ObjKey::List(xs) => {
+                write!(formatter, "[")?;
+                let mut started = false;
+                for x in xs.iter() {
+                    if started { write!(formatter, ", ")?; }
+                    started = true;
+                    write!(formatter, "{}", x)?;
+                }
+                write!(formatter, "]")
+            }
         }
     }
 }
@@ -242,6 +300,7 @@ pub enum Expr {
     Ident(String),
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
+    Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
     Index(Box<Expr>, Box<Expr>), // TODO: or slice
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     Assign(Box<Lvalue>, Box<Expr>),
@@ -423,6 +482,36 @@ impl Parser {
                     let (exs, _) = self.comma_separated_chains()?;
                     self.require(Token::RightBracket, "list expr".to_string())?;
                     Ok(Expr::List(exs))
+                }
+                Token::LeftBrace => {
+                    self.advance();
+                    // Dict(Vec<(Box<Expr>, Option<Box<Expr>>)>),
+                    let mut xs = Vec::new();
+                    let mut def = None;
+                    if self.peek() == Some(Token::Colon) {
+                        self.advance();
+                        def = Some(Box::new(self.chain()?));
+                        if !self.peek_csc_stopper() {
+                            self.require(Token::Comma, "dict expr".to_string())?;
+                        }
+                    }
+
+                    while !self.peek_csc_stopper() {
+                        let c1 = Box::new(self.chain()?);
+                        let c2 = if self.peek() == Some(Token::Colon) {
+                            self.advance();
+                            Some(Box::new(self.chain()?))
+                        } else {
+                            None
+                        };
+                        xs.push((c1, c2));
+
+                        if !self.peek_csc_stopper() {
+                            self.require(Token::Comma, "dict expr".to_string())?;
+                        }
+                    }
+                    self.require(Token::RightBrace, "dict expr end".to_string())?;
+                    Ok(Expr::Dict(def, xs))
                 }
                 Token::RightParen => Err("unexpected right paren".to_string()),
                 Token::Lambda => {
@@ -702,6 +791,20 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
                     // FIXME bounds checking
                     set_index(&mut Rc::make_mut(v)[*i as usize], rest, value)
                 }
+                (Obj::Dict(v, _), kk) => {
+                    let k = to_key(kk.clone())?;
+                    let mut_d = Rc::make_mut(v);
+                    // We might create a new map entry, but only at the end, which is a bit of a
+                    // mismatch for Rust's map API if we want to recurse all the way
+                    if rest.is_empty() {
+                        mut_d.insert(k, value); Ok(())
+                    } else {
+                        set_index(match mut_d.get_mut(&k) {
+                            Some(vvv) => vvv,
+                            None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                        }, rest, value)
+                    }
+                }
                 (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
             }
         }
@@ -893,6 +996,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         }
                     }
                 }
+                (Obj::Dict(xx, def), _) => {
+                    let k = to_key(ir)?;
+                    match xx.get(&k) {
+                        Some(e) => Ok(e.clone()),
+                        None => match def {
+                            Some(d) => Ok((&**d).clone()),
+                            None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", xx, k))),
+                        }
+                    }
+                }
                 _ => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
             }
         }
@@ -910,6 +1023,43 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Splat(_) => Err(NErr::ParseError("Splats only allowed on an assignment-related place".to_string())),
         Expr::List(xs) => {
             Ok(Obj::List(Rc::new(eval_seq(env, xs)?)))
+        }
+        Expr::Dict(def, xs) => {
+            let dv = match def {
+                Some(de) => Some(Rc::new(evaluate(env, de)?)),
+                None => None,
+            };
+            let mut acc = HashMap::new();
+            for (ke, ve) in xs {
+                match (&**ke, ve) {
+                    (Expr::Splat(inner), None) => {
+                        let res = evaluate(env, inner)?;
+                        match res {
+                            Obj::Dict(xx, _) => {
+                                // TODO is it possible to avoid these clones if xx's refcount is 1?
+                                // worth?
+                                for (k, v) in xx.iter() {
+                                    acc.insert(k.clone(), v.clone());
+                                }
+                            }
+                            _ => Err(NErr::TypeError(format!("can't splat non-list {:?}", res)))?
+                        }
+                    }
+                    (Expr::Splat(_), Some(_)) => {
+                        Err(NErr::TypeError(format!("can't splat w value {:?} {:?}", ke, ve)))?
+                    }
+                    _ => {
+                        let k = evaluate(env, ke)?;
+                        let kk = to_key(k)?;
+                        let v = match ve {
+                            Some(vve) => evaluate(env, vve)?,
+                            None => Obj::Int(1),
+                        };
+                        acc.insert(kk, v);
+                    }
+                }
+            }
+            Ok(Obj::Dict(Rc::new(acc), dv))
         }
         Expr::Sequence(xs) => {
             for x in &xs[..xs.len() - 1] {
@@ -1089,7 +1239,7 @@ fn main() {
     // let s = "fact = \\n: if (n == 0) 1 else n * fact(n - 1); print 10; print(1 to 10 map fact)";
     // let s = "1 < 2 < 3";
     // let s = "==(1, 2, 3)";
-    let s = "x = [[0] ** 3] ** 3; x[0][1] = 2; x";
+    let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
