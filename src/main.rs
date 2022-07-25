@@ -48,8 +48,17 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         Obj::Int(x) => Ok(ObjKey::Int(x)),
         Obj::String(x) => Ok(ObjKey::String(x)),
         Obj::List(x) => Ok(ObjKey::List(Rc::new(x.iter().map(|e| to_key(e.clone())).collect::<NRes<Vec<ObjKey>>>()?))),
-        Obj::Dict(..) => Err(NErr::TypeError("dict can't be key".to_string())),
-        Obj::Func(_) => Err(NErr::TypeError("func can't be key".to_string())),
+        Obj::Dict(..) => Err(NErr::TypeError("Using a dictionary as a dictionary key isn't supported".to_string())),
+        Obj::Func(_) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
+    }
+}
+
+fn key_to_obj(key: &ObjKey) -> Obj {
+    match key {
+        ObjKey::Null => Obj::Null,
+        ObjKey::Int(x) => Obj::Int(*x),
+        ObjKey::String(x) => Obj::String(Rc::clone(x)),
+        ObjKey::List(x) => Obj::List(Rc::new(x.iter().map(|e| key_to_obj(&e.clone())).collect::<Vec<Obj>>())),
     }
 }
 
@@ -113,10 +122,13 @@ impl Display for ObjKey {
 
 #[derive(Debug)]
 pub enum NErr {
-    TypeError(String),
-    NameError(String),
+    ArgumentError(String),
     IndexError(String),
-    ParseError(String),
+    KeyError(String),
+    NameError(String),
+    SyntaxError(String),
+    TypeError(String),
+    ValueError(String),
 }
 
 pub type NRes<T> = Result<T, NErr>;
@@ -155,7 +167,7 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
         (Obj::Int(a), Obj::Int(b)) => Ok(a.cmp(b)),
         (Obj::String(a), Obj::String(b)) => Ok(a.cmp(b)),
-        _ => Err(NErr::TypeError(format!("can't compare {:?} {:?}", aa, bb))),
+        _ => Err(NErr::TypeError(format!("Can't compare {:?} and {:?}", aa, bb))),
     }
 }
 
@@ -170,7 +182,7 @@ impl Block for ComparisonOperator {
                 }
                 Ok(Obj::Int(1))
             } else {
-                Err(NErr::TypeError(format!("comparison operator {:?} needs 2+ args", self.name)))
+                Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name)))
             }
         } else {
             if self.chained.len() + 2 == args.len() {
@@ -185,7 +197,7 @@ impl Block for ComparisonOperator {
                 }
                 Ok(Obj::Int(1))
             } else {
-                Err(NErr::TypeError(format!("chained comparison operator wrong args")))
+                Err(NErr::ArgumentError(format!("Chained comparison operator got the wrong number of args")))
             }
         }
     }
@@ -236,7 +248,7 @@ impl Block for IntsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args.iter().map(|x| match x {
             Obj::Int(n) => Ok(*n),
-            _ => Err(NErr::TypeError(format!("{} only accepts ints, got {:?}", self.name, x))),
+            _ => Err(NErr::ArgumentError(format!("{} only accepts ints, got {:?}", self.name, x))),
         }).collect::<NRes<Vec<i64>>>()?)
     }
 
@@ -763,7 +775,7 @@ impl Env {
             Some(v) => Ok(v.clone()),
             None => match &self.parent {
                 Some(p) => p.borrow().get_var(s),
-                None => Err(NErr::NameError(s.to_string()))
+                None => Err(NErr::NameError(format!("No such variable: {}", s))),
             }
         }
     }
@@ -811,7 +823,7 @@ fn assign_all_basic(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: &[Obj], in
         }
         Ok(())
     } else {
-        Err(NErr::TypeError(format!("can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
+        Err(NErr::ValueError(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
     }
 }
 
@@ -820,7 +832,7 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: &[Obj], insert: 
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
             EvaluatedLvalue::Splat(inner) => match splat {
-                Some(_) => return Err(NErr::TypeError(format!("can't have two splats in assign lhs"))),
+                Some(_) => return Err(NErr::SyntaxError(format!("Can't have two splats in assign lhs"))),
                 None => {
                     splat = Some((i, inner));
                 }
@@ -860,11 +872,11 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
                     } else {
                         set_index(match mut_d.get_mut(&k) {
                             Some(vvv) => vvv,
-                            None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                            None => Err(NErr::KeyError(format!("Dictionary lookup: nothing at key {:?} {:?}", mut_d, k)))?,
                         }, rest, value)
                     }
                 }
-                (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
+                (lhs2, ii) => Err(NErr::IndexError(format!("can't index {:?} {:?}", lhs2, ii))),
             }
         }
     }
@@ -877,13 +889,13 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes
                 if ixs.is_empty() {
                     env.insert(s.to_string(), rhs.clone());
                 } else {
-                    return Err(NErr::TypeError(format!("can't insert into index {:?} {:?}", s, ixs)))
+                    return Err(NErr::TypeError(format!("Can't insert new value into index expression on nonexistent variable: {:?} {:?}", s, ixs)))
                 }
             } else {
                 if ixs.is_empty() {
                     env.set(s.to_string(), rhs.clone());
                 } else {
-                    let mut did_modify = Err(NErr::TypeError(format!("var not found, couldn't set into index {:?} {:?}", s, ixs)));
+                    let mut did_modify = Err(NErr::NameError(format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)));
                     env.modify_existing_var(s, |v| {
                         did_modify = set_index(v, ixs, rhs.clone());
                     });
@@ -898,17 +910,17 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes
                     assign_all(env, ss, ls, insert)?;
                     Ok(rhs.clone())
                 }
-                _ => Err(NErr::TypeError(format!("can't unpack non-list {:?}", rhs))),
+                _ => Err(NErr::TypeError(format!("Can't unpack non-list {:?}", rhs))),
             }
         }
-        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
 
 fn precedence(name: &str) -> NRes<u8> {
     // stolen from Scala
     match name.chars().next() {
-        None => Err(NErr::ParseError("empty name wtf".to_string())),
+        None => Err(NErr::SyntaxError("Can't compute precedence of empty name (internal)".to_string())),
         Some(c) => Ok(
             if c.is_alphanumeric() || c == '_' {
                 0
@@ -991,7 +1003,7 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
                 let res = evaluate(env, inner)?;
                 match res {
                     Obj::List(mut xx) => acc.append(Rc::make_mut(&mut xx)),
-                    _ => Err(NErr::TypeError(format!("can't splat non-list {:?}", res)))?
+                    _ => Err(NErr::TypeError(format!("Can't splat non-list {:?}", res)))?
                 }
             }
             _ => acc.push(evaluate(env, x)?)
@@ -1021,7 +1033,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 Some(e) => Ok(e.clone()),
                 None => match xx.get((*ii + (xx.len() as i64)) as usize) {
                     Some(e) => Ok(e.clone()),
-                    None => Err(NErr::IndexError(format!("index out of bounds {:?} {:?}", xx, ii))),
+                    None => Err(NErr::IndexError(format!("Index out of bounds {:?} {:?}", xx, ii))),
                 }
             }
         }
@@ -1031,7 +1043,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 Some(e) => Ok(e.clone()),
                 None => match def {
                     Some(d) => Ok((&**d).clone()),
-                    None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", xx, k))),
+                    None => Err(NErr::KeyError(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
                 }
             }
         }
@@ -1052,7 +1064,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
         // maybe if commaseq eagerly looks for splats...
-        Lvalue::Splat(_) => Err(NErr::TypeError("can't eval splat on lhs??".to_string())),
+        Lvalue::Splat(_) => Err(NErr::SyntaxError("Can't evaluate splat on LHS of assignment??".to_string())),
     }
 }
 
@@ -1076,7 +1088,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let oprd = evaluate(env, opd)?;
                     ev.give(b, prec, oprd)?;
                 } else {
-                    return Err(NErr::TypeError("no chaining nonblock".to_string()))
+                    return Err(NErr::TypeError(format!("Chain cannot use nonblock in operand position: {:?}", oprr)))
                 }
             }
             ev.finish()
@@ -1119,7 +1131,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let fres = ff.run(vec![pv, res])?;
                     assign(&mut env.borrow_mut(), &p, &fres, false)
                 }
-                _ => Err(NErr::TypeError(format!("can't opassign non-function {:?}", opv))),
+                _ => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
             }
         }
         Expr::Call(f, args) => {
@@ -1129,11 +1141,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let a = eval_seq(env, args)?;
                     ff.run(a)
                 }
-                _ => Err(NErr::TypeError(format!("can't call non-function {:?}", fr))),
+                _ => Err(NErr::TypeError(format!("Can't call non-function {:?}", fr))),
             }
         }
-        Expr::CommaSeq(_) => Err(NErr::ParseError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
-        Expr::Splat(_) => Err(NErr::ParseError("Splats only allowed on an assignment-related place".to_string())),
+        Expr::CommaSeq(_) => Err(NErr::SyntaxError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
+        Expr::Splat(_) => Err(NErr::SyntaxError("Splats only allowed on an assignment-related place".to_string())),
         Expr::List(xs) => {
             Ok(Obj::List(Rc::new(eval_seq(env, xs)?)))
         }
@@ -1155,11 +1167,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                                     acc.insert(k.clone(), v.clone());
                                 }
                             }
-                            _ => Err(NErr::TypeError(format!("can't splat non-list {:?}", res)))?
+                            _ => Err(NErr::TypeError(format!("Dictionary: Can only splat other dictionary; instead got {:?}", res)))?
                         }
                     }
                     (Expr::Splat(_), Some(_)) => {
-                        Err(NErr::TypeError(format!("can't splat w value {:?} {:?}", ke, ve)))?
+                        Err(NErr::TypeError(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve)))?
                     }
                     _ => {
                         let k = evaluate(env, ke)?;
@@ -1202,7 +1214,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     }
                     Ok(Obj::Null)
                 }
-                _ => Err(NErr::TypeError(format!("can't iterate {:?}", itr)))
+                Obj::Dict(ls, _) => {
+                    for x in ls.keys() {
+                        let p = eval_lvalue(env, pat)?;
+                        assign(&mut env.borrow_mut(), &p, &key_to_obj(x), false)?;
+                        evaluate(env, body)?;
+                    }
+                    Ok(Obj::Null)
+                }
+                _ => Err(NErr::TypeError(format!("For loop: can't iterate over {:?}", itr)))
             }
         }
         Expr::ForItem(pat, iteratee, body) => {
@@ -1216,7 +1236,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     }
                     Ok(Obj::Null)
                 }
-                _ => Err(NErr::TypeError(format!("can't iterate {:?}", itr)))
+                Obj::Dict(ls, _) => {
+                    for (i, x) in ls.iter() {
+                        let p = eval_lvalue(env, pat)?;
+                        assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![key_to_obj(i), x.clone()])), false)?;
+                        evaluate(env, body)?;
+                    }
+                    Ok(Obj::Null)
+                }
+                _ => Err(NErr::TypeError(format!("ForItem loop: can't iterate over {:?}", itr)))
             }
         }
         Expr::Lambda(params, body) => {
@@ -1238,7 +1266,7 @@ fn main() {
     env.insert_ints_builtin(IntsBuiltin {
         name: "-".to_string(),
         body: |args| match args.split_first() {
-            None => Err(NErr::TypeError("- 0 args".to_string())),
+            None => Err(NErr::ArgumentError("-: received 0 args".to_string())),
             Some((s, rest)) => {
                 if rest.is_empty() {
                     Ok(Obj::Int(-s))
@@ -1319,7 +1347,7 @@ fn main() {
     env.insert_builtin(Builtin {
         name: "max".to_string(),
         body: |args| match args.split_first() {
-            None => Err(NErr::TypeError("max 0".to_string())),
+            None => Err(NErr::TypeError("max: at least 1 arg".to_string())),
             Some((a, rest)) => {
                 // TODO: if rest is empty, iterate over a
                 let mut ret = a;
@@ -1336,7 +1364,7 @@ fn main() {
     env.insert_builtin(Builtin {
         name: "min".to_string(),
         body: |args| match args.split_first() {
-            None => Err(NErr::TypeError("min 0".to_string())),
+            None => Err(NErr::TypeError("min: at least 1 arg".to_string())),
             Some((a, rest)) => {
                 // TODO: if rest is empty, iterate over a
                 let mut ret = a;
@@ -1384,7 +1412,7 @@ fn main() {
             [Obj::Int(x), Obj::List(v)] => {
                 Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(*x as usize).flatten().cloned().collect())))
             }
-            _ => Err(NErr::TypeError("** wat".to_string()))
+            _ => Err(NErr::ArgumentError("**: unrecognized argument types".to_string()))
         }
     });
 
@@ -1396,7 +1424,8 @@ fn main() {
     // let s = "==(1, 2, 3)";
     // let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
     // let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
-    let s = "print(3 or x, 0 and x, len([4, 5, 6]))";
+    // let s = "print(3 or x, 0 and x, len([4, 5, 6]))";
+    let s = "for (x, y :: {3: 4, 5: 6}) print(x, ':', y)";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
