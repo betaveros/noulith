@@ -1298,6 +1298,14 @@ fn main() {
         }
     });
     env.insert_builtin(Builtin {
+        name: "len".to_string(),
+        body: |args| match args.as_slice() {
+            [Obj::List(a)] => Ok(Obj::Int(a.len() as i64)),
+            [Obj::Dict(a, _)] => Ok(Obj::Int(a.len() as i64)),
+            _ => Err(NErr::TypeError("len: 1 arg only".to_string()))
+        }
+    });
+    env.insert_builtin(Builtin {
         name: "map".to_string(),
         body: |args| match args.as_slice() {
             [Obj::List(a), Obj::Func(b)] => {
@@ -1388,7 +1396,7 @@ fn main() {
     // let s = "==(1, 2, 3)";
     // let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
     // let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
-    let s = "print(3 or x, 0 and x)";
+    let s = "print(3 or x, 0 and x, len([4, 5, 6]))";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
