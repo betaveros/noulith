@@ -18,7 +18,7 @@ pub enum Obj {
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
     Dict(Rc<HashMap<ObjKey, Obj>>, Option<Rc<Obj>>), // default value
-    Func(Rc<dyn Block>),
+    Func(Func),
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
@@ -147,7 +147,36 @@ pub enum NErr {
 
 pub type NRes<T> = Result<T, NErr>;
 
-pub trait Block : Debug {
+#[derive(Debug, Clone)]
+pub enum Func {
+    Builtin(Rc<dyn Builtin>),
+    Closure(Closure),
+}
+
+impl Func {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match self {
+            Func::Builtin(b) => b.run(args),
+            Func::Closure(c) => c.run(args),
+        }
+    }
+
+    fn is_pure(&self) -> bool {
+        match self {
+            Func::Builtin(b) => b.is_pure(),
+            Func::Closure(_) => false,
+        }
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match self {
+            Func::Builtin(b) => b.try_chain(other),
+            Func::Closure(_) => None,
+        }
+    }
+}
+
+pub trait Builtin : Debug {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
 
     // Should only be Some for builtins, used for them to identify each other
@@ -155,7 +184,7 @@ pub trait Block : Debug {
         None
     }
 
-    fn try_chain(&self, _other: &Rc<dyn Block>) -> Option<Rc<dyn Block>> {
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
         None
     }
 
@@ -165,7 +194,7 @@ pub trait Block : Debug {
 #[derive(Debug, Clone)]
 struct ComparisonOperator {
     name: Option<String>,
-    chained: Vec<Rc<dyn Block>>,
+    chained: Vec<Func>,
     accept: fn(Ordering) -> bool,
 }
 
@@ -187,7 +216,7 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     }
 }
 
-impl Block for ComparisonOperator {
+impl Builtin for ComparisonOperator {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             if args.len() >= 2 {
@@ -222,29 +251,32 @@ impl Block for ComparisonOperator {
         self.name.as_ref().map(|x| &**x)
     }
 
-    fn try_chain(&self, other: &Rc<dyn Block>) -> Option<Rc<dyn Block>> {
-        match other.builtin_name() {
-            Some("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Rc::new(ComparisonOperator {
-                name: None,
-                chained: {
-                    let mut k = self.chained.clone();
-                    k.push(Rc::clone(other));
-                    k
-                },
-                accept: self.accept,
-            })),
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                Some("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Func::Builtin(Rc::new(ComparisonOperator {
+                    name: None,
+                    chained: {
+                        let mut k = self.chained.clone();
+                        k.push(Func::clone(other));
+                        k
+                    },
+                    accept: self.accept,
+                }))),
+                _ => None,
+            }
             _ => None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Builtin {
+pub struct BasicBuiltin {
     name: String,
     body: fn(args: Vec<Obj>) -> NRes<Obj>,
 }
 
-impl Block for Builtin {
+impl Builtin for BasicBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args)
     }
@@ -262,7 +294,7 @@ pub struct IntsBuiltin {
     body: fn(args: Vec<i64>) -> NRes<Obj>,
 }
 
-impl Block for IntsBuiltin {
+impl Builtin for IntsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         (self.body)(args.iter().map(|x| match x {
             Obj::Int(n) => Ok(*n),
@@ -277,7 +309,8 @@ impl Block for IntsBuiltin {
     fn is_pure(&self) -> bool { true }
 }
 
-struct Closure {
+#[derive(Clone)]
+pub struct Closure {
     params: Rc<Vec<Box<Lvalue>>>,
     body: Rc<Expr>,
     env: Rc<RefCell<Env>>,
@@ -290,7 +323,7 @@ impl Debug for Closure {
     }
 }
 
-impl Block for Closure {
+impl Closure {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         let env = Env { vars: HashMap::new(), parent: Some(Rc::clone(&self.env)) };
         let ee = Rc::new(RefCell::new(env));
@@ -836,17 +869,17 @@ impl Env {
     fn insert(self: &mut Env, key: String, val: Obj) {
         self.vars.insert(key, val);
     }
-    fn insert_builtin(self: &mut Env, b: Builtin) {
+    fn insert_builtin(self: &mut Env, b: BasicBuiltin) {
         let name = b.name.to_string();
-        self.insert(name, Obj::Func(Rc::new(b)))
+        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
     }
     fn insert_ints_builtin(self: &mut Env, b: IntsBuiltin) {
         let name = b.name.to_string();
-        self.insert(name, Obj::Func(Rc::new(b)))
+        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
     }
     fn insert_comparison(self: &mut Env, b: ComparisonOperator) {
         let name = b.name.as_ref().unwrap().to_string();
-        self.insert(name, Obj::Func(Rc::new(b)))
+        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
     }
 }
 
@@ -1001,7 +1034,7 @@ fn precedence(name: &str) -> NRes<u8> {
 
 struct ChainEvaluator {
     operands: Vec<Vec<Obj>>,
-    operators: Vec<(Rc<dyn Block>, u8)>,
+    operators: Vec<(Func, u8)>,
 }
 
 impl ChainEvaluator {
@@ -1009,7 +1042,7 @@ impl ChainEvaluator {
         ChainEvaluator { operands: vec![vec![operand]], operators: Vec::new() }
     }
 
-    fn run_top_popped(&mut self, op: Rc<dyn Block>) -> NRes<()> {
+    fn run_top_popped(&mut self, op: Func) -> NRes<()> {
         let mut rhs = self.operands.pop().expect("sync");
         let mut lhs = self.operands.pop().expect("sync");
         lhs.append(&mut rhs); // concats and drains rhs of elements
@@ -1022,7 +1055,7 @@ impl ChainEvaluator {
         self.run_top_popped(op)
     }
 
-    fn give(&mut self, operator: Rc<dyn Block>, precedence: u8, operand: Obj) -> NRes<()> {
+    fn give(&mut self, operator: Func, precedence: u8, operand: Obj) -> NRes<()> {
         while self.operators.last().map_or(false, |t| t.1 >= precedence) {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
@@ -1328,7 +1361,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
         }
         Expr::Lambda(params, body) => {
-            Ok(Obj::Func(Rc::new(Closure {
+            Ok(Obj::Func(Func::Closure(Closure {
                 params: Rc::clone(params),
                 body: Rc::clone(body),
                 env: Rc::clone(env),
@@ -1412,7 +1445,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::TypeError("to: 2 args only".to_string()))
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "len".to_string(),
         body: |args| match args.as_slice() {
             [Obj::List(a)] => Ok(Obj::Int(a.len() as i64)),
@@ -1420,7 +1453,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::TypeError("len: 1 arg only".to_string()))
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "map".to_string(),
         body: |args| match args.as_slice() {
             [Obj::List(a), Obj::Func(b)] => {
@@ -1431,7 +1464,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::TypeError("map: 2 args only".to_string()))
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "append".to_string(),
         body: |mut args| match args.as_mut_slice() {
             [Obj::List(a), b] => {
@@ -1441,7 +1474,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::TypeError("append: 2 args only".to_string()))
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "max".to_string(),
         body: |args| match args.as_slice() {
             [] => Err(NErr::TypeError("max: at least 1 arg".to_string())),
@@ -1462,7 +1495,7 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "min".to_string(),
         body: |args| match args.as_slice() {
             [] => Err(NErr::TypeError("min: at least 1 arg".to_string())),
@@ -1483,21 +1516,21 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
             Ok(Obj::Null)
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
             Ok(Obj::Null)
         }
     });
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "++".to_string(),
         body: |args| {
             let mut acc = String::new();
@@ -1508,7 +1541,7 @@ pub fn initialize(env: &mut Env) {
         }
     });
     // TODO probably just an * overload? idk
-    env.insert_builtin(Builtin {
+    env.insert_builtin(BasicBuiltin {
         name: "**".to_string(),
         body: |args| match args.as_slice() {
             [Obj::List(v), Obj::Int(x)] => {
