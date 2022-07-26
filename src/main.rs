@@ -851,34 +851,27 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: &[Obj], insert: 
 }
 
 fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
-    match indexes.split_first() {
-        None => {
-            *lhs = value;
-            Ok(())
+    match (lhs, indexes) {
+        (lhs, []) => { *lhs = value; Ok(()) }
+        (Obj::List(v), [Obj::Int(i), rest @ ..]) => {
+            // FIXME bounds checking
+            set_index(&mut Rc::make_mut(v)[*i as usize], rest, value)
         }
-        Some((i, rest)) => {
-            match (lhs, i) {
-                (Obj::List(v), Obj::Int(i)) => {
-                    // FIXME bounds checking
-                    set_index(&mut Rc::make_mut(v)[*i as usize], rest, value)
-                }
-                (Obj::Dict(v, _), kk) => {
-                    let k = to_key(kk.clone())?;
-                    let mut_d = Rc::make_mut(v);
-                    // We might create a new map entry, but only at the end, which is a bit of a
-                    // mismatch for Rust's map API if we want to recurse all the way
-                    if rest.is_empty() {
-                        mut_d.insert(k, value); Ok(())
-                    } else {
-                        set_index(match mut_d.get_mut(&k) {
-                            Some(vvv) => vvv,
-                            None => Err(NErr::KeyError(format!("Dictionary lookup: nothing at key {:?} {:?}", mut_d, k)))?,
-                        }, rest, value)
-                    }
-                }
-                (lhs2, ii) => Err(NErr::IndexError(format!("can't index {:?} {:?}", lhs2, ii))),
+        (Obj::Dict(v, _), [kk, rest @ ..]) => {
+            let k = to_key(kk.clone())?;
+            let mut_d = Rc::make_mut(v);
+            // We might create a new map entry, but only at the end, which is a bit of a
+            // mismatch for Rust's map API if we want to recurse all the way
+            if rest.is_empty() {
+                mut_d.insert(k, value); Ok(())
+            } else {
+                set_index(match mut_d.get_mut(&k) {
+                    Some(vvv) => vvv,
+                    None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                }, rest, value)
             }
         }
+        (lhs, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs, ii))),
     }
 }
 
@@ -1346,16 +1339,20 @@ fn main() {
     });
     env.insert_builtin(Builtin {
         name: "max".to_string(),
-        body: |args| match args.split_first() {
-            None => Err(NErr::TypeError("max: at least 1 arg".to_string())),
-            Some((a, rest)) => {
-                // TODO: if rest is empty, iterate over a
-                let mut ret = a;
+        body: |args| match args.as_slice() {
+            [] => Err(NErr::TypeError("max: at least 1 arg".to_string())),
+            [Obj::List(a)] => {
+                let mut ret: &Obj = &a[0];
+                for b in &a[1..] {
+                    if ncmp(b, &ret)? == Ordering::Greater { ret = b }
+                }
+                Ok(ret.clone())
+            }
+            [_] => Err(NErr::TypeError("max 1 not list".to_string())),
+            [a, rest @ ..] => {
+                let mut ret: &Obj = a;
                 for b in rest {
-                    match ncmp(b, a)? {
-                        Ordering::Greater => { ret = b }
-                        _ => {}
-                    }
+                    if ncmp(b, &ret)? == Ordering::Greater { ret = b }
                 }
                 Ok(ret.clone())
             }
@@ -1363,16 +1360,20 @@ fn main() {
     });
     env.insert_builtin(Builtin {
         name: "min".to_string(),
-        body: |args| match args.split_first() {
-            None => Err(NErr::TypeError("min: at least 1 arg".to_string())),
-            Some((a, rest)) => {
-                // TODO: if rest is empty, iterate over a
-                let mut ret = a;
+        body: |args| match args.as_slice() {
+            [] => Err(NErr::TypeError("min: at least 1 arg".to_string())),
+            [Obj::List(a)] => {
+                let mut ret: &Obj = &a[0];
+                for b in &a[1..] {
+                    if ncmp(b, &ret)? == Ordering::Less { ret = b }
+                }
+                Ok(ret.clone())
+            }
+            [_] => Err(NErr::TypeError("min 1 not list".to_string())),
+            [a, rest @ ..] => {
+                let mut ret: &Obj = a;
                 for b in rest {
-                    match ncmp(b, a)? {
-                        Ordering::Less => { ret = b }
-                        _ => {}
-                    }
+                    if ncmp(b, &ret)? == Ordering::Less { ret = b }
                 }
                 Ok(ret.clone())
             }
