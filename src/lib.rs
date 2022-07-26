@@ -75,8 +75,13 @@ impl PartialEq for Obj {
     }
 }
 
+/*
 fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
+}
+*/
+fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
+    n.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
 }
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
@@ -304,9 +309,51 @@ impl Builtin for BasicBuiltin {
     }
 
     fn builtin_name(&self) -> &str { &self.name }
-
     fn can_refer(&self) -> bool { self.can_refer }
 }
+
+#[derive(Debug, Clone)]
+pub struct OneArgBuiltin {
+    name: String,
+    can_refer: bool,
+    body: fn(a: Obj) -> NRes<Obj>,
+}
+
+impl Builtin for OneArgBuiltin {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+        if args.len() == 1 {
+            (self.body)(args.pop().unwrap())
+        } else {
+            Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, args.len())))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+    fn can_refer(&self) -> bool { self.can_refer }
+}
+
+#[derive(Debug, Clone)]
+pub struct TwoArgBuiltin {
+    name: String,
+    can_refer: bool,
+    body: fn(a: Obj, b: Obj) -> NRes<Obj>,
+}
+
+impl Builtin for TwoArgBuiltin {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+        if args.len() == 2 {
+            let b = args.pop().unwrap();
+            let a = args.pop().unwrap();
+            (self.body)(a, b)
+        } else {
+            Err(NErr::ArgumentError(format!("{} only accepts two arguments, got {}", self.name, args.len())))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+    fn can_refer(&self) -> bool { self.can_refer }
+}
+
 
 #[derive(Debug, Clone)]
 pub struct NumsBuiltin {
@@ -912,17 +959,8 @@ impl Env {
     fn insert(self: &mut Env, key: String, val: Obj) {
         self.vars.insert(key, val);
     }
-    fn insert_builtin(self: &mut Env, b: BasicBuiltin) {
-        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
-    }
-    fn insert_nums_builtin(self: &mut Env, b: NumsBuiltin) {
-        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
-    }
-    fn insert_two_nums_builtin(self: &mut Env, b: TwoNumsBuiltin) {
-        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
-    }
-    fn insert_comparison(self: &mut Env, b: ComparisonOperator) {
-        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
+    fn insert_builtin(self: &mut Env, b: impl Builtin + 'static) {
+        self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
 }
 
@@ -1452,11 +1490,11 @@ pub fn simple_eval(code: &str) -> Obj {
 }
 
 pub fn initialize(env: &mut Env) {
-    env.insert_nums_builtin(NumsBuiltin {
+    env.insert_builtin(NumsBuiltin {
         name: "+".to_string(),
         body: |args| { Ok(Obj::Num(args.into_iter().sum())) },
     });
-    env.insert_nums_builtin(NumsBuiltin {
+    env.insert_builtin(NumsBuiltin {
         name: "-".to_string(),
         body: |mut args| {
             if args.is_empty() {
@@ -1474,59 +1512,73 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_nums_builtin(NumsBuiltin {
+    env.insert_builtin(NumsBuiltin {
         name: "*".to_string(),
         body: |args| { Ok(Obj::Num(args.into_iter().product())) },
     });
-    env.insert_comparison(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
-    env.insert_comparison(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
-    env.insert_comparison(ComparisonOperator::of("<",  |ord| ord == Ordering::Less));
-    env.insert_comparison(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
-    env.insert_comparison(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
-    env.insert_comparison(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
+    env.insert_builtin(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
+    env.insert_builtin(ComparisonOperator::of("<",  |ord| ord == Ordering::Less));
+    env.insert_builtin(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
+    env.insert_builtin(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
+    env.insert_builtin(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
+    env.insert_builtin(NumsBuiltin {
         name: "/".to_string(),
-        body: |a, b| { Ok(Obj::Num(a / b)) }
+        body: |mut args| {
+            if args.is_empty() {
+                Err(NErr::ArgumentError("-: received 0 args".to_string()))
+            } else {
+                let mut s = args.remove(0);
+                if args.is_empty() {
+                    Ok(Obj::Num(NNum::from(1) / s))
+                } else {
+                    for arg in args {
+                        s = s / arg;
+                    }
+                    Ok(Obj::Num(s))
+                }
+            }
+        }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
         body: |a, b| { Ok(Obj::Num(a % b)) }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
         body: |a, b| { Ok(Obj::Num(a.div_floor(&b))) }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
         body: |a, b| { Ok(Obj::Num(a.mod_floor(&b))) }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| { Ok(Obj::Num(a.pow_num(&b))) }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "til".to_string(),
         body: |a, b| {
+            let n1 = into_bigint_ok(a)?;
+            let n2 = into_bigint_ok(b)?;
             // TODO: should be lazy
-            let n1 = a.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            let n2 = b.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             Ok(Obj::List(Rc::new(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
-    env.insert_two_nums_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "to".to_string(),
         body: |a, b| {
+            let n1 = into_bigint_ok(a)?;
+            let n2 = into_bigint_ok(b)?;
             // TODO: should be lazy
-            let n1 = a.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            let n2 = b.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             Ok(Obj::List(Rc::new(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(OneArgBuiltin {
         name: "ord".to_string(),
         can_refer: false,
-        body: |args| match args.as_slice() {
-            [Obj::String(s)] => {
+        body: |arg| match arg {
+            Obj::String(s) => {
                 if s.len() != 1 {
                     Err(NErr::ValueError("ord of string with length != 1".to_string()))
                 } else {
@@ -1536,42 +1588,42 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::TypeError("ord of non-string".to_string())),
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(OneArgBuiltin {
         name: "chr".to_string(),
         can_refer: false,
-        body: |args| match args.as_slice() {
-            [Obj::Num(n)] => Ok(Obj::String(Rc::new(nnum::char_from_bigint(&to_bigint_ok(n)?).ok_or(NErr::ValueError("chr of int oob".to_string()))?.to_string()))),
+        body: |arg| match arg {
+            Obj::Num(n) => Ok(Obj::String(Rc::new(nnum::char_from_bigint(&into_bigint_ok(n)?).ok_or(NErr::ValueError("chr of int oob".to_string()))?.to_string()))),
             _ => Err(NErr::TypeError("chr of non-num".to_string())),
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(OneArgBuiltin {
         name: "len".to_string(),
         can_refer: false,
-        body: |args| match args.as_slice() {
-            [Obj::List(a)] => Ok(Obj::Num(NNum::from(a.len()))),
-            [Obj::Dict(a, _)] => Ok(Obj::Num(NNum::from(a.len()))),
-            _ => Err(NErr::TypeError("len: 1 arg only".to_string()))
+        body: |arg| match arg {
+            Obj::List(a) => Ok(Obj::Num(NNum::from(a.len()))),
+            Obj::Dict(a, _) => Ok(Obj::Num(NNum::from(a.len()))),
+            _ => Err(NErr::TypeError("len: list or dict only".to_string()))
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(TwoArgBuiltin {
         name: "map".to_string(),
         can_refer: true,
-        body: |args| match args.as_slice() {
-            [Obj::List(a), Obj::Func(b)] => {
+        body: |a, b| match (a, b) {
+            (Obj::List(a), Obj::Func(b)) => {
                 Ok(Obj::List(Rc::new(
                 a.iter().map(|e| b.run(vec![e.clone()])).collect::<NRes<Vec<Obj>>>()?
                 )))
             }
-            _ => Err(NErr::TypeError("map: 2 args only".to_string()))
+            _ => Err(NErr::TypeError("map: list and func only".to_string()))
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(TwoArgBuiltin {
         name: "append".to_string(),
         can_refer: false,
-        body: |mut args| match args.as_mut_slice() {
-            [Obj::List(a), b] => {
-                Rc::make_mut(a).push(b.clone());
-                Ok(args.swap_remove(0))
+        body: |a, b| match (a, b) {
+            (Obj::List(mut a), b) => {
+                Rc::make_mut(&mut a).push(b.clone());
+                Ok(Obj::List(a))
             }
             _ => Err(NErr::TypeError("append: 2 args only".to_string()))
         }
