@@ -75,6 +75,18 @@ impl PartialEq for Obj {
     }
 }
 
+impl PartialOrd for Obj {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (Obj::Null     , Obj::Null     ) => Some(Ordering::Equal),
+            (Obj::Num   (a), Obj::Num   (b)) => a.partial_cmp(b),
+            (Obj::String(a), Obj::String(b)) => Some(a.cmp(b)),
+            (Obj::List  (a), Obj::List  (b)) => a.partial_cmp(b),
+            _ => None,
+        }
+    }
+}
+
 /*
 fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
@@ -179,13 +191,23 @@ pub type NRes<T> = Result<T, NErr>;
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
+
+    // For now specifically partial application of a binary function to its second argument
+    PartialApp(Box<Func>, Box<Obj>),
 }
 
 impl Func {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
         match self {
             Func::Builtin(b) => b.run(args),
             Func::Closure(c) => c.run(args),
+            Func::PartialApp(f, x) => {
+                if args.len() == 1 {
+                    f.run(vec![args.pop().unwrap(), (**x).clone()])
+                } else {
+                    Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
+                }
+            }
         }
     }
 
@@ -194,6 +216,7 @@ impl Func {
         match self {
             Func::Builtin(b) => b.can_refer(),
             Func::Closure(_) => true,
+            Func::PartialApp(f, _) => f.can_refer(),
         }
     }
 
@@ -201,6 +224,7 @@ impl Func {
         match self {
             Func::Builtin(b) => b.try_chain(other),
             Func::Closure(_) => None,
+            Func::PartialApp(..) => None,
         }
     }
 }
@@ -238,24 +262,30 @@ impl ComparisonOperator {
 
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
-        (Obj::Num(a), Obj::Num(b)) => Ok(a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare nums {:?} and {:?}", a, b)))?),
+        (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare nums {:?} and {:?}", a, b))),
         (Obj::String(a), Obj::String(b)) => Ok(a.cmp(b)),
+        (Obj::List(a), Obj::List(b)) => a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare lists {:?} and {:?}", a, b))),
         _ => Err(NErr::TypeError(format!("Can't compare {:?} and {:?}", aa, bb))),
     }
 }
 
 impl Builtin for ComparisonOperator {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
-            if args.len() >= 2 {
-                for i in 0 .. args.len() - 1 {
-                    if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
-                        return Ok(Obj::from(0))
+            match args.len() {
+                0 => Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name))),
+                1 => Ok(Obj::Func(Func::PartialApp(
+                    Box::new(Func::Builtin(Rc::new(self.clone()))),
+                    Box::new(args.pop().unwrap())
+                ))),
+                _ => {
+                    for i in 0 .. args.len() - 1 {
+                        if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
+                            return Ok(Obj::from(0))
+                        }
                     }
+                    Ok(Obj::from(1))
                 }
-                Ok(Obj::from(1))
-            } else {
-                Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name)))
             }
         } else {
             if self.chained.len() + 2 == args.len() {
@@ -341,12 +371,22 @@ pub struct TwoArgBuiltin {
 
 impl Builtin for TwoArgBuiltin {
     fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        if args.len() == 2 {
-            let b = args.pop().unwrap();
-            let a = args.pop().unwrap();
-            (self.body)(a, b)
-        } else {
-            Err(NErr::ArgumentError(format!("{} only accepts two arguments, got {}", self.name, args.len())))
+        match args.pop() {
+            None => Err(NErr::ArgumentError(format!("{} only accepts two arguments, got 0", self.name))),
+            Some(b) => match args.pop() {
+                None => {
+                    // partial application, spicy
+                    Ok(Obj::Func(Func::PartialApp(
+                        Box::new(Func::Builtin(Rc::new(self.clone()))),
+                        Box::new(b)
+                    )))
+                }
+                Some(a) => if args.is_empty() {
+                    (self.body)(a, b)
+                } else {
+                    Err(NErr::ArgumentError(format!("{} only accepts two arguments, got {}", self.name, args.len() + 2)))
+                }
+            }
         }
     }
 
@@ -354,6 +394,27 @@ impl Builtin for TwoArgBuiltin {
     fn can_refer(&self) -> bool { self.can_refer }
 }
 
+#[derive(Debug, Clone)]
+pub struct OneNumBuiltin {
+    name: String,
+    body: fn(a: NNum) -> NRes<Obj>,
+}
+
+impl Builtin for OneNumBuiltin {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+        if args.len() == 1 {
+            match args.pop().unwrap() {
+                Obj::Num(n) => (self.body)(n),
+                x => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
+            }
+        } else {
+            Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, args.len())))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+    fn can_refer(&self) -> bool { false }
+}
 
 #[derive(Debug, Clone)]
 pub struct NumsBuiltin {
@@ -787,40 +848,54 @@ impl Parser {
             Some(Token::Assign) => true,
             Some(Token::Colon) => true,
             Some(Token::Semicolon) => true,
+            Some(Token::Else) => true,
             None => true,
+            _ => false,
+        }
+    }
+
+    fn peek_chain_stopper(&self) -> bool {
+        self.peek_csc_stopper() || match self.peek() {
+            Some(Token::Comma) => true,
+            Some(Token::And) => true,
+            Some(Token::Or) => true,
             _ => false,
         }
     }
 
     fn chain(&mut self) -> Result<Expr, String> {
         let op1 = self.operand()?;
-        // We'll specially allow some two-chains, (a b), as calls, so that negative number literals
-        // and just writing an expression like "-x" works. But we will be aggressive-ish about
-        // checking that the chain ends afterwards so we don't get runaway syntax errors.
-        match self.peek() {
-            Some(Token::IntLit(_) | Token::StringLit(_)) => {
-                let ret = Expr::Call(Box::new(op1), vec![Box::new(self.atom()?)]);
-                if !self.peek_csc_stopper() {
-                    Err(format!("saw literal in operator position: these chains must be short, got {:?} after", self.peek()))
-                } else {
-                    Ok(ret)
-                }
-            }
-            Some(Token::Ident(op)) => {
-                self.advance();
-                if self.peek_csc_stopper() {
-                    Ok(Expr::Call(Box::new(op1), vec![Box::new(Expr::Ident(op))]))
-                } else {
-                    let mut ops = vec![(op.to_string(), Box::new(self.operand()?))];
+        if self.peek_chain_stopper() {
+            Ok(op1)
+        } else {
+            // We'll specially allow some two-chains, (a b), as calls, so that negative number
+            // literals and just writing an expression like "-x" works. But we will be
+            // aggressive-ish about checking that the chain ends afterwards so we don't get runaway
+            // syntax errors.
+            let second = self.atom()?;
+            match second {
+                Expr::Ident(op) => {
+                    if self.peek_chain_stopper() {
+                        Ok(Expr::Call(Box::new(op1), vec![Box::new(Expr::Ident(op))]))
+                    } else {
+                        let mut ops = vec![(op.to_string(), Box::new(self.operand()?))];
 
-                    while let Some(Token::Ident(op)) = self.peek() {
-                        self.advance();
-                        ops.push((op.to_string(), Box::new(self.operand()?)));
+                        while let Some(Token::Ident(op)) = self.peek() {
+                            self.advance();
+                            ops.push((op.to_string(), Box::new(self.operand()?)));
+                        }
+                        Ok(Expr::Chain(Box::new(op1), ops))
                     }
-                    Ok(Expr::Chain(Box::new(op1), ops))
+                }
+                _ => {
+                    let ret = Expr::Call(Box::new(op1), vec![Box::new(second)]);
+                    if !self.peek_chain_stopper() {
+                        Err(format!("saw non-identifier in operator position: these chains must be short, got {:?} after", self.peek()))
+                    } else {
+                        Ok(ret)
+                    }
                 }
             }
-            _ => Ok(op1),
         }
     }
 
@@ -1512,9 +1587,18 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_builtin(NumsBuiltin {
+    // for partial application
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "add".to_string(),
+        body: |a, b| { Ok(Obj::Num(a + b)) }
+    });
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "subtract".to_string(),
+        body: |a, b| { Ok(Obj::Num(a - b)) }
+    });
+    env.insert_builtin(TwoNumsBuiltin {
         name: "*".to_string(),
-        body: |args| { Ok(Obj::Num(args.into_iter().product())) },
+        body: |a, b| { Ok(Obj::Num(a * b)) }
     });
     env.insert_builtin(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
     env.insert_builtin(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
@@ -1522,23 +1606,9 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
     env.insert_builtin(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
     env.insert_builtin(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
-    env.insert_builtin(NumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "/".to_string(),
-        body: |mut args| {
-            if args.is_empty() {
-                Err(NErr::ArgumentError("-: received 0 args".to_string()))
-            } else {
-                let mut s = args.remove(0);
-                if args.is_empty() {
-                    Ok(Obj::Num(NNum::from(1) / s))
-                } else {
-                    for arg in args {
-                        s = s / arg;
-                    }
-                    Ok(Obj::Num(s))
-                }
-            }
-        }
+        body: |a, b| { Ok(Obj::Num(a / b)) }
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
@@ -1555,6 +1625,30 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| { Ok(Obj::Num(a.pow_num(&b))) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "abs".to_string(),
+        body: |a| { Ok(Obj::Num(a.abs())) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "floor".to_string(),
+        body: |a| { Ok(Obj::Num(a.floor())) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "ceil".to_string(),
+        body: |a| { Ok(Obj::Num(a.ceil())) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "signum".to_string(),
+        body: |a| { Ok(Obj::Num(a.signum())) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "even".to_string(),
+        body: |a| { Ok(Obj::Num(NNum::iverson(!a.mod_floor(&NNum::from(2)).is_nonzero()))) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "odd".to_string(),
+        body: |a| { Ok(Obj::Num(NNum::iverson(a.mod_floor(&NNum::from(2)) == NNum::from(1)))) }
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "til".to_string(),
@@ -1609,10 +1703,37 @@ pub fn initialize(env: &mut Env) {
         name: "map".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::List(a), Obj::Func(b)) => {
+            (Obj::List(mut a), Obj::Func(b)) => {
+                for e in Rc::make_mut(&mut a).iter_mut() {
+                    *e = b.run(vec![e.clone()])?;
+                }
+                Ok(Obj::List(a))
+                /*
                 Ok(Obj::List(Rc::new(
                 a.iter().map(|e| b.run(vec![e.clone()])).collect::<NRes<Vec<Obj>>>()?
                 )))
+                */
+            }
+            _ => Err(NErr::TypeError("map: list and func only".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "filter".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::List(mut a), Obj::Func(b)) => {
+                let mut ret = Ok(());
+                Rc::make_mut(&mut a).retain(|e| {
+                    if ret.is_err() {
+                        false
+                    } else {
+                        match b.run(vec![e.clone()]) {
+                            Ok(e) => e.truthy(),
+                            Err(g) => { ret = Err(g); false }
+                        }
+                    }
+                });
+                Ok(Obj::List(a))
             }
             _ => Err(NErr::TypeError("map: list and func only".to_string()))
         }
@@ -1699,18 +1820,57 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::String(Rc::new(acc)))
         }
     });
-    // TODO probably just an * overload? idk
-    env.insert_builtin(BasicBuiltin {
+    // Haskell-ism for partial application (when that works)
+    env.insert_builtin(TwoArgBuiltin {
+        name: "!!".to_string(),
+        can_refer: false,
+        body: index,
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "++".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::List(mut a), Obj::List(mut b)) => {
+                Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                Ok(Obj::List(a))
+            }
+            _ => Err(NErr::ArgumentError("++: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
         name: "**".to_string(),
         can_refer: false,
-        body: |args| match args.as_slice() {
-            [Obj::List(v), Obj::Num(x)] => {
+        body: |a, b| match (a, b) {
+            (Obj::List(v), Obj::Num(x)) => {
                 Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
             }
-            [Obj::Num(x), Obj::List(v)] => {
+            (Obj::Num(x), Obj::List(v)) => {
                 Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
             }
             _ => Err(NErr::ArgumentError("**: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "sort".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(mut v) => {
+                // ????
+                Rc::make_mut(&mut v).sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+                Ok(Obj::List(v))
+            }
+            _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "reverse".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(mut v) => {
+                Rc::make_mut(&mut v).reverse();
+                Ok(Obj::List(v))
+            }
+            _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
         }
     });
 }
