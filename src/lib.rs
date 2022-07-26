@@ -910,9 +910,8 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: &[Obj], insert: 
 fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
     match (lhs, indexes) {
         (lhs, []) => { *lhs = value; Ok(()) }
-        (Obj::List(v), [Obj::Int(i), rest @ ..]) => {
-            // FIXME bounds checking
-            set_index(&mut Rc::make_mut(v)[*i as usize], rest, value)
+        (Obj::List(v), [i, rest @ ..]) => {
+            set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
         }
         (Obj::Dict(v, _), [kk, rest @ ..]) => {
             let k = to_key(kk.clone())?;
@@ -937,9 +936,8 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj
         None => f(lhs),
         Some((i, rest)) => {
             match (lhs, i) {
-                (Obj::List(v), Obj::Int(i)) => {
-                    // FIXME bounds checking
-                    modify_existing_index(&mut Rc::make_mut(v)[*i as usize], rest, f)
+                (Obj::List(v), i) => {
+                    modify_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
                 }
                 (Obj::Dict(v, def), kk) => {
                     let k = to_key(kk.clone())?;
@@ -1106,18 +1104,30 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     }
 }
 
+fn pythonic_index(xs: &Vec<Obj>, i: &Obj) -> NRes<usize> {
+    // TODO if we want to be paranoidly correct, `as` wraps. usize::try_from? but we'll get bignums
+    // in here soon and this will all change probably
+    match i {
+        Obj::Int(ii) => {
+            let i1 = *ii as usize;
+            if i1 < xs.len() { return Ok(i1) }
+
+            let i2 = (*ii + (xs.len() as i64)) as usize;
+            if i2 < xs.len() { return Ok(i2) }
+
+            Err(NErr::IndexError(format!("Index out of bounds: {:?}", ii)))
+        }
+        _ => Err(NErr::IndexError(format!("Invalid (non-integer) index: {:?}", i))),
+    }
+}
+
+fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
+    let ii = pythonic_index(xs, i)?; Ok(&mut xs[ii])
+}
+
 fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
-        (Obj::List(xx), Obj::Int(ii)) => {
-            // FIXME overflow?
-            match xx.get(*ii as usize) {
-                Some(e) => Ok(e.clone()),
-                None => match xx.get((*ii + (xx.len() as i64)) as usize) {
-                    Some(e) => Ok(e.clone()),
-                    None => Err(NErr::IndexError(format!("Index out of bounds {:?} {:?}", xx, ii))),
-                }
-            }
-        }
+        (Obj::List(xx), ii) => Ok(xx[pythonic_index(xx, ii)?].clone()),
         (Obj::Dict(xx, def), _) => {
             let k = to_key(ir)?;
             match xx.get(&k) {
@@ -1223,9 +1233,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         let mut removed = Err(NErr::TypeError("failed to remove??".to_string()));
                         env.borrow_mut().modify_existing_var(&s, |vv| {
                             removed = modify_existing_index(vv, &rest, |x| match (x, last_i) {
-                                (Obj::List(xs), Obj::Int(i)) => {
-                                    // TODO: bounds
-                                    Ok(Rc::make_mut(xs).remove(*i as usize))
+                                (Obj::List(xs), i) => {
+                                    let ii = pythonic_index(xs, i)?;
+                                    Ok(Rc::make_mut(xs).remove(ii))
                                 }
                                 _ => Err(NErr::TypeError("can't remove".to_string())),
                             });
