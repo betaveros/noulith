@@ -563,11 +563,11 @@ impl Parser {
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(Expr::Pop(Box::new(to_lvalue(self.atom()?)?)))
+                    Ok(Expr::Pop(Box::new(to_lvalue(self.operand()?)?)))
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(Expr::Remove(Box::new(to_lvalue(self.atom()?)?)))
+                    Ok(Expr::Remove(Box::new(to_lvalue(self.operand()?)?)))
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -1215,7 +1215,27 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
             }
         }
-        Expr::Remove(_) => todo!("wait"),
+        Expr::Remove(pat) => {
+            match eval_lvalue(env, pat)? {
+                EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
+                    [] => Err(NErr::ValueError("can't remove flat identifier".to_string())),
+                    [rest @ .., last_i] => {
+                        let mut removed = Err(NErr::TypeError("failed to remove??".to_string()));
+                        env.borrow_mut().modify_existing_var(&s, |vv| {
+                            removed = modify_existing_index(vv, &rest, |x| match (x, last_i) {
+                                (Obj::List(xs), Obj::Int(i)) => {
+                                    // TODO: bounds
+                                    Ok(Rc::make_mut(xs).remove(*i as usize))
+                                }
+                                _ => Err(NErr::TypeError("can't remove".to_string())),
+                            });
+                        });
+                        removed
+                    }
+                }
+                _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
+            }
+        }
         Expr::OpAssign(pat, op, rhs) => {
             let pv = eval_lvalue_as_obj(env, pat)?;
             let p = eval_lvalue(env, pat)?;
