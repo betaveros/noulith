@@ -14,7 +14,6 @@ use num::bigint::BigInt;
 mod nnum;
 mod gamma;
 
-use num_iter;
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
 
@@ -76,6 +75,9 @@ impl PartialEq for Obj {
     }
 }
 
+fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
+    n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
+}
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
     match obj {
@@ -1456,17 +1458,19 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_nums_builtin(NumsBuiltin {
         name: "-".to_string(),
-        body: |args| match &args[..] {
-            [] => Err(NErr::ArgumentError("-: received 0 args".to_string())),
-            [s] => {
-                // TODO can take
-                Ok(Obj::Num(-s.clone()))
-            }
-            [s, rest @ ..] => {
-                // TODO can take
-                let mut ss = s.clone();
-                for arg in rest { ss -= arg; }
-                Ok(Obj::Num(ss))
+        body: |mut args| {
+            if args.is_empty() {
+                Err(NErr::ArgumentError("-: received 0 args".to_string()))
+            } else {
+                let mut s = args.remove(0);
+                if args.is_empty() {
+                    Ok(Obj::Num(-s))
+                } else {
+                    for arg in args {
+                        s -= &arg;
+                    }
+                    Ok(Obj::Num(s))
+                }
             }
         }
     });
@@ -1486,17 +1490,15 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
-        body: |a, b| {
-            // TODO fix my math please!!!
-            Ok(Obj::Num(a % b))
-        }
+        body: |a, b| { Ok(Obj::Num(a % b)) }
+    });
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
+        name: "//".to_string(),
+        body: |a, b| { Ok(Obj::Num(a.div_floor(&b))) }
     });
     env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
-        body: |a, b| {
-            // TODO fix my math please!!!
-            Ok(Obj::Num(a % b))
-        }
+        body: |a, b| { Ok(Obj::Num(a.mod_floor(&b))) }
     });
     env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
@@ -1508,7 +1510,7 @@ pub fn initialize(env: &mut Env) {
             // TODO: should be lazy
             let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            Ok(Obj::List(Rc::new(num_iter::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
+            Ok(Obj::List(Rc::new(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
     env.insert_two_nums_builtin(TwoNumsBuiltin {
@@ -1517,7 +1519,29 @@ pub fn initialize(env: &mut Env) {
             // TODO: should be lazy
             let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            Ok(Obj::List(Rc::new(num_iter::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
+            Ok(Obj::List(Rc::new(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "ord".to_string(),
+        can_refer: false,
+        body: |args| match args.as_slice() {
+            [Obj::String(s)] => {
+                if s.len() != 1 {
+                    Err(NErr::ValueError("ord of string with length != 1".to_string()))
+                } else {
+                    Ok(Obj::from(s.chars().next().unwrap() as usize))
+                }
+            }
+            _ => Err(NErr::TypeError("ord of non-string".to_string())),
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "chr".to_string(),
+        can_refer: false,
+        body: |args| match args.as_slice() {
+            [Obj::Num(n)] => Ok(Obj::String(Rc::new(nnum::char_from_bigint(&to_bigint_ok(n)?).ok_or(NErr::ValueError("chr of int oob".to_string()))?.to_string()))),
+            _ => Err(NErr::TypeError("chr of non-num".to_string())),
         }
     });
     env.insert_builtin(BasicBuiltin {

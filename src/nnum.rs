@@ -13,10 +13,8 @@ use num::Integer;
 use num::bigint::BigInt;
 use num::bigint::ToBigInt;
 use num::complex::Complex64;
-use num_traits::pow::Pow;
-use num_traits::sign::Signed;
-use num_traits::cast::ToPrimitive;
-use num_traits::identities::{Zero, One};
+use num::{Zero, One, Signed, ToPrimitive};
+use num::pow::Pow;
 
 use crate::gamma;
 
@@ -110,7 +108,7 @@ fn pow_big_ints(a: &BigInt, b: &BigInt) -> NNum {
 
 fn factorial_big_int(a: &BigInt) -> BigInt {
     let mut ret = BigInt::one();
-    for i in num_iter::range_inclusive(BigInt::one(), BigInt::clone(a)) {
+    for i in num::range_inclusive(BigInt::one(), BigInt::clone(a)) {
         ret *= i;
     }
     ret
@@ -293,6 +291,7 @@ impl NNum {
         }
     }
 
+    // TODO: can this just give a ref
     pub fn to_bigint(&self) -> Option<BigInt> {
         match self {
             NNum::Int(n) => Some(n.clone()),
@@ -550,7 +549,7 @@ impl SoftDeref for &f64 {
 
 // ????????
 macro_rules! binary_match {
-    ($a:expr, $b:expr, $method:ident, $intmethod:expr, $floatmethod:expr, $complexmethod:expr) => {
+    ($a:expr, $b:expr, $intmethod:expr, $floatmethod:expr, $complexmethod:expr) => {
         match ($a, $b) {
             (NNum::Complex(za), b) => NNum::Complex($complexmethod(za.soft_deref(), b.to_complex_or_inf())),
             (a, NNum::Complex(zb)) => NNum::Complex($complexmethod(a.to_complex_or_inf(), zb.soft_deref())),
@@ -579,16 +578,9 @@ macro_rules! impl_binary_method_1 {
             type Output = NNum;
 
             fn $method(self, other: $other) -> NNum {
-                binary_match!(self, other, $method, $intmethod, $floatmethod, $complexmethod)
+                binary_match!(self, other, $intmethod, $floatmethod, $complexmethod)
             }
         }
-    };
-}
-
-macro_rules! impl_binary_method {
-    ($imp:ident, $method:ident, $intmethod:expr, $floatmethod:expr, $complexmethod:expr) => {
-        impl_binary_method_1!(&NNum, &NNum, $imp, $method, $intmethod, $floatmethod, $complexmethod);
-        forward_impl_binary_method!($imp, $method);
     };
 }
 
@@ -606,17 +598,23 @@ fn dumb_complex_div_floor(a: Complex64, b: Complex64) -> Complex64 {
     Complex64::new(c.re.floor(), c.im.floor())
 }
 
+// hmmm... https://github.com/rust-num/num-bigint/issues/146
 impl NNum {
     pub fn div_floor(&self, other: &NNum) -> NNum {
-        binary_match!(self, other, div_floor, Integer::div_floor, f64::div_euclid, dumb_complex_div_floor)
+        binary_match!(self, other, Integer::div_floor, f64::div_euclid, dumb_complex_div_floor)
+    }
+    pub fn mod_floor(&self, other: &NNum) -> NNum {
+        binary_match!(self, other, Integer::mod_floor, f64::rem_euclid, Rem::rem)
     }
 }
 
 impl_binary_method_4!(Add, add, Add::add, Add::add, Add::add);
 impl_binary_method_4!(Sub, sub, Sub::sub, Sub::sub, Sub::sub);
 impl_binary_method_4!(Mul, mul, Mul::mul, Mul::mul, Mul::mul);
+impl_binary_method_4!(Rem, rem, Rem::rem, Rem::rem, Rem::rem);
+
 // Integer::mod_floor takes references only
-impl_binary_method!(Rem, rem, Integer::mod_floor, f64::rem_euclid, Rem::rem);
+// impl_binary_method!(Rem, rem, Integer::mod_floor, f64::rem_euclid, Rem::rem);
 
 impl Div<&NNum> for &NNum {
     type Output = NNum;
