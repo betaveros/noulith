@@ -144,6 +144,8 @@ pub trait Block : Debug {
     fn try_chain(&self, _other: &Rc<dyn Block>) -> Option<Rc<dyn Block>> {
         None
     }
+
+    fn is_pure(&self) -> bool { false }
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +238,8 @@ impl Block for Builtin {
     fn builtin_name(&self) -> Option<&str> {
         Some(&self.name)
     }
+
+    fn is_pure(&self) -> bool { true }
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +259,8 @@ impl Block for IntsBuiltin {
     fn builtin_name(&self) -> Option<&str> {
         Some(&self.name)
     }
+
+    fn is_pure(&self) -> bool { true }
 }
 
 struct Closure {
@@ -304,6 +310,8 @@ pub enum Token {
     Lambda,
     Comma,
     Assign,
+    Pop,
+    Remove,
     // Newline,
 }
 
@@ -319,6 +327,8 @@ pub enum Expr {
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
+    Pop(Box<Lvalue>),
+    Remove(Box<Lvalue>),
     Assign(Box<Lvalue>, Box<Expr>),
     OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
@@ -423,6 +433,8 @@ pub fn lex(code: &str) -> Vec<Token> {
                         "for" => Token::For,
                         "and" => Token::And,
                         "or" => Token::Or,
+                        "pop" => Token::Pop,
+                        "remove" => Token::Remove,
                         _ => Token::Ident(acc),
                     })
                 } else if OPERATOR_SYMBOLS.contains(&c) {
@@ -508,6 +520,14 @@ impl Parser {
                 Token::Ellipsis => {
                     self.advance();
                     Ok(Expr::Splat(Box::new(self.atom()?)))
+                }
+                Token::Pop => {
+                    self.advance();
+                    Ok(Expr::Pop(Box::new(to_lvalue(self.atom()?)?)))
+                }
+                Token::Remove => {
+                    self.advance();
+                    Ok(Expr::Remove(Box::new(to_lvalue(self.atom()?)?)))
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -875,6 +895,37 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
     }
 }
 
+fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj) -> NRes<Obj>) -> NRes<Obj> {
+    match indexes.split_first() {
+        None => f(lhs),
+        Some((i, rest)) => {
+            match (lhs, i) {
+                (Obj::List(v), Obj::Int(i)) => {
+                    // FIXME bounds checking
+                    modify_existing_index(&mut Rc::make_mut(v)[*i as usize], rest, f)
+                }
+                (Obj::Dict(v, def), kk) => {
+                    let k = to_key(kk.clone())?;
+                    let mut_d = Rc::make_mut(v);
+                    // FIXME improve
+                    if !mut_d.contains_key(&k) {
+                        match def {
+                            Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
+                            None => return Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k))),
+                        }
+                    }
+                    modify_existing_index(match mut_d.get_mut(&k) {
+                        Some(vvv) => vvv,
+                        // shouldn't happen:
+                        None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                    }, rest, f)
+                }
+                (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
+            }
+        }
+    }
+}
+
 fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes<Obj> {
     match lhs {
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
@@ -1110,6 +1161,24 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }?;
             assign(&mut env.borrow_mut(), &p, &res, false)
         }
+        Expr::Pop(pat) => {
+            match eval_lvalue(env, pat)? {
+                EvaluatedLvalue::IndexedIdent(s, ixs) => {
+                    let mut popped = Err(NErr::TypeError("failed to pop??".to_string()));
+                    env.borrow_mut().modify_existing_var(&s, |vv| {
+                        popped = modify_existing_index(vv, &ixs, |x| match x {
+                            Obj::List(xs) => {
+                                Rc::make_mut(xs).pop().ok_or(NErr::NameError("can't pop empty".to_string()))
+                            }
+                            _ => Err(NErr::TypeError("can't pop".to_string())),
+                        });
+                    });
+                    popped
+                }
+                _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
+            }
+        }
+        Expr::Remove(_) => todo!("wait"),
         Expr::OpAssign(pat, op, rhs) => {
             let pv = eval_lvalue_as_obj(env, pat)?;
             let p = eval_lvalue(env, pat)?;
@@ -1121,6 +1190,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                         _ => evaluate(env, rhs),
                     }?;
+                    if ff.is_pure() {
+                        // Drop the Rc from the lvalue so that pure functions can try to consume it
+                        assign(&mut env.borrow_mut(), &p, &Obj::Null, false)?;
+                    }
                     let fres = ff.run(vec![pv, res])?;
                     assign(&mut env.borrow_mut(), &p, &fres, false)
                 }
@@ -1338,6 +1411,16 @@ fn main() {
         }
     });
     env.insert_builtin(Builtin {
+        name: "append".to_string(),
+        body: |mut args| match args.as_mut_slice() {
+            [Obj::List(a), b] => {
+                Rc::make_mut(a).push(b.clone());
+                Ok(args.swap_remove(0))
+            }
+            _ => Err(NErr::TypeError("append: 2 args only".to_string()))
+        }
+    });
+    env.insert_builtin(Builtin {
         name: "max".to_string(),
         body: |args| match args.as_slice() {
             [] => Err(NErr::TypeError("max: at least 1 arg".to_string())),
@@ -1426,7 +1509,7 @@ fn main() {
     // let s = "x = {:2, 3, 4: 5}; 1 to 5 map \\k: x[k]";
     // let s = "x = 3; x += 4; print(x); x min= 2; print(x); x max= 5; print(x)";
     // let s = "print(3 or x, 0 and x, len([4, 5, 6]))";
-    let s = "for (x, y :: {3: 4, 5: 6}) print(x, ':', y)";
+    let s = "x = [3]; for (i : 1 to 10000) x append= i; x; y = []; for (i : 1 to 10000) y append= pop x; y";
     println!("{:?}", lex(s));
     println!("{:?}", parse(s));
     println!("{:?}", evaluate(&e, &parse(s).unwrap()));
