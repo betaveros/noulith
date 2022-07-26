@@ -161,10 +161,11 @@ impl Func {
         }
     }
 
-    fn is_pure(&self) -> bool {
+    // Whether this might possibly look up a name in an environment
+    fn can_refer(&self) -> bool {
         match self {
-            Func::Builtin(b) => b.is_pure(),
-            Func::Closure(_) => false,
+            Func::Builtin(b) => b.can_refer(),
+            Func::Closure(_) => true,
         }
     }
 
@@ -187,7 +188,7 @@ pub trait Builtin : Debug {
         None
     }
 
-    fn is_pure(&self) -> bool { false }
+    fn can_refer(&self) -> bool { false }
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +271,7 @@ impl Builtin for ComparisonOperator {
 #[derive(Debug, Clone)]
 pub struct BasicBuiltin {
     name: String,
+    can_refer: bool,
     body: fn(args: Vec<Obj>) -> NRes<Obj>,
 }
 
@@ -280,7 +282,7 @@ impl Builtin for BasicBuiltin {
 
     fn builtin_name(&self) -> &str { &self.name }
 
-    fn is_pure(&self) -> bool { true }
+    fn can_refer(&self) -> bool { self.can_refer }
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +301,7 @@ impl Builtin for IntsBuiltin {
 
     fn builtin_name(&self) -> &str { &self.name }
 
-    fn is_pure(&self) -> bool { true }
+    fn can_refer(&self) -> bool { false }
 }
 
 #[derive(Clone)]
@@ -1257,7 +1259,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                         _ => evaluate(env, rhs),
                     }?;
-                    if ff.is_pure() {
+                    if !ff.can_refer() {
                         // Drop the Rc from the lvalue so that pure functions can try to consume it
                         assign(&mut env.borrow_mut(), &p, &Obj::Null, false)?;
                     }
@@ -1450,6 +1452,14 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_ints_builtin(IntsBuiltin {
+        name: "^".to_string(),
+        body: |args| match args.as_slice() {
+            // TODO fix my math please
+            [a, b] => Ok(Obj::Int(a.pow(*b as u32))),
+            _ => Err(NErr::TypeError("^: 2 args only".to_string()))
+        }
+    });
+    env.insert_ints_builtin(IntsBuiltin {
         name: "til".to_string(),
         body: |args| match args.as_slice() {
             // TODO: should be lazy
@@ -1467,6 +1477,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "len".to_string(),
+        can_refer: false,
         body: |args| match args.as_slice() {
             [Obj::List(a)] => Ok(Obj::Int(a.len() as i64)),
             [Obj::Dict(a, _)] => Ok(Obj::Int(a.len() as i64)),
@@ -1475,6 +1486,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "map".to_string(),
+        can_refer: true,
         body: |args| match args.as_slice() {
             [Obj::List(a), Obj::Func(b)] => {
                 Ok(Obj::List(Rc::new(
@@ -1486,6 +1498,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "append".to_string(),
+        can_refer: false,
         body: |mut args| match args.as_mut_slice() {
             [Obj::List(a), b] => {
                 Rc::make_mut(a).push(b.clone());
@@ -1496,6 +1509,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "max".to_string(),
+        can_refer: false,
         body: |args| match args.as_slice() {
             [] => Err(NErr::TypeError("max: at least 1 arg".to_string())),
             [Obj::List(a)] => {
@@ -1517,6 +1531,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "min".to_string(),
+        can_refer: false,
         body: |args| match args.as_slice() {
             [] => Err(NErr::TypeError("min: at least 1 arg".to_string())),
             [Obj::List(a)] => {
@@ -1538,6 +1553,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
+        can_refer: false,
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
             Ok(Obj::Null)
@@ -1545,13 +1561,15 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
+        can_refer: false,
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
             Ok(Obj::Null)
         }
     });
     env.insert_builtin(BasicBuiltin {
-        name: "++".to_string(),
+        name: "$".to_string(),
+        can_refer: false,
         body: |args| {
             let mut acc = String::new();
             for arg in args {
@@ -1563,6 +1581,7 @@ pub fn initialize(env: &mut Env) {
     // TODO probably just an * overload? idk
     env.insert_builtin(BasicBuiltin {
         name: "**".to_string(),
+        can_refer: false,
         body: |args| match args.as_slice() {
             [Obj::List(v), Obj::Int(x)] => {
                 Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(*x as usize).flatten().cloned().collect())))
