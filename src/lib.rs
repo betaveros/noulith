@@ -8,12 +8,20 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 
+use num::complex::Complex64;
+use num::bigint::BigInt;
+
+mod nnum;
+mod gamma;
+
 use num_iter;
+use crate::nnum::NNum;
+use crate::nnum::NTotalNum;
 
 #[derive(Debug, Clone)]
 pub enum Obj {
     Null,
-    Int(i64),
+    Num(NNum),
     // Float(f64),
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
@@ -24,7 +32,7 @@ pub enum Obj {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
 pub enum ObjKey {
     Null,
-    Int(i64),
+    Num(NTotalNum),
     String(Rc<String>),
     List(Rc<Vec<ObjKey>>),
 }
@@ -33,7 +41,7 @@ impl Obj {
     fn truthy(&self) -> bool {
         match self {
             Obj::Null => false,
-            Obj::Int(x) => x != &0,
+            Obj::Num(x) => x.is_nonzero(),
             Obj::String(x) => !x.is_empty(),
             Obj::List(x) => !x.is_empty(),
             Obj::Dict(x, _) => !x.is_empty(),
@@ -42,11 +50,24 @@ impl Obj {
     }
 }
 
+macro_rules! forward_from {
+    ($ty:ident) => {
+        impl From<$ty> for Obj {
+            fn from(n: $ty) -> Self { Obj::Num(NNum::from(n)) }
+        }
+    }
+}
+forward_from!(BigInt);
+forward_from!(i32);
+forward_from!(f64);
+forward_from!(usize);
+forward_from!(Complex64);
+
 impl PartialEq for Obj {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Obj::Null     , Obj::Null     ) => true,
-            (Obj::Int   (a), Obj::Int   (b)) => a == b,
+            (Obj::Num   (a), Obj::Num   (b)) => a == b,
             (Obj::String(a), Obj::String(b)) => a == b,
             (Obj::List  (a), Obj::List  (b)) => a == b,
             (Obj::Dict(a,_), Obj::Dict(b,_)) => a == b,
@@ -59,7 +80,7 @@ impl PartialEq for Obj {
 fn to_key(obj: Obj) -> NRes<ObjKey> {
     match obj {
         Obj::Null => Ok(ObjKey::Null),
-        Obj::Int(x) => Ok(ObjKey::Int(x)),
+        Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(Rc::new(x)))),
         Obj::String(x) => Ok(ObjKey::String(x)),
         Obj::List(x) => Ok(ObjKey::List(Rc::new(x.iter().map(|e| to_key(e.clone())).collect::<NRes<Vec<ObjKey>>>()?))),
         Obj::Dict(..) => Err(NErr::TypeError("Using a dictionary as a dictionary key isn't supported".to_string())),
@@ -70,7 +91,7 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
 fn key_to_obj(key: &ObjKey) -> Obj {
     match key {
         ObjKey::Null => Obj::Null,
-        ObjKey::Int(x) => Obj::Int(*x),
+        ObjKey::Num(NTotalNum(x)) => Obj::Num((**x).clone()),
         ObjKey::String(x) => Obj::String(Rc::clone(x)),
         ObjKey::List(x) => Obj::List(Rc::new(x.iter().map(|e| key_to_obj(&e.clone())).collect::<Vec<Obj>>())),
     }
@@ -80,7 +101,7 @@ impl Display for Obj {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Obj::Null => write!(formatter, "null"),
-            Obj::Int(n) => write!(formatter, "{}", n),
+            Obj::Num(n) => write!(formatter, "{}", n),
             Obj::String(s) => write!(formatter, "{}", s),
             Obj::List(xs) => {
                 write!(formatter, "[")?;
@@ -118,7 +139,7 @@ impl Display for ObjKey {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
             ObjKey::Null => write!(formatter, "null"),
-            ObjKey::Int(n) => write!(formatter, "{}", n),
+            ObjKey::Num(n) => write!(formatter, "{}", n),
             ObjKey::String(s) => write!(formatter, "{}", s),
             ObjKey::List(xs) => {
                 write!(formatter, "[")?;
@@ -210,7 +231,7 @@ impl ComparisonOperator {
 
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
-        (Obj::Int(a), Obj::Int(b)) => Ok(a.cmp(b)),
+        (Obj::Num(a), Obj::Num(b)) => Ok(a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare nums {:?} and {:?}", a, b)))?),
         (Obj::String(a), Obj::String(b)) => Ok(a.cmp(b)),
         _ => Err(NErr::TypeError(format!("Can't compare {:?} and {:?}", aa, bb))),
     }
@@ -222,17 +243,17 @@ impl Builtin for ComparisonOperator {
             if args.len() >= 2 {
                 for i in 0 .. args.len() - 1 {
                     if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
-                        return Ok(Obj::Int(0))
+                        return Ok(Obj::from(0))
                     }
                 }
-                Ok(Obj::Int(1))
+                Ok(Obj::from(1))
             } else {
                 Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name)))
             }
         } else {
             if self.chained.len() + 2 == args.len() {
                 if !(self.accept)(ncmp(&args[0], &args[1])?) {
-                    return Ok(Obj::Int(0))
+                    return Ok(Obj::from(0))
                 }
                 for i in 0 .. self.chained.len() {
                     let res = self.chained[i].run(vec![args[i+1].clone(), args[i+2].clone()])?;
@@ -240,7 +261,7 @@ impl Builtin for ComparisonOperator {
                         return Ok(res)
                     }
                 }
-                Ok(Obj::Int(1))
+                Ok(Obj::from(1))
             } else {
                 Err(NErr::ArgumentError(format!("Chained comparison operator got the wrong number of args")))
             }
@@ -286,17 +307,42 @@ impl Builtin for BasicBuiltin {
 }
 
 #[derive(Debug, Clone)]
-pub struct IntsBuiltin {
+pub struct NumsBuiltin {
     name: String,
-    body: fn(args: Vec<i64>) -> NRes<Obj>,
+    body: fn(args: Vec<NNum>) -> NRes<Obj>,
 }
 
-impl Builtin for IntsBuiltin {
+impl Builtin for NumsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        (self.body)(args.iter().map(|x| match x {
-            Obj::Int(n) => Ok(*n),
-            _ => Err(NErr::ArgumentError(format!("{} only accepts ints, got {:?}", self.name, x))),
-        }).collect::<NRes<Vec<i64>>>()?)
+        (self.body)(args.into_iter().map(|x| match x {
+            Obj::Num(n) => Ok(n),
+            _ => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
+        }).collect::<NRes<Vec<NNum>>>()?)
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+
+    fn can_refer(&self) -> bool { false }
+}
+
+#[derive(Debug, Clone)]
+pub struct TwoNumsBuiltin {
+    name: String,
+    body: fn(a: NNum, b: NNum) -> NRes<Obj>,
+}
+
+impl Builtin for TwoNumsBuiltin {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+        if args.len() == 2 {
+            let b = args.pop().unwrap();
+            let a = args.pop().unwrap();
+            match (a, b) {
+                (Obj::Num(aa), Obj::Num(bb)) => (self.body)(aa, bb),
+                (aaa, bbb) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?} {:?}", self.name, aaa, bbb))),
+            }
+        } else {
+            Err(NErr::ArgumentError(format!("{} only accepts two numbers, got {}", self.name, args.len())))
+        }
     }
 
     fn builtin_name(&self) -> &str { &self.name }
@@ -330,7 +376,7 @@ impl Closure {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    IntLit(i64),
+    IntLit(BigInt),
     // FloatLit(f64),
     StringLit(Rc<String>),
     Ident(String),
@@ -359,7 +405,7 @@ pub enum Token {
 
 #[derive(Debug)]
 pub enum Expr {
-    IntLit(i64),
+    IntLit(BigInt),
     StringLit(Rc<String>),
     Ident(String),
     Call(Box<Expr>, Vec<Box<Expr>>),
@@ -454,14 +500,14 @@ pub fn lex(code: &str) -> Vec<Token> {
                 tokens.push(Token::StringLit(Rc::new(acc)))
             }
             c => {
-                if let Some(d) = c.to_digit(10) {
-                    let mut acc = d as i64;
+                if c.is_digit(10) {
+                    let mut acc = c.to_string();
 
-                    while let Some(cc) = chars.peek().and_then(|d| d.to_digit(10)) {
-                        acc = 10 * acc + cc as i64;
+                    while let Some(cc) = chars.peek().filter(|d| d.is_digit(10)) {
+                        acc.push(*cc);
                         chars.next();
                     }
-                    tokens.push(Token::IntLit(acc as i64))
+                    tokens.push(Token::IntLit(acc.parse::<BigInt>().unwrap()))
                 } else if c.is_alphabetic() {
                     let mut acc = c.to_string();
 
@@ -867,7 +913,10 @@ impl Env {
     fn insert_builtin(self: &mut Env, b: BasicBuiltin) {
         self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
-    fn insert_ints_builtin(self: &mut Env, b: IntsBuiltin) {
+    fn insert_nums_builtin(self: &mut Env, b: NumsBuiltin) {
+        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
+    }
+    fn insert_two_nums_builtin(self: &mut Env, b: TwoNumsBuiltin) {
         self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
     fn insert_comparison(self: &mut Env, b: ComparisonOperator) {
@@ -1107,19 +1156,19 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
 }
 
 fn pythonic_index(xs: &Vec<Obj>, i: &Obj) -> NRes<usize> {
-    // TODO if we want to be paranoidly correct, `as` wraps. usize::try_from? but we'll get bignums
-    // in here soon and this will all change probably
     match i {
-        Obj::Int(ii) => {
-            let i1 = *ii as usize;
-            if i1 < xs.len() { return Ok(i1) }
+        Obj::Num(ii) => match ii.to_isize() {
+            Some(n) => {
+                if n >= 0 && n < (xs.len() as isize) { return Ok(n as usize) }
 
-            let i2 = (*ii + (xs.len() as i64)) as usize;
-            if i2 < xs.len() { return Ok(i2) }
+                let i2 = (n + (xs.len() as isize)) as usize;
+                if i2 < xs.len() { return Ok(i2) }
 
-            Err(NErr::IndexError(format!("Index out of bounds: {:?}", ii)))
+                Err(NErr::IndexError(format!("Index out of bounds: {:?}", ii)))
+            }
+            _ => Err(NErr::IndexError(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
         }
-        _ => Err(NErr::IndexError(format!("Invalid (non-integer) index: {:?}", i))),
+        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) index: {:?}", i))),
     }
 }
 
@@ -1163,7 +1212,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
 
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
-        Expr::IntLit(n) => Ok(Obj::Int(*n)),
+        Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::StringLit(s) => Ok(Obj::String(Rc::clone(s))),
         Expr::Ident(s) => env.borrow_mut().get_var(s),
         Expr::Index(x, i) => {
@@ -1313,7 +1362,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         let kk = to_key(k)?;
                         let v = match ve {
                             Some(vve) => evaluate(env, vve)?,
-                            None => Obj::Int(1),
+                            None => Obj::from(1),
                         };
                         acc.insert(kk, v);
                     }
@@ -1366,7 +1415,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 Obj::List(ls) => {
                     for (i, x) in ls.iter().enumerate() {
                         let p = eval_lvalue(env, pat)?;
-                        assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![Obj::Int(i as i64), x.clone()])), false)?;
+                        assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![Obj::from(i), x.clone()])), false)?;
                         evaluate(env, body)?;
                     }
                     Ok(Obj::Null)
@@ -1401,28 +1450,29 @@ pub fn simple_eval(code: &str) -> Obj {
 }
 
 pub fn initialize(env: &mut Env) {
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_nums_builtin(NumsBuiltin {
         name: "+".to_string(),
-        body: |args| { Ok(Obj::Int(args.iter().sum())) },
+        body: |args| { Ok(Obj::Num(args.into_iter().sum())) },
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_nums_builtin(NumsBuiltin {
         name: "-".to_string(),
-        body: |args| match args.split_first() {
-            None => Err(NErr::ArgumentError("-: received 0 args".to_string())),
-            Some((s, rest)) => {
-                if rest.is_empty() {
-                    Ok(Obj::Int(-s))
-                } else {
-                    let mut ss = *s;
-                    for arg in rest { ss -= arg; }
-                    Ok(Obj::Int(ss))
-                }
+        body: |args| match &args[..] {
+            [] => Err(NErr::ArgumentError("-: received 0 args".to_string())),
+            [s] => {
+                // TODO can take
+                Ok(Obj::Num(-s.clone()))
+            }
+            [s, rest @ ..] => {
+                // TODO can take
+                let mut ss = s.clone();
+                for arg in rest { ss -= arg; }
+                Ok(Obj::Num(ss))
             }
         }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_nums_builtin(NumsBuiltin {
         name: "*".to_string(),
-        body: |args| { Ok(Obj::Int(args.iter().product())) },
+        body: |args| { Ok(Obj::Num(args.into_iter().product())) },
     });
     env.insert_comparison(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
     env.insert_comparison(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
@@ -1430,57 +1480,52 @@ pub fn initialize(env: &mut Env) {
     env.insert_comparison(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
     env.insert_comparison(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
     env.insert_comparison(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "/".to_string(),
-        body: |args| match args.as_slice() {
-            [a, b] => Ok(Obj::Int(a / b)),
-            _ => Err(NErr::TypeError("/: 2 args only".to_string()))
-        }
+        body: |a, b| { Ok(Obj::Num(a / b)) }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
-        body: |args| match args.as_slice() {
-            [a, b] => Ok(Obj::Int(a % b)),
-            _ => Err(NErr::TypeError("%: 2 args only".to_string()))
+        body: |a, b| {
+            // TODO fix my math please!!!
+            Ok(Obj::Num(a % b))
         }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
-        body: |args| match args.as_slice() {
-            [a, b] => Ok(Obj::Int(a.rem_euclid(*b))),
-            _ => Err(NErr::TypeError("%%: 2 args only".to_string()))
+        body: |a, b| {
+            // TODO fix my math please!!!
+            Ok(Obj::Num(a % b))
         }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
-        body: |args| match args.as_slice() {
-            // TODO fix my math please
-            [a, b] => Ok(Obj::Int(a.pow(*b as u32))),
-            _ => Err(NErr::TypeError("^: 2 args only".to_string()))
-        }
+        body: |a, b| { Ok(Obj::Num(a.pow_num(&b))) }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "til".to_string(),
-        body: |args| match args.as_slice() {
+        body: |a, b| {
             // TODO: should be lazy
-            [a, b] => Ok(Obj::List(Rc::new(num_iter::range(*a, *b).map(|x| Obj::Int(x)).collect()))),
-            _ => Err(NErr::TypeError("til: 2 args only".to_string()))
+            let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            Ok(Obj::List(Rc::new(num_iter::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
-    env.insert_ints_builtin(IntsBuiltin {
+    env.insert_two_nums_builtin(TwoNumsBuiltin {
         name: "to".to_string(),
-        body: |args| match args.as_slice() {
+        body: |a, b| {
             // TODO: should be lazy
-            [a, b] => Ok(Obj::List(Rc::new(num_iter::range_inclusive(*a, *b).map(|x| Obj::Int(x)).collect()))),
-            _ => Err(NErr::TypeError("to: 2 args only".to_string()))
+            let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            Ok(Obj::List(Rc::new(num_iter::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
     env.insert_builtin(BasicBuiltin {
         name: "len".to_string(),
         can_refer: false,
         body: |args| match args.as_slice() {
-            [Obj::List(a)] => Ok(Obj::Int(a.len() as i64)),
-            [Obj::Dict(a, _)] => Ok(Obj::Int(a.len() as i64)),
+            [Obj::List(a)] => Ok(Obj::Num(NNum::from(a.len()))),
+            [Obj::Dict(a, _)] => Ok(Obj::Num(NNum::from(a.len()))),
             _ => Err(NErr::TypeError("len: 1 arg only".to_string()))
         }
     });
@@ -1583,11 +1628,11 @@ pub fn initialize(env: &mut Env) {
         name: "**".to_string(),
         can_refer: false,
         body: |args| match args.as_slice() {
-            [Obj::List(v), Obj::Int(x)] => {
-                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(*x as usize).flatten().cloned().collect())))
+            [Obj::List(v), Obj::Num(x)] => {
+                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
             }
-            [Obj::Int(x), Obj::List(v)] => {
-                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(*x as usize).flatten().cloned().collect())))
+            [Obj::Num(x), Obj::List(v)] => {
+                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
             }
             _ => Err(NErr::ArgumentError("**: unrecognized argument types".to_string()))
         }
