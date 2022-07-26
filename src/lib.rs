@@ -179,10 +179,9 @@ impl Func {
 pub trait Builtin : Debug {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
 
-    // Should only be Some for builtins, used for them to identify each other
-    fn builtin_name(&self) -> Option<&str> {
-        None
-    }
+    // Used for builtins to identify each other, since comparing pointers is bad (?)
+    // https://rust-lang.github.io/rust-clippy/master/#vtable_address_comparisons
+    fn builtin_name(&self) -> &str;
 
     fn try_chain(&self, _other: &Func) -> Option<Func> {
         None
@@ -193,7 +192,7 @@ pub trait Builtin : Debug {
 
 #[derive(Debug, Clone)]
 struct ComparisonOperator {
-    name: Option<String>,
+    name: String, // will be "illegal" for chained operators
     chained: Vec<Func>,
     accept: fn(Ordering) -> bool,
 }
@@ -201,7 +200,7 @@ struct ComparisonOperator {
 impl ComparisonOperator {
     fn of(name: &str, accept: fn(Ordering) -> bool) -> ComparisonOperator {
         ComparisonOperator {
-            name: Some(name.to_string()),
+            name: name.to_string(),
             chained: Vec::new(),
             accept,
         }
@@ -247,15 +246,13 @@ impl Builtin for ComparisonOperator {
         }
     }
 
-    fn builtin_name(&self) -> Option<&str> {
-        self.name.as_ref().map(|x| &**x)
-    }
+    fn builtin_name(&self) -> &str { &self.name }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                Some("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Func::Builtin(Rc::new(ComparisonOperator {
-                    name: None,
+                other_name @ ("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Func::Builtin(Rc::new(ComparisonOperator {
+                    name: format!("{},{}", self.name, other_name),
                     chained: {
                         let mut k = self.chained.clone();
                         k.push(Func::clone(other));
@@ -281,9 +278,7 @@ impl Builtin for BasicBuiltin {
         (self.body)(args)
     }
 
-    fn builtin_name(&self) -> Option<&str> {
-        Some(&self.name)
-    }
+    fn builtin_name(&self) -> &str { &self.name }
 
     fn is_pure(&self) -> bool { true }
 }
@@ -302,9 +297,7 @@ impl Builtin for IntsBuiltin {
         }).collect::<NRes<Vec<i64>>>()?)
     }
 
-    fn builtin_name(&self) -> Option<&str> {
-        Some(&self.name)
-    }
+    fn builtin_name(&self) -> &str { &self.name }
 
     fn is_pure(&self) -> bool { true }
 }
@@ -870,16 +863,13 @@ impl Env {
         self.vars.insert(key, val);
     }
     fn insert_builtin(self: &mut Env, b: BasicBuiltin) {
-        let name = b.name.to_string();
-        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
+        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
     fn insert_ints_builtin(self: &mut Env, b: IntsBuiltin) {
-        let name = b.name.to_string();
-        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
+        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
     fn insert_comparison(self: &mut Env, b: ComparisonOperator) {
-        let name = b.name.as_ref().unwrap().to_string();
-        self.insert(name, Obj::Func(Func::Builtin(Rc::new(b))))
+        self.insert(b.name.to_string(), Obj::Func(Func::Builtin(Rc::new(b))))
     }
 }
 
