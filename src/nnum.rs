@@ -291,10 +291,16 @@ impl NNum {
         }
     }
 
-    // TODO: can this just give a ref
-    pub fn to_bigint(&self) -> Option<BigInt> {
+    pub fn to_bigint(&self) -> Option<&BigInt> {
         match self {
-            NNum::Int(n) => Some(n.clone()),
+            NNum::Int(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    pub fn into_bigint(self) -> Option<BigInt> {
+        match self {
+            NNum::Int(n) => Some(n),
             _ => None,
         }
     }
@@ -699,7 +705,7 @@ impl Product for NNum {
 macro_rules! force_bi_binary_match {
     ($a:expr, $b:expr, $method:ident, $intmethod:expr) => {
         match ($a.to_bigint(), $b.to_bigint()) {
-            (Some(ia), Some(ib)) => NNum::Int($intmethod(&ia, &ib)),
+            (Some(ia), Some(ib)) => NNum::Int($intmethod(ia, ib)),
             _ => NNum::Float(f64::NAN),
         }
     };

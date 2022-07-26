@@ -76,7 +76,7 @@ impl PartialEq for Obj {
 }
 
 fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
-    n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
+    Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
 }
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
@@ -1508,8 +1508,8 @@ pub fn initialize(env: &mut Env) {
         name: "til".to_string(),
         body: |a, b| {
             // TODO: should be lazy
-            let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n1 = a.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n2 = b.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             Ok(Obj::List(Rc::new(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
@@ -1517,8 +1517,8 @@ pub fn initialize(env: &mut Env) {
         name: "to".to_string(),
         body: |a, b| {
             // TODO: should be lazy
-            let n1 = a.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
-            let n2 = b.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n1 = a.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
+            let n2 = b.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?;
             Ok(Obj::List(Rc::new(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
         }
     });
