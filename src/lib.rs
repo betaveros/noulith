@@ -65,7 +65,7 @@ forward_from!(Complex64);
 
 // TODO: drop Rc?
 impl From<usize> for ObjKey {
-    fn from(n: usize) -> Self { ObjKey::Num(NTotalNum(Rc::new(NNum::from(n)))) }
+    fn from(n: usize) -> Self { ObjKey::Num(NTotalNum(NNum::from(n))) }
 }
 
 impl PartialEq for Obj {
@@ -105,7 +105,7 @@ fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
 fn to_key(obj: Obj) -> NRes<ObjKey> {
     match obj {
         Obj::Null => Ok(ObjKey::Null),
-        Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(Rc::new(x)))),
+        Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(x))),
         Obj::String(x) => Ok(ObjKey::String(x)),
         mut x @ Obj::List(_) => Ok(ObjKey::List(Rc::new(
                     mut_obj_into_iter(&mut x)?.map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
@@ -121,7 +121,7 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
 fn key_to_obj(key: &ObjKey) -> Obj {
     match key {
         ObjKey::Null => Obj::Null,
-        ObjKey::Num(NTotalNum(x)) => Obj::Num((**x).clone()),
+        ObjKey::Num(NTotalNum(x)) => Obj::Num((*x).clone()),
         ObjKey::String(x) => Obj::String(Rc::clone(x)),
         ObjKey::List(x) => Obj::List(Rc::new(x.iter().map(|e| key_to_obj(&e.clone())).collect::<Vec<Obj>>())),
         ObjKey::Dict(x) => Obj::Dict(Rc::new(x.iter().map(|(k, v)| (k.clone(), key_to_obj(&v))).collect::<HashMap<ObjKey,Obj>>()), None),

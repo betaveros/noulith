@@ -1,7 +1,6 @@
 // a lot ripped from paradoc-rust, but we can be a sensible language that doesn't worry about chars
 // and doesn't just randomly coerce floats like ints...
 
-use std::rc::Rc;
 use std::cmp::Ordering;
 use std::ops::{Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Neg, Not, Deref};
 use std::ops::{AddAssign, SubAssign};
@@ -434,7 +433,7 @@ impl NNum {
 
 // Tries to follow the laws
 #[derive(Debug, Clone)]
-pub struct NTotalNum(pub Rc<NNum>);
+pub struct NTotalNum(pub NNum);
 
 impl fmt::Display for NTotalNum {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -444,7 +443,7 @@ impl fmt::Display for NTotalNum {
 
 
 impl Deref for NTotalNum {
-    type Target = Rc<NNum>;
+    type Target = NNum;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -485,8 +484,8 @@ fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
 
 impl Hash for NTotalNum {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match &***self {
-            NNum::Int(a) => BigInt::hash(a, state),
+        match &**self {
+            NNum::Int(a) => BigInt::hash(&a, state),
             NNum::Float(f) => consistent_hash_f64(*f, state),
             NNum::Complex(z) => {
                 consistent_hash_f64(z.re, state);
