@@ -107,24 +107,29 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         Obj::Null => Ok(ObjKey::Null),
         Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(x))),
         Obj::String(x) => Ok(ObjKey::String(x)),
-        mut x @ Obj::List(_) => Ok(ObjKey::List(Rc::new(
-                    mut_obj_into_iter(&mut x)?.map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
-        mut x @ Obj::Dict(..) => {
-            let pairs = mut_obj_into_iter_pairs(&mut x)?.map(
+        Obj::List(mut xs) => Ok(ObjKey::List(Rc::new(
+                    mut_rc_vec_into_iter(&mut xs).map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
+        Obj::Dict(mut d, _) => {
+            let mut pairs = mut_rc_hash_map_into_iter(&mut d).map(
                 |(k,v)| Ok((k,to_key(v)?))).collect::<NRes<Vec<(ObjKey,ObjKey)>>>()?;
+            pairs.sort();
             Ok(ObjKey::Dict(Rc::new(pairs)))
         }
         Obj::Func(_) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
 
-fn key_to_obj(key: &ObjKey) -> Obj {
+fn key_to_obj(key: ObjKey) -> Obj {
     match key {
         ObjKey::Null => Obj::Null,
-        ObjKey::Num(NTotalNum(x)) => Obj::Num((*x).clone()),
-        ObjKey::String(x) => Obj::String(Rc::clone(x)),
-        ObjKey::List(x) => Obj::List(Rc::new(x.iter().map(|e| key_to_obj(&e.clone())).collect::<Vec<Obj>>())),
-        ObjKey::Dict(x) => Obj::Dict(Rc::new(x.iter().map(|(k, v)| (k.clone(), key_to_obj(&v))).collect::<HashMap<ObjKey,Obj>>()), None),
+        ObjKey::Num(NTotalNum(x)) => Obj::Num(x),
+        ObjKey::String(x) => Obj::String(x),
+        ObjKey::List(mut xs) => Obj::List(Rc::new(
+                mut_rc_vec_into_iter(&mut xs).map(
+                    |e| key_to_obj(e.clone())).collect::<Vec<Obj>>())),
+        ObjKey::Dict(mut d) => Obj::Dict(Rc::new(
+                mut_rc_vec_into_iter(&mut d).map(
+                    |(k, v)| (k, key_to_obj(v))).collect::<HashMap<ObjKey,Obj>>()), None),
     }
 }
 
@@ -196,54 +201,87 @@ impl Display for ObjKey {
     }
 }
 
-// iterates over just keys of dictionaries
-pub enum MutObjIntoIter<'a> {
-    DrainList(std::vec::Drain<'a, Obj>),
-    CloneList(std::slice::Iter<'a, Obj>),
-    DrainDict(std::collections::hash_map::Drain<'a, ObjKey, Obj>),
-    CloneDict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
+pub enum RcVecIter<'a, T> {
+    Draining(std::vec::Drain<'a, T>),
+    Cloning(std::slice::Iter<'a, T>),
 }
 
-// iterates over (index, value) or (key, value)
-pub enum MutObjIntoIterPairs<'a> {
-    DrainList(usize, std::vec::Drain<'a, Obj>),
-    CloneList(usize, std::slice::Iter<'a, Obj>),
-    DrainDict(std::collections::hash_map::Drain<'a, ObjKey, Obj>),
-    CloneDict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
-}
-
-// Say the obj is a list. If the Rc<Vec> has refcount 1, we drain it, so we can lazily move out
-// each element; but if the obj has refcount >1, we lazily clone each element. At least, that's the
+// Say we have an Rc<Vec>. If it has refcount 1, we can drain it, so we can lazily move out each
+// element; but if it has has refcount >1, we lazily clone each element. At least, that's the
 // theory.
 //
 // Alternatively, consuming the object and either going IntoIter or handrolling a (Rc<Vec>, usize)
 // would also work fine for lists, but dictionaries don't have an easy handrollable self-owning
 // iterator, I think?
+fn mut_rc_vec_into_iter<T>(v: &mut Rc<Vec<T>>) -> RcVecIter<'_, T> {
+    // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop it in
+    // the None branch and we can't access v again even though we should be able to. If I switch to
+    // nightly I can probably use #![feature(nll)]
+    if Rc::get_mut(v).is_some() {
+        match Rc::get_mut(v) {
+            Some(v) => RcVecIter::Draining(v.drain(..)),
+            None => panic!("non-lexical lifetime issue"),
+        }
+    } else {
+        RcVecIter::Cloning(v.iter())
+    }
+}
+
+impl<T: Clone> Iterator for RcVecIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        match self {
+            RcVecIter::Draining(it) => it.next(),
+            RcVecIter::Cloning(it) => it.next().cloned(),
+        }
+    }
+}
+
+pub enum RcHashMapIter<'a, K, V> {
+    Draining(std::collections::hash_map::Drain<'a, K, V>),
+    Cloning(std::collections::hash_map::Iter<'a, K, V>),
+}
+
+fn mut_rc_hash_map_into_iter<K, V>(v: &mut Rc<HashMap<K, V>>) -> RcHashMapIter<'_, K, V> {
+    // Same non-lexical lifetime stuff
+    if Rc::get_mut(v).is_some() {
+        match Rc::get_mut(v) {
+            Some(v) => RcHashMapIter::Draining(v.drain()),
+            None => panic!("non-lexical lifetime issue"),
+        }
+    } else {
+        RcHashMapIter::Cloning(v.iter())
+    }
+}
+
+impl<K: Clone, V: Clone> Iterator for RcHashMapIter<'_, K, V> {
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<(K, V)> {
+        match self {
+            RcHashMapIter::Draining(it) => it.next(),
+            RcHashMapIter::Cloning(it) => it.next().map(|(k, v)| (k.clone(), v.clone())),
+        }
+    }
+}
+
+// iterates over elements of lists, or just keys of dictionaries (as if they were sets)
+pub enum MutObjIntoIter<'a> {
+    List(RcVecIter<'a, Obj>),
+    Dict(RcHashMapIter<'a, ObjKey, Obj>),
+}
+
+// iterates over (index, value) or (key, value)
+pub enum MutObjIntoIterPairs<'a> {
+    List(usize, RcVecIter<'a, Obj>),
+    Dict(RcHashMapIter<'a, ObjKey, Obj>),
+}
+
 fn mut_obj_into_iter(obj: &mut Obj) -> NRes<MutObjIntoIter<'_>> {
     match obj {
-        Obj::List(v) => {
-            // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop
-            // it in the None branch and we can't access v again even though we should be able to.
-            // If I switch to nightly I can probably use #![feature(nll)]
-            if Rc::get_mut(v).is_some() {
-                match Rc::get_mut(v) {
-                    Some(v) => Ok(MutObjIntoIter::DrainList(v.drain(..))),
-                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
-                }
-            } else {
-                Ok(MutObjIntoIter::CloneList(v.iter()))
-            }
-        }
-        Obj::Dict(v, _) => {
-            if Rc::get_mut(v).is_some() {
-                match Rc::get_mut(v) {
-                    Some(v) => Ok(MutObjIntoIter::DrainDict(v.drain())),
-                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
-                }
-            } else {
-                Ok(MutObjIntoIter::CloneDict(v.iter()))
-            }
-        }
+        Obj::List(v) => Ok(MutObjIntoIter::List(mut_rc_vec_into_iter(v))),
+        Obj::Dict(v, _) => Ok(MutObjIntoIter::Dict(mut_rc_hash_map_into_iter(v))),
         _ => Err(NErr::TypeError("no".to_string())),
     }
 }
@@ -253,39 +291,16 @@ impl Iterator for MutObjIntoIter<'_> {
 
     fn next(&mut self) -> Option<Obj> {
         match self {
-            MutObjIntoIter::DrainList(it) => it.next(),
-            MutObjIntoIter::CloneList(it) => it.next().cloned(),
-            MutObjIntoIter::DrainDict(it) => Some(key_to_obj(&it.next()?.0)),
-            MutObjIntoIter::CloneDict(it) => Some(key_to_obj(it.next()?.0)),
+            MutObjIntoIter::List(it) => it.next(),
+            MutObjIntoIter::Dict(it) => Some(key_to_obj(it.next()?.0)),
         }
     }
 }
 
 fn mut_obj_into_iter_pairs(obj: &mut Obj) -> NRes<MutObjIntoIterPairs<'_>> {
     match obj {
-        Obj::List(v) => {
-            // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop
-            // it in the None branch and we can't access v again even though we should be able to.
-            // If I switch to nightly I can probably use #![feature(nll)]
-            if Rc::get_mut(v).is_some() {
-                match Rc::get_mut(v) {
-                    Some(v) => Ok(MutObjIntoIterPairs::DrainList(0, v.drain(..))),
-                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
-                }
-            } else {
-                Ok(MutObjIntoIterPairs::CloneList(0, v.iter()))
-            }
-        }
-        Obj::Dict(v, _) => {
-            if Rc::get_mut(v).is_some() {
-                match Rc::get_mut(v) {
-                    Some(v) => Ok(MutObjIntoIterPairs::DrainDict(v.drain())),
-                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
-                }
-            } else {
-                Ok(MutObjIntoIterPairs::CloneDict(v.iter()))
-            }
-        }
+        Obj::List(v) => Ok(MutObjIntoIterPairs::List(0, mut_rc_vec_into_iter(v))),
+        Obj::Dict(v, _) => Ok(MutObjIntoIterPairs::Dict(mut_rc_hash_map_into_iter(v))),
         _ => Err(NErr::TypeError("no".to_string())),
     }
 }
@@ -295,10 +310,8 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 
     fn next(&mut self) -> Option<(ObjKey, Obj)> {
         match self {
-            MutObjIntoIterPairs::DrainList(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
-            MutObjIntoIterPairs::CloneList(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o.clone())) }
-            MutObjIntoIterPairs::DrainDict(it) => it.next(),
-            MutObjIntoIterPairs::CloneDict(it) => { let (k, v) = it.next()?; Some((k.clone(), v.clone())) }
+            MutObjIntoIterPairs::List(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
+            MutObjIntoIterPairs::Dict(it) => it.next(),
         }
     }
 }
@@ -1670,7 +1683,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             for (k, v) in itrr {
                 let p = eval_lvalue(env, pat)?;
                 // should assign take x
-                assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![key_to_obj(&k), v])), false)?;
+                assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![key_to_obj(k), v])), false)?;
                 evaluate(env, body)?;
             }
             Ok(Obj::Null)
