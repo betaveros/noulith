@@ -89,6 +89,13 @@ impl Obj {
     }
 }
 
+impl From<bool> for Obj {
+    fn from(n: bool) -> Self { Obj::Num(NNum::iverson(n)) }
+}
+impl From<char> for Obj {
+    fn from(n: char) -> Self { Obj::String(Rc::new(n.to_string())) }
+}
+
 macro_rules! forward_from {
     ($ty:ident) => {
         impl From<$ty> for Obj {
@@ -102,7 +109,6 @@ forward_from!(f64);
 forward_from!(usize);
 forward_from!(Complex64);
 
-// TODO: drop Rc?
 impl From<usize> for ObjKey {
     fn from(n: usize) -> Self { ObjKey::Num(NTotalNum(NNum::from(n))) }
 }
@@ -132,11 +138,9 @@ impl PartialOrd for Obj {
     }
 }
 
-/*
 fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
 }
-*/
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
     n.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
 }
@@ -305,22 +309,52 @@ impl<K: Clone, V: Clone> Iterator for RcHashMapIter<'_, K, V> {
     }
 }
 
+pub enum ObjToCloningIter<'a> {
+    List(std::slice::Iter<'a, Obj>),
+    Dict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
+    String(std::str::Chars<'a>),
+}
+
+fn obj_to_cloning_iter(obj: &Obj) -> NRes<ObjToCloningIter<'_>> {
+    match obj {
+        Obj::List(v) => Ok(ObjToCloningIter::List(v.iter())),
+        Obj::Dict(v, _) => Ok(ObjToCloningIter::Dict(v.iter())),
+        Obj::String(s) => Ok(ObjToCloningIter::String(s.chars())),
+        _ => Err(NErr::TypeError("no".to_string())),
+    }
+}
+
+impl Iterator for ObjToCloningIter<'_> {
+    type Item = Obj;
+
+    fn next(&mut self) -> Option<Obj> {
+        match self {
+            ObjToCloningIter::List(it) => it.next().cloned(),
+            ObjToCloningIter::Dict(it) => Some(key_to_obj(it.next()?.0.clone())),
+            ObjToCloningIter::String(it) => Some(Obj::from(it.next()?)),
+        }
+    }
+}
+
 // iterates over elements of lists, or just keys of dictionaries (as if they were sets)
 pub enum MutObjIntoIter<'a> {
     List(RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
+    String(std::str::Chars<'a>),
 }
 
 // iterates over (index, value) or (key, value)
 pub enum MutObjIntoIterPairs<'a> {
     List(usize, RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
+    String(usize, std::str::Chars<'a>),
 }
 
 fn mut_obj_into_iter(obj: &mut Obj) -> NRes<MutObjIntoIter<'_>> {
     match obj {
         Obj::List(v) => Ok(MutObjIntoIter::List(mut_rc_vec_into_iter(v))),
         Obj::Dict(v, _) => Ok(MutObjIntoIter::Dict(mut_rc_hash_map_into_iter(v))),
+        Obj::String(s) => Ok(MutObjIntoIter::String(s.chars())),
         _ => Err(NErr::TypeError("no".to_string())),
     }
 }
@@ -332,6 +366,7 @@ impl Iterator for MutObjIntoIter<'_> {
         match self {
             MutObjIntoIter::List(it) => it.next(),
             MutObjIntoIter::Dict(it) => Some(key_to_obj(it.next()?.0)),
+            MutObjIntoIter::String(it) => Some(Obj::from(it.next()?)),
         }
     }
 }
@@ -340,6 +375,7 @@ fn mut_obj_into_iter_pairs(obj: &mut Obj) -> NRes<MutObjIntoIterPairs<'_>> {
     match obj {
         Obj::List(v) => Ok(MutObjIntoIterPairs::List(0, mut_rc_vec_into_iter(v))),
         Obj::Dict(v, _) => Ok(MutObjIntoIterPairs::Dict(mut_rc_hash_map_into_iter(v))),
+        Obj::String(s) => Ok(MutObjIntoIterPairs::String(0, s.chars())),
         _ => Err(NErr::TypeError("no".to_string())),
     }
 }
@@ -351,6 +387,7 @@ impl Iterator for MutObjIntoIterPairs<'_> {
         match self {
             MutObjIntoIterPairs::List(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
             MutObjIntoIterPairs::Dict(it) => it.next(),
+            MutObjIntoIterPairs::String(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
         }
     }
 }
@@ -376,6 +413,8 @@ pub enum Func {
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
     PartialApp2(Box<Func>, Box<Obj>),
+    // mathematical notation, first of second
+    Composition(Box<Func>, Box<Func>),
 }
 
 impl Func {
@@ -391,6 +430,7 @@ impl Func {
                 Few::One(arg) => f.run(vec![arg, (**x).clone()]),
                 _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
             }
+            Func::Composition(f, g) => f.run(vec![g.run(args)?]),
         }
     }
 
@@ -401,6 +441,7 @@ impl Func {
             Func::Closure(_) => true,
             Func::PartialApp1(f, _) => f.can_refer(),
             Func::PartialApp2(f, _) => f.can_refer(),
+            Func::Composition(f, g) => f.can_refer() || g.can_refer(),
         }
     }
 
@@ -410,6 +451,7 @@ impl Func {
             Func::Closure(_) => None,
             Func::PartialApp1(..) => None,
             Func::PartialApp2(..) => None,
+            Func::Composition(..) => None,
         }
     }
 }
@@ -504,6 +546,122 @@ impl Builtin for ComparisonOperator {
                     },
                     accept: self.accept,
                 }))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct Zip {}
+
+impl Builtin for Zip {
+    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+        let mut func = None;
+        // I can't believe this works (type annotation for me not the compiler)
+        let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
+        for arg in args.iter_mut() {
+            match (arg, &mut func) {
+                (Obj::Func(f), None) => {
+                    func = Some(f.clone());
+                }
+                (Obj::Func(_), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
+                (arg, _) => iterators.push(mut_obj_into_iter(arg)?),
+            }
+        }
+        if iterators.is_empty() {
+            Err(NErr::ArgumentError("zip: zero iterables".to_string()))?
+        }
+        let mut ret = Vec::new();
+        while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
+            ret.push(match &func {
+                Some(f) => f.run(batch)?,
+                None => Obj::List(Rc::new(batch)),
+            })
+        }
+        Ok(Obj::List(Rc::new(ret)))
+    }
+
+    fn builtin_name(&self) -> &str { "zip" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "zip" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct CartesianProduct {}
+
+// surprisingly rare function where we really can't consume the iterators
+fn cartesian_foreach(acc: &mut Vec<Obj>, objs: &[Obj], f: &mut impl FnMut(&Vec<Obj>) -> NRes<()>) -> NRes<()> {
+    match objs {
+        [] => f(acc)?,
+        [a, rest @ ..] => {
+            for e in obj_to_cloning_iter(a)? {
+                acc.push(e);
+                cartesian_foreach(acc, rest, f)?;
+                acc.pop();
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Builtin for CartesianProduct {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        // Bit overgeneral, also are we interested in accepting a function?
+        let mut seqs = Vec::new();
+        let mut scalar = None;
+        for arg in args {
+            match &arg {
+                Obj::List(_) | Obj::Dict(..) | Obj::String(_) => seqs.push(arg),
+                Obj::Num(n) => match scalar {
+                    None => scalar = Some(to_bigint_ok(n)?),
+                    Some(_) => Err(NErr::ArgumentError("cartesian product: more than one integer".to_string()))?,
+                }
+                _ => Err(NErr::ArgumentError("cartesian product: non-sequence non-integer".to_string()))?,
+            }
+        }
+
+        match (scalar, few(seqs)) {
+            (Some(s), Few::One(seq)) => {
+                let mut acc = Vec::new();
+                for _ in num::range(BigInt::from(0), s) {
+                    for e in obj_to_cloning_iter(&seq)? {
+                        acc.push(e);
+                    }
+                }
+                Ok(Obj::List(Rc::new(acc)))
+            }
+            (None, Few::Many(seqs)) => {
+                let mut acc = Vec::new();
+                let mut ret = Vec::new();
+                let mut f = |k: &Vec<Obj>| {
+                    ret.push(Obj::List(Rc::new(k.clone())));
+                    Ok(())
+                };
+                cartesian_foreach(&mut acc, seqs.as_slice(), &mut f)?;
+                Ok(Obj::List(Rc::new(acc)))
+            }
+            _ => Err(NErr::ArgumentError("cartesian product: bad combo of scalars and sequences".to_string()))?,
+        }
+    }
+
+    fn builtin_name(&self) -> &str { "**" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "**" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
             }
             _ => None,
@@ -1508,6 +1666,17 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     }
 }
 
+fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
+    match f {
+        Obj::Func(ff) => ff.run(args),
+        f => match few(args) {
+            Few::One(Obj::Func(f2)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)))),
+            Few::One(f2) => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
+            _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", f))),
+        }
+    }
+}
+
 fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
     match expr {
         Lvalue::IndexedIdent(s, v) => {
@@ -1638,19 +1807,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         }
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
-            match fr {
-                Obj::Func(ff) => {
-                    let a = eval_seq(env, args)?;
-                    ff.run(a)
-                }
-                _ => match args.as_slice() {
-                    [arg] => match evaluate(env, arg)? {
-                        Obj::Func(f2) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(fr)))),
-                        _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument not callable)", fr))),
-                    }
-                    _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", fr))),
-                }
-            }
+            let a = eval_seq(env, args)?;
+            call(fr, a)
         }
         Expr::CommaSeq(_) => Err(NErr::SyntaxError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
         Expr::Splat(_) => Err(NErr::SyntaxError("Splats only allowed on an assignment-related place".to_string())),
@@ -1777,6 +1935,34 @@ pub fn initialize(env: &mut Env) {
         name: "*".to_string(),
         body: |a, b| { Ok(Obj::Num(a * b)) }
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "sum".to_string(),
+        can_refer: false,
+        body: |mut arg| {
+            let mut acc = NNum::from(0);
+            for x in mut_obj_into_iter(&mut arg)? {
+                match x {
+                    Obj::Num(n) => { acc += &n }
+                    _ => Err(NErr::ArgumentError("sum: non-number".to_string()))?,
+                }
+            }
+            Ok(Obj::Num(acc))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "product".to_string(),
+        can_refer: false,
+        body: |mut arg| {
+            let mut acc = NNum::from(1);
+            for x in mut_obj_into_iter(&mut arg)? {
+                match x {
+                    Obj::Num(n) => { acc = acc * &n }
+                    _ => Err(NErr::ArgumentError("product: non-number".to_string()))?,
+                }
+            }
+            Ok(Obj::Num(acc))
+        }
+    });
     env.insert_builtin(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
     env.insert_builtin(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
     env.insert_builtin(ComparisonOperator::of("<",  |ord| ord == Ordering::Less));
@@ -1877,6 +2063,47 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(TwoArgBuiltin {
+        name: "then".to_string(),
+        can_refer: true,
+        body: |a, b| call(a, vec![b]),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "by".to_string(),
+        can_refer: false,
+        body: |_| Err(NErr::TypeError("by: cannot call".to_string())),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "with".to_string(),
+        can_refer: false,
+        body: |_| Err(NErr::TypeError("with: cannot call".to_string())),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: ".>".to_string(),
+        can_refer: true,
+        body: |a, b| call(b, vec![a]),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "<.".to_string(),
+        can_refer: true,
+        body: |a, b| call(b, vec![a]),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: ">>".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::Func(f), Obj::Func(g)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)))),
+            _ => Err(NErr::TypeError(">>: not function".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "<<".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::Func(f), Obj::Func(g)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)))),
+            _ => Err(NErr::TypeError("<<: not function".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
         name: "map".to_string(),
         can_refer: true,
         body: |mut a, b| {
@@ -1885,29 +2112,102 @@ pub fn initialize(env: &mut Env) {
                 Obj::Func(b) => Ok(Obj::List(Rc::new(
                     it.map(|e| b.run(vec![e])).collect::<NRes<Vec<Obj>>>()?
                 ))),
-                _ => Err(NErr::TypeError("map: not iterable".to_string()))
+                _ => Err(NErr::TypeError("map: not callable".to_string()))
+            }
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "flatten".to_string(),
+        can_refer: false,
+        body: |mut a| {
+            let mut acc = Vec::new();
+            for mut e in mut_obj_into_iter(&mut a)? {
+                for k in mut_obj_into_iter(&mut e)? {
+                    acc.push(k);
+                }
+            }
+            Ok(Obj::List(Rc::new(acc)))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "flat_map".to_string(),
+        can_refer: true,
+        body: |mut a, b| {
+            let it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b) => {
+                    let mut acc = Vec::new();
+                    for e in it {
+                        let mut r = b.run(vec![e])?;
+                        for k in mut_obj_into_iter(&mut r)? {
+                            acc.push(k);
+                        }
+                    }
+                    Ok(Obj::List(Rc::new(acc)))
+                }
+                _ => Err(NErr::TypeError("flat_map: not callable".to_string()))
+            }
+        }
+    });
+    env.insert_builtin(Zip {});
+    env.insert_builtin(TwoArgBuiltin {
+        name: "filter".to_string(),
+        can_refer: true,
+        body: |mut a, b| {
+            let it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b) => {
+                    let mut acc = Vec::new();
+                    for e in it {
+                        if b.run(vec![e.clone()])?.truthy() {
+                            acc.push(e)
+                        }
+                    }
+                    Ok(Obj::List(Rc::new(acc)))
+                }
+                _ => Err(NErr::TypeError("filter: list and func only".to_string()))
             }
         }
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "filter".to_string(),
+        name: "reject".to_string(),
         can_refer: true,
-        body: |a, b| match (a, b) {
-            (Obj::List(mut a), Obj::Func(b)) => {
-                let mut ret = Ok(());
-                Rc::make_mut(&mut a).retain(|e| {
-                    if ret.is_err() {
-                        false
-                    } else {
-                        match b.run(vec![e.clone()]) {
-                            Ok(e) => e.truthy(),
-                            Err(g) => { ret = Err(g); false }
+        body: |mut a, b| {
+            let it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b) => {
+                    let mut acc = Vec::new();
+                    for e in it {
+                        if !b.run(vec![e.clone()])?.truthy() {
+                            acc.push(e)
                         }
                     }
-                });
-                Ok(Obj::List(a))
+                    Ok(Obj::List(Rc::new(acc)))
+                }
+                _ => Err(NErr::TypeError("filter: list and func only".to_string()))
             }
-            _ => Err(NErr::TypeError("map: list and func only".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "fold".to_string(),
+        can_refer: true,
+        body: |mut a, b| {
+            let mut it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b) => {
+                    // not sure if any standard fallible rust methods work...
+                    match it.next() {
+                        Some(mut cur) => {
+                            for e in it {
+                                cur = b.run(vec![cur, e])?;
+                            }
+                            Ok(cur)
+                        }
+                        None => Err(NErr::ValueError("fold: empty seq".to_string())),
+                    }
+                }
+                _ => Err(NErr::TypeError("map: not callable".to_string()))
+            }
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -1992,6 +2292,56 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::String(Rc::new(acc)))
         }
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "upper".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::String(s) => Ok(Obj::String(Rc::new(s.to_uppercase()))),
+            _ => Err(NErr::TypeError("upper: expected string".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "lower".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::String(s) => Ok(Obj::String(Rc::new(s.to_lowercase()))),
+            _ => Err(NErr::TypeError("upper: expected string".to_string())),
+        }
+    });
+    // unlike python these are true on empty string. hmm...
+    env.insert_builtin(OneArgBuiltin {
+        name: "is_upper".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::String(s) => Ok(Obj::from(s.chars().all(char::is_uppercase))),
+            _ => Err(NErr::TypeError("is_upper: expected string".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "is_lower".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::String(s) => Ok(Obj::from(s.chars().all(char::is_lowercase))),
+            _ => Err(NErr::TypeError("is_upper: expected string".to_string())),
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "join".to_string(),
+        can_refer: false,
+        body: |mut a, b| {
+            // this might coerce too hard but idk
+            let mut acc = String::new();
+            let mut started = false;
+            for arg in mut_obj_into_iter(&mut a)? {
+                if started {
+                    acc += format!("{}", b).as_str();
+                }
+                acc += format!("{}", arg).as_str();
+                started = true;
+            }
+            Ok(Obj::String(Rc::new(acc)))
+        }
+    });
     // Haskell-ism for partial application (when that works)
     env.insert_builtin(TwoArgBuiltin {
         name: "!!".to_string(),
@@ -2015,18 +2365,43 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "**".to_string(),
+        name: ".+".to_string(),
         can_refer: false,
-        body: |a, b| match (a, b) {
-            (Obj::List(v), Obj::Num(x)) => {
-                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
+        body: |a, b| match b {
+            Obj::List(mut b) => {
+                Rc::make_mut(&mut b).insert(0, a);
+                Ok(Obj::List(b))
             }
-            (Obj::Num(x), Obj::List(v)) => {
-                Ok(Obj::List(Rc::new(std::iter::repeat(&**v).take(x.to_usize().ok_or(NErr::ValueError("can't repeat by non-usize".to_string()))?).flatten().cloned().collect())))
-            }
-            _ => Err(NErr::ArgumentError("**: unrecognized argument types".to_string()))
+            _ => Err(NErr::ArgumentError(".+: unrecognized argument types".to_string()))
         }
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "+.".to_string(),
+        can_refer: false,
+        body: |a, b| match a {
+            Obj::List(mut a) => {
+                Rc::make_mut(&mut a).push(b);
+                Ok(Obj::List(a))
+            }
+            _ => Err(NErr::ArgumentError("+.: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "..".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::List(Rc::new(vec![a, b])))
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "->".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::List(Rc::new(vec![a, b])))
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "<-".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::List(Rc::new(vec![b, a])))
+    });
+    env.insert_builtin(CartesianProduct {});
     env.insert_builtin(OneArgBuiltin {
         name: "sort".to_string(),
         can_refer: false,
