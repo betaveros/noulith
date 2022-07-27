@@ -62,6 +62,11 @@ forward_from!(f64);
 forward_from!(usize);
 forward_from!(Complex64);
 
+// TODO: drop Rc?
+impl From<usize> for ObjKey {
+    fn from(n: usize) -> Self { ObjKey::Num(NTotalNum(Rc::new(NNum::from(n)))) }
+}
+
 impl PartialEq for Obj {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -170,6 +175,113 @@ impl Display for ObjKey {
                 }
                 write!(formatter, "]")
             }
+        }
+    }
+}
+
+// iterates over just keys of dictionaries
+pub enum MutObjIntoIter<'a> {
+    DrainList(std::vec::Drain<'a, Obj>),
+    CloneList(std::slice::Iter<'a, Obj>),
+    DrainDict(std::collections::hash_map::Drain<'a, ObjKey, Obj>),
+    CloneDict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
+}
+
+// iterates over (index, value) or (key, value)
+pub enum MutObjIntoIterPairs<'a> {
+    DrainList(usize, std::vec::Drain<'a, Obj>),
+    CloneList(usize, std::slice::Iter<'a, Obj>),
+    DrainDict(std::collections::hash_map::Drain<'a, ObjKey, Obj>),
+    CloneDict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
+}
+
+// Say the obj is a list. If the Rc<Vec> has refcount 1, we drain it, so we can lazily move out
+// each element; but if the obj has refcount >1, we lazily clone each element. At least, that's the
+// theory.
+//
+// Alternatively, consuming the object and either going IntoIter or handrolling a (Rc<Vec>, usize)
+// would also work fine for lists, but dictionaries don't have an easy handrollable self-owning
+// iterator, I think?
+fn mut_obj_into_iter(obj: &mut Obj) -> NRes<MutObjIntoIter<'_>> {
+    match obj {
+        Obj::List(v) => {
+            // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop
+            // it in the None branch and we can't access v again even though we should be able to.
+            // If I switch to nightly I can probably use #![feature(nll)]
+            if Rc::get_mut(v).is_some() {
+                match Rc::get_mut(v) {
+                    Some(v) => Ok(MutObjIntoIter::DrainList(v.drain(..))),
+                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
+                }
+            } else {
+                Ok(MutObjIntoIter::CloneList(v.iter()))
+            }
+        }
+        Obj::Dict(v, _) => {
+            if Rc::get_mut(v).is_some() {
+                match Rc::get_mut(v) {
+                    Some(v) => Ok(MutObjIntoIter::DrainDict(v.drain())),
+                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
+                }
+            } else {
+                Ok(MutObjIntoIter::CloneDict(v.iter()))
+            }
+        }
+        _ => Err(NErr::TypeError("no".to_string())),
+    }
+}
+
+impl Iterator for MutObjIntoIter<'_> {
+    type Item = Obj;
+
+    fn next(&mut self) -> Option<Obj> {
+        match self {
+            MutObjIntoIter::DrainList(it) => it.next(),
+            MutObjIntoIter::CloneList(it) => it.next().cloned(),
+            MutObjIntoIter::DrainDict(it) => Some(key_to_obj(&it.next()?.0)),
+            MutObjIntoIter::CloneDict(it) => Some(key_to_obj(it.next()?.0)),
+        }
+    }
+}
+
+fn mut_obj_into_iter_pairs(obj: &mut Obj) -> NRes<MutObjIntoIterPairs<'_>> {
+    match obj {
+        Obj::List(v) => {
+            // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop
+            // it in the None branch and we can't access v again even though we should be able to.
+            // If I switch to nightly I can probably use #![feature(nll)]
+            if Rc::get_mut(v).is_some() {
+                match Rc::get_mut(v) {
+                    Some(v) => Ok(MutObjIntoIterPairs::DrainList(0, v.drain(..))),
+                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
+                }
+            } else {
+                Ok(MutObjIntoIterPairs::CloneList(0, v.iter()))
+            }
+        }
+        Obj::Dict(v, _) => {
+            if Rc::get_mut(v).is_some() {
+                match Rc::get_mut(v) {
+                    Some(v) => Ok(MutObjIntoIterPairs::DrainDict(v.drain())),
+                    None => Err(NErr::TypeError("non-lexical lifetime issue".to_string())),
+                }
+            } else {
+                Ok(MutObjIntoIterPairs::CloneDict(v.iter()))
+            }
+        }
+        _ => Err(NErr::TypeError("no".to_string())),
+    }
+}
+
+impl Iterator for MutObjIntoIterPairs<'_> {
+    type Item = (ObjKey, Obj);
+
+    fn next(&mut self) -> Option<(ObjKey, Obj)> {
+        match self {
+            MutObjIntoIterPairs::DrainList(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
+            MutObjIntoIterPairs::CloneList(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o.clone())) }
+            MutObjIntoIterPairs::DrainDict(it) => it.next(),
+            MutObjIntoIterPairs::CloneDict(it) => { let (k, v) = it.next()?; Some((k.clone(), v.clone())) }
         }
     }
 }
@@ -847,6 +959,7 @@ impl Parser {
             Some(Token::RightBrace) => true,
             Some(Token::Assign) => true,
             Some(Token::Colon) => true,
+            Some(Token::DoubleColon) => true,
             Some(Token::Semicolon) => true,
             Some(Token::Else) => true,
             None => true,
@@ -1308,6 +1421,30 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
     }
 }
 
+fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
+    match (&xr, &ir) {
+        (Obj::Null, _) => Ok(Obj::Null),
+        (Obj::List(xx), ii) => {
+            // Not sure about catching *every* err from pythonic_index here...
+            match pythonic_index(xx, ii) {
+                Ok(i) => Ok(xx[i].clone()),
+                Err(_) => Ok(Obj::Null),
+            }
+        }
+        (Obj::Dict(xx, def), _) => {
+            let k = to_key(ir)?;
+            match xx.get(&k) {
+                Some(e) => Ok(e.clone()),
+                None => match def {
+                    Some(d) => Ok((&**d).clone()),
+                    None => Ok(Obj::Null),
+                }
+            }
+        }
+        _ => Err(NErr::TypeError(format!("Can't safe index {:?} {:?}", xr, ir))),
+    }
+}
+
 fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
     match expr {
         Lvalue::IndexedIdent(s, v) => {
@@ -1457,16 +1594,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             for (ke, ve) in xs {
                 match (&**ke, ve) {
                     (Expr::Splat(inner), None) => {
-                        let res = evaluate(env, inner)?;
-                        match res {
-                            Obj::Dict(xx, _) => {
-                                // TODO is it possible to avoid these clones if xx's refcount is 1?
-                                // worth?
-                                for (k, v) in xx.iter() {
-                                    acc.insert(k.clone(), v.clone());
-                                }
-                            }
-                            _ => Err(NErr::TypeError(format!("Dictionary: Can only splat other dictionary; instead got {:?}", res)))?
+                        let mut res = evaluate(env, inner)?;
+                        let it = mut_obj_into_iter_pairs(&mut res)?;
+                        for (k, v) in it {
+                            acc.insert(k, v);
                         }
                     }
                     (Expr::Splat(_), Some(_)) => {
@@ -1503,48 +1634,26 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
         }
         Expr::For(pat, iteratee, body) => {
-            let itr = evaluate(env, iteratee)?;
-            match itr {
-                Obj::List(ls) => {
-                    for x in ls.iter() {
-                        let p = eval_lvalue(env, pat)?;
-                        assign(&mut env.borrow_mut(), &p, x, false)?;
-                        evaluate(env, body)?;
-                    }
-                    Ok(Obj::Null)
-                }
-                Obj::Dict(ls, _) => {
-                    for x in ls.keys() {
-                        let p = eval_lvalue(env, pat)?;
-                        assign(&mut env.borrow_mut(), &p, &key_to_obj(x), false)?;
-                        evaluate(env, body)?;
-                    }
-                    Ok(Obj::Null)
-                }
-                _ => Err(NErr::TypeError(format!("For loop: can't iterate over {:?}", itr)))
+            let mut itr = evaluate(env, iteratee)?;
+            let itrr = mut_obj_into_iter(&mut itr)?;
+            for x in itrr {
+                let p = eval_lvalue(env, pat)?;
+                // should assign take x
+                assign(&mut env.borrow_mut(), &p, &x, false)?;
+                evaluate(env, body)?;
             }
+            Ok(Obj::Null)
         }
         Expr::ForItem(pat, iteratee, body) => {
-            let itr = evaluate(env, iteratee)?;
-            match itr {
-                Obj::List(ls) => {
-                    for (i, x) in ls.iter().enumerate() {
-                        let p = eval_lvalue(env, pat)?;
-                        assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![Obj::from(i), x.clone()])), false)?;
-                        evaluate(env, body)?;
-                    }
-                    Ok(Obj::Null)
-                }
-                Obj::Dict(ls, _) => {
-                    for (i, x) in ls.iter() {
-                        let p = eval_lvalue(env, pat)?;
-                        assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![key_to_obj(i), x.clone()])), false)?;
-                        evaluate(env, body)?;
-                    }
-                    Ok(Obj::Null)
-                }
-                _ => Err(NErr::TypeError(format!("ForItem loop: can't iterate over {:?}", itr)))
+            let mut itr = evaluate(env, iteratee)?;
+            let itrr = mut_obj_into_iter_pairs(&mut itr)?;
+            for (k, v) in itrr {
+                let p = eval_lvalue(env, pat)?;
+                // should assign take x
+                assign(&mut env.borrow_mut(), &p, &Obj::List(Rc::new(vec![key_to_obj(&k), v])), false)?;
+                evaluate(env, body)?;
             }
+            Ok(Obj::Null)
         }
         Expr::Lambda(params, body) => {
             Ok(Obj::Func(Func::Closure(Closure {
@@ -1702,19 +1811,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "map".to_string(),
         can_refer: true,
-        body: |a, b| match (a, b) {
-            (Obj::List(mut a), Obj::Func(b)) => {
-                for e in Rc::make_mut(&mut a).iter_mut() {
-                    *e = b.run(vec![e.clone()])?;
-                }
-                Ok(Obj::List(a))
-                /*
-                Ok(Obj::List(Rc::new(
-                a.iter().map(|e| b.run(vec![e.clone()])).collect::<NRes<Vec<Obj>>>()?
-                )))
-                */
+        body: |mut a, b| {
+            let it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b) => Ok(Obj::List(Rc::new(
+                    it.map(|e| b.run(vec![e])).collect::<NRes<Vec<Obj>>>()?
+                ))),
+                _ => Err(NErr::TypeError("map: not iterable".to_string()))
             }
-            _ => Err(NErr::TypeError("map: list and func only".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -1825,6 +1929,11 @@ pub fn initialize(env: &mut Env) {
         name: "!!".to_string(),
         can_refer: false,
         body: index,
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "!?".to_string(),
+        can_refer: false,
+        body: safe_index,
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "++".to_string(),
