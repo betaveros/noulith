@@ -17,6 +17,45 @@ mod gamma;
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
 
+
+
+enum Few<T> { Zero, One(T), Many(Vec<T>), }
+fn few<T>(mut xs: Vec<T>) -> Few<T> {
+    match xs.len() {
+        0 => Few::Zero,
+        1 => Few::One(xs.remove(0)),
+        _ => Few::Many(xs),
+    }
+}
+impl<T> Few<T> {
+    fn len(&self) -> usize {
+        match self {
+            Few::Zero => 0,
+            Few::One(..) => 1,
+            Few::Many(x) => x.len(),
+        }
+    }
+}
+enum Few2<T> { Zero, One(T), Two(T, T), Many(Vec<T>), }
+fn few2<T>(mut xs: Vec<T>) -> Few2<T> {
+    match xs.len() {
+        0 => Few2::Zero,
+        1 => Few2::One(xs.remove(0)),
+        2 => Few2::Two(xs.remove(0), xs.pop().unwrap()),
+        _ => Few2::Many(xs),
+    }
+}
+impl<T> Few2<T> {
+    fn len(&self) -> usize {
+        match self {
+            Few2::Zero => 0,
+            Few2::One(..) => 1,
+            Few2::Two(..) => 2,
+            Few2::Many(x) => x.len(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Obj {
     Null,
@@ -333,22 +372,24 @@ pub type NRes<T> = Result<T, NErr>;
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
-
-    // For now specifically partial application of a binary function to its second argument
-    PartialApp(Box<Func>, Box<Obj>),
+    // partially applied first argument (lower priority)
+    PartialApp1(Box<Func>, Box<Obj>),
+    // partially applied second argument (more of the default in our weird world)
+    PartialApp2(Box<Func>, Box<Obj>),
 }
 
 impl Func {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match self {
             Func::Builtin(b) => b.run(args),
             Func::Closure(c) => c.run(args),
-            Func::PartialApp(f, x) => {
-                if args.len() == 1 {
-                    f.run(vec![args.pop().unwrap(), (**x).clone()])
-                } else {
-                    Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
-                }
+            Func::PartialApp1(f, x) => match few(args) {
+                Few::One(arg) => f.run(vec![(**x).clone(), arg]),
+                _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
+            }
+            Func::PartialApp2(f, x) => match few(args) {
+                Few::One(arg) => f.run(vec![arg, (**x).clone()]),
+                _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
             }
         }
     }
@@ -358,7 +399,8 @@ impl Func {
         match self {
             Func::Builtin(b) => b.can_refer(),
             Func::Closure(_) => true,
-            Func::PartialApp(f, _) => f.can_refer(),
+            Func::PartialApp1(f, _) => f.can_refer(),
+            Func::PartialApp2(f, _) => f.can_refer(),
         }
     }
 
@@ -366,7 +408,8 @@ impl Func {
         match self {
             Func::Builtin(b) => b.try_chain(other),
             Func::Closure(_) => None,
-            Func::PartialApp(..) => None,
+            Func::PartialApp1(..) => None,
+            Func::PartialApp2(..) => None,
         }
     }
 }
@@ -412,15 +455,15 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
 }
 
 impl Builtin for ComparisonOperator {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
-            match args.len() {
-                0 => Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name))),
-                1 => Ok(Obj::Func(Func::PartialApp(
+            match few(args) {
+                Few::Zero => Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name))),
+                Few::One(arg) => Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
-                    Box::new(args.pop().unwrap())
+                    Box::new(arg)
                 ))),
-                _ => {
+                Few::Many(args) => {
                     for i in 0 .. args.len() - 1 {
                         if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
                             return Ok(Obj::from(0))
@@ -492,11 +535,10 @@ pub struct OneArgBuiltin {
 }
 
 impl Builtin for OneArgBuiltin {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        if args.len() == 1 {
-            (self.body)(args.pop().unwrap())
-        } else {
-            Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, args.len())))
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(arg) => (self.body)(arg),
+            f => Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, f.len()))),
         }
     }
 
@@ -512,23 +554,17 @@ pub struct TwoArgBuiltin {
 }
 
 impl Builtin for TwoArgBuiltin {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        match args.pop() {
-            None => Err(NErr::ArgumentError(format!("{} only accepts two arguments, got 0", self.name))),
-            Some(b) => match args.pop() {
-                None => {
-                    // partial application, spicy
-                    Ok(Obj::Func(Func::PartialApp(
-                        Box::new(Func::Builtin(Rc::new(self.clone()))),
-                        Box::new(b)
-                    )))
-                }
-                Some(a) => if args.is_empty() {
-                    (self.body)(a, b)
-                } else {
-                    Err(NErr::ArgumentError(format!("{} only accepts two arguments, got {}", self.name, args.len() + 2)))
-                }
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(arg) => {
+                // partial application, spicy
+                Ok(Obj::Func(Func::PartialApp2(
+                    Box::new(Func::Builtin(Rc::new(self.clone()))),
+                    Box::new(arg)
+                )))
             }
+            Few2::Two(a, b) => (self.body)(a, b),
+            f => Err(NErr::ArgumentError(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
         }
     }
 
@@ -543,14 +579,11 @@ pub struct OneNumBuiltin {
 }
 
 impl Builtin for OneNumBuiltin {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        if args.len() == 1 {
-            match args.pop().unwrap() {
-                Obj::Num(n) => (self.body)(n),
-                x => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
-            }
-        } else {
-            Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, args.len())))
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(Obj::Num(n)) => (self.body)(n),
+            Few::One(x) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
+            f => Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, f.len())))
         }
     }
 
@@ -584,16 +617,19 @@ pub struct TwoNumsBuiltin {
 }
 
 impl Builtin for TwoNumsBuiltin {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        if args.len() == 2 {
-            let b = args.pop().unwrap();
-            let a = args.pop().unwrap();
-            match (a, b) {
-                (Obj::Num(aa), Obj::Num(bb)) => (self.body)(aa, bb),
-                (aaa, bbb) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?} {:?}", self.name, aaa, bbb))),
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(a @ Obj::Num(_)) => {
+                // partial application, spicy
+                Ok(Obj::Func(Func::PartialApp2(
+                    Box::new(Func::Builtin(Rc::new(self.clone()))),
+                    Box::new(a)
+                )))
             }
-        } else {
-            Err(NErr::ArgumentError(format!("{} only accepts two numbers, got {}", self.name, args.len())))
+            Few2::One(a) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, a))),
+            Few2::Two(Obj::Num(a), Obj::Num(b)) => (self.body)(a, b),
+            Few2::Two(a, b) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?} {:?}", self.name, a, b))),
+            f => Err(NErr::ArgumentError(format!("{} only accepts two numbers, got {}", self.name, f.len()))),
         }
     }
 
@@ -1085,7 +1121,7 @@ impl Parser {
     fn pattern(&mut self) -> Result<Expr, String> {
         let (mut exs, comma) = self.comma_separated()?;
         Ok(if exs.len() == 1 && !comma {
-            *exs.swap_remove(0)
+            *exs.remove(0)
         } else {
             Expr::CommaSeq(exs)
         })
@@ -1097,16 +1133,13 @@ impl Parser {
         if self.peek() == Some(Token::Assign) {
             self.i += 1;
             match pat {
-                Expr::Call(lhs, mut op) => {
-                    if op.len() == 1 {
-                        Ok(Expr::OpAssign(
-                            Box::new(to_lvalue(*lhs)?),
-                            Box::new(*op.swap_remove(0)),
-                            Box::new(self.pattern()?),
-                        ))
-                    } else {
-                        Err("call w not 1 arg is not assignop".to_string())
-                    }
+                Expr::Call(lhs, op) => match few(op) {
+                    Few::One(op) => Ok(Expr::OpAssign(
+                        Box::new(to_lvalue(*lhs)?),
+                        Box::new(*op),
+                        Box::new(self.pattern()?),
+                    )),
+                    _ => Err("call w not 1 arg is not assignop".to_string()),
                 }
                 _ => {
                     Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
@@ -1375,7 +1408,7 @@ impl ChainEvaluator {
             self.run_top()?;
         }
         if self.operands.len() == 1 {
-            Ok(self.operands.swap_remove(0).swap_remove(0))
+            Ok(self.operands.remove(0).remove(0))
         } else {
             panic!("chain eval out of sync")
         }
@@ -1610,7 +1643,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let a = eval_seq(env, args)?;
                     ff.run(a)
                 }
-                _ => Err(NErr::TypeError(format!("Can't call non-function {:?}", fr))),
+                _ => match args.as_slice() {
+                    [arg] => match evaluate(env, arg)? {
+                        Obj::Func(f2) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(fr)))),
+                        _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument not callable)", fr))),
+                    }
+                    _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", fr))),
+                }
             }
         }
         Expr::CommaSeq(_) => Err(NErr::SyntaxError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
@@ -1713,19 +1752,15 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(NumsBuiltin {
         name: "-".to_string(),
-        body: |mut args| {
-            if args.is_empty() {
-                Err(NErr::ArgumentError("-: received 0 args".to_string()))
-            } else {
-                let mut s = args.remove(0);
-                if args.is_empty() {
-                    Ok(Obj::Num(-s))
-                } else {
-                    for arg in args {
-                        s -= &arg;
-                    }
-                    Ok(Obj::Num(s))
+        body: |args| match few(args) {
+            Few::Zero => Err(NErr::ArgumentError("-: received 0 args".to_string())),
+            Few::One(s) => Ok(Obj::Num(-s)),
+            Few::Many(mut ss) => {
+                let mut s = ss.remove(0);
+                for arg in ss {
+                    s -= &arg;
                 }
+                Ok(Obj::Num(s))
             }
         }
     });
