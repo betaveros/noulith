@@ -1,5 +1,8 @@
 #[macro_use] extern crate lazy_static;
 
+// TODO: isolate
+use std::fs;
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Display;
@@ -16,7 +19,6 @@ mod gamma;
 
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
-
 
 
 enum Few<T> { Zero, One(T), Many(Vec<T>), }
@@ -1461,7 +1463,7 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj
     }
 }
 
-fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes<Obj> {
+fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             if insert {
@@ -1478,17 +1480,14 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: &Obj, insert: bool) -> NRes
                     env.modify_existing_var(s, |v| {
                         did_modify = set_index(v, ixs, rhs.clone());
                     });
-                    did_modify?
+                    did_modify?;
                 }
             }
-            Ok(rhs.clone())
+            Ok(())
         }
         EvaluatedLvalue::CommaSeq(ss) => {
             match rhs {
-                Obj::List(ls) => {
-                    assign_all(env, ss, ls, insert)?;
-                    Ok(rhs.clone())
-                }
+                Obj::List(ls) => assign_all(env, ss, ls, insert),
                 _ => Err(NErr::TypeError(format!("Can't unpack non-list {:?}", rhs))),
             }
         }
@@ -1694,6 +1693,15 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
     }
 }
 
+fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
+    match (a, b) {
+        (a, Obj::List(mut v)) => Ok(mut_rc_vec_into_iter(&mut v).any(|x| x == a)),
+        (a, Obj::Dict(v, _)) => Ok(v.contains_key(&to_key(a)?)),
+        (Obj::String(s), Obj::String(v)) => Ok((*v).contains(&*s)),
+        _ => Err(NErr::TypeError("in: not compatible".to_string())),
+    }
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
@@ -1741,7 +1749,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                 _ => evaluate(env, rhs),
             }?;
-            assign(&mut env.borrow_mut(), &p, &res, false)
+            assign(&mut env.borrow_mut(), &p, &res, false)?;
+            Ok(Obj::Null)
         }
         Expr::Pop(pat) => {
             match eval_lvalue(env, pat)? {
@@ -1800,7 +1809,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         assign(&mut env.borrow_mut(), &p, &Obj::Null, false)?;
                     }
                     let fres = ff.run(vec![pv, res])?;
-                    assign(&mut env.borrow_mut(), &p, &fres, false)
+                    assign(&mut env.borrow_mut(), &p, &fres, false)?;
+                    Ok(Obj::Null)
                 }
                 _ => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
             }
@@ -2059,6 +2069,7 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::List(a) => Ok(Obj::Num(NNum::from(a.len()))),
             Obj::Dict(a, _) => Ok(Obj::Num(NNum::from(a.len()))),
+            Obj::String(a) => Ok(Obj::Num(NNum::from(a.len()))),
             _ => Err(NErr::TypeError("len: list or dict only".to_string()))
         }
     });
@@ -2076,6 +2087,21 @@ pub fn initialize(env: &mut Env) {
         name: "with".to_string(),
         can_refer: false,
         body: |_| Err(NErr::TypeError("with: cannot call".to_string())),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "in".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(obj_in(a, b)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "contains".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: ".".to_string(),
+        can_refer: true,
+        body: |a, b| call(b, vec![a]),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ".>".to_string(),
@@ -2342,6 +2368,17 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::String(Rc::new(acc)))
         }
     });
+    env.insert_builtin(BasicBuiltin {
+        name: "split".to_string(),
+        can_refer: false,
+        body: |args| {
+            match few2(args) {
+                Few2::One(Obj::String(s)) => Ok(Obj::List(Rc::new(s.split_whitespace().map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
+                Few2::Two(Obj::String(s), Obj::String(t)) => Ok(Obj::List(Rc::new(s.split(&*t).map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
+                _ => Err(NErr::ArgumentError("split :(".to_string())),
+            }
+        }
+    });
     // Haskell-ism for partial application (when that works)
     env.insert_builtin(TwoArgBuiltin {
         name: "!!".to_string(),
@@ -2423,6 +2460,20 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::List(v))
             }
             _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
+        }
+    });
+
+    // TODO safety, wasm version
+    env.insert_builtin(OneArgBuiltin {
+        name: "read_file".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::String(s) => match fs::read_to_string(&*s) {
+                Ok(c) => Ok(Obj::String(Rc::new(c))),
+                // TODO fix error type
+                Err(e) => Err(NErr::ValueError(format!("read_file error: {}", e))),
+            }
+            _ => Err(NErr::ArgumentError("read_file: unrecognized argument types".to_string()))
         }
     });
 }
