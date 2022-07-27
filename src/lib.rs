@@ -34,6 +34,7 @@ pub enum ObjKey {
     Num(NTotalNum),
     String(Rc<String>),
     List(Rc<Vec<ObjKey>>),
+    Dict(Rc<Vec<(ObjKey, ObjKey)>>),
 }
 
 impl Obj {
@@ -106,8 +107,13 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         Obj::Null => Ok(ObjKey::Null),
         Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(Rc::new(x)))),
         Obj::String(x) => Ok(ObjKey::String(x)),
-        Obj::List(x) => Ok(ObjKey::List(Rc::new(x.iter().map(|e| to_key(e.clone())).collect::<NRes<Vec<ObjKey>>>()?))),
-        Obj::Dict(..) => Err(NErr::TypeError("Using a dictionary as a dictionary key isn't supported".to_string())),
+        mut x @ Obj::List(_) => Ok(ObjKey::List(Rc::new(
+                    mut_obj_into_iter(&mut x)?.map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
+        mut x @ Obj::Dict(..) => {
+            let pairs = mut_obj_into_iter_pairs(&mut x)?.map(
+                |(k,v)| Ok((k,to_key(v)?))).collect::<NRes<Vec<(ObjKey,ObjKey)>>>()?;
+            Ok(ObjKey::Dict(Rc::new(pairs)))
+        }
         Obj::Func(_) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
@@ -118,6 +124,7 @@ fn key_to_obj(key: &ObjKey) -> Obj {
         ObjKey::Num(NTotalNum(x)) => Obj::Num((**x).clone()),
         ObjKey::String(x) => Obj::String(Rc::clone(x)),
         ObjKey::List(x) => Obj::List(Rc::new(x.iter().map(|e| key_to_obj(&e.clone())).collect::<Vec<Obj>>())),
+        ObjKey::Dict(x) => Obj::Dict(Rc::new(x.iter().map(|(k, v)| (k.clone(), key_to_obj(&v))).collect::<HashMap<ObjKey,Obj>>()), None),
     }
 }
 
@@ -174,6 +181,16 @@ impl Display for ObjKey {
                     write!(formatter, "{}", x)?;
                 }
                 write!(formatter, "]")
+            }
+            ObjKey::Dict(xs) => {
+                write!(formatter, "{{")?;
+                let mut started = false;
+                for (k, v) in xs.iter() {
+                    if started { write!(formatter, ", ")?; }
+                    started = true;
+                    write!(formatter, "{}: {}", k, v)?;
+                }
+                write!(formatter, "}}")
             }
         }
     }
@@ -1539,6 +1556,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                                 (Obj::List(xs), i) => {
                                     let ii = pythonic_index(xs, i)?;
                                     Ok(Rc::make_mut(xs).remove(ii))
+                                }
+                                (Obj::Dict(xs, _), i) => {
+                                    Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::KeyError("key not found in dict".to_string()))
                                 }
                                 _ => Err(NErr::TypeError("can't remove".to_string())),
                             });
