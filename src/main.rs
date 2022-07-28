@@ -27,9 +27,9 @@ fn main() {
             Ok(expr) => match evaluate(&e, &expr) {
                 Ok(Obj::Null) => {}
                 Ok(e) => { println!("{}", e); }
-                Err(e) => { println!("ERROR: {:?}", e); }
+                Err(e) => { println!("ERROR: {}", e); }
             }
-            Err(e) => { println!("PARSE ERROR: {:?}", e); }
+            Err(e) => { println!("PARSE ERROR: {}", e); }
         }
     }
 }
