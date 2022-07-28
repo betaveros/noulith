@@ -5,8 +5,8 @@ use noulith::simple_eval;
 
 #[test]
 fn basic() {
-    // let s = "for (x : 1 to 100) (o = ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o = o ++ s; print(if (o == '') x else o))";
     assert_eq!(simple_eval("fact := \\n: if (n == 0) 1 else n * fact(n - 1); fact 10"), Obj::from(3628800));
+    assert_eq!(simple_eval("(for (x : 1 to 15) yield (o := ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"), Obj::from("1;2;Fizz;4;Buzz;Fizz;7;8;Fizz;Buzz;11;Fizz;13;14;FizzBuzz"));
     assert_eq!(simple_eval("1 < 2 < 3"), Obj::from(1));
     assert_eq!(simple_eval("3 > 2 > 1"), Obj::from(1));
     assert_eq!(simple_eval("1 < 2 < 2"), Obj::from(0));

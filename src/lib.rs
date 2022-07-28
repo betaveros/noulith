@@ -20,7 +20,9 @@ mod gamma;
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
 
+type Precedence = f64;
 
+#[derive(Debug)]
 enum Few<T> { Zero, One(T), Many(Vec<T>), }
 fn few<T>(mut xs: Vec<T>) -> Few<T> {
     match xs.len() {
@@ -66,7 +68,7 @@ pub enum Obj {
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
     Dict(Rc<HashMap<ObjKey, Obj>>, Option<Rc<Obj>>), // default value
-    Func(Func),
+    Func(Func, Precedence),
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
@@ -86,7 +88,7 @@ impl Obj {
             Obj::String(x) => !x.is_empty(),
             Obj::List(x) => !x.is_empty(),
             Obj::Dict(x, _) => !x.is_empty(),
-            Obj::Func(_) => true,
+            Obj::Func(..) => true,
         }
     }
 }
@@ -96,6 +98,9 @@ impl From<bool> for Obj {
 }
 impl From<char> for Obj {
     fn from(n: char) -> Self { Obj::String(Rc::new(n.to_string())) }
+}
+impl From<&str> for Obj {
+    fn from(n: &str) -> Self { Obj::String(Rc::new(n.to_string())) }
 }
 
 macro_rules! forward_from {
@@ -160,7 +165,7 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
             pairs.sort();
             Ok(ObjKey::Dict(Rc::new(pairs)))
         }
-        Obj::Func(_) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
+        Obj::Func(..) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
 
@@ -211,7 +216,7 @@ impl Display for Obj {
                 }
                 write!(formatter, "}}")
             }
-            Obj::Func(f) => write!(formatter, "{:?}", f),
+            Obj::Func(f, p) => write!(formatter, "{:?} (precedence {})", f, p),
         }
     }
 }
@@ -520,7 +525,7 @@ impl Builtin for ComparisonOperator {
                 Few::One(arg) => Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(arg)
-                ))),
+                ), 0.0)),
                 Few::Many(args) => {
                     for i in 0 .. args.len() - 1 {
                         if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
@@ -580,10 +585,10 @@ impl Builtin for Zip {
         let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
         for arg in args.iter_mut() {
             match (arg, &mut func) {
-                (Obj::Func(f), None) => {
+                (Obj::Func(f, _), None) => {
                     func = Some(f.clone());
                 }
-                (Obj::Func(_), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
+                (Obj::Func(..), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
                 (arg, _) => iterators.push(mut_obj_into_iter(arg)?),
             }
         }
@@ -735,7 +740,7 @@ impl Builtin for TwoArgBuiltin {
                 Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(arg)
-                )))
+                ), 0.0))
             }
             Few2::Two(a, b) => (self.body)(a, b),
             f => Err(NErr::ArgumentError(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
@@ -798,7 +803,7 @@ impl Builtin for TwoNumsBuiltin {
                 Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(a)
-                )))
+                ), 0.0))
             }
             Few2::One(a) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, a))),
             Few2::Two(Obj::Num(a), Obj::Num(b)) => (self.body)(a, b),
@@ -863,6 +868,8 @@ pub enum Token {
     Declare,
     Pop,
     Remove,
+    Swap,
+    Eval,
     // Newline,
 }
 
@@ -889,6 +896,16 @@ pub enum Expr {
     Or(Box<Expr>, Box<Expr>),
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
+    Swap(Box<Lvalue>, Box<Lvalue>),
+    // Weird hack to support punching a hole in side effects while minimally affecting other stuff.
+    // Eval is a node that there's no syntax for; it evaluates its contents in the current
+    // environment. The token `eval` becomes Expr::EvalToken, which, when evaluated, turns into a
+    // closure that captures its environment and invokes the Eval node. IMO this is marginally
+    // better than specialized `eval` syntax in that you can use it like any other identifier, e.g.
+    // mapping over it, and a lot better than requiring us to pass the environment to every
+    // function call everywhere.
+    Eval(Box<Expr>),
+    EvalToken,
     Declare(Box<Lvalue>, Box<Expr>),
     Assign(Box<Lvalue>, Box<Expr>),
     OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
@@ -933,6 +950,11 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
             es.into_iter().map(|e| Ok(Box::new(to_lvalue(*e)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
+        // FIXME
+        Expr::Sequence(xs) => match few(xs) {
+            Few::One(x) => to_lvalue(*x),
+            y => Err(format!("sequence can't be lvalue {:?}", y)),
+        }
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
 }
@@ -959,6 +981,11 @@ pub fn lex(code: &str) -> Vec<Token> {
             ';' => tokens.push(Token::Semicolon),
             ' ' => (),
             '\n' => (),
+            '#' => {
+                loop {
+                    if let None | Some('\n') = chars.next() { break; }
+                }
+            }
             '\'' | '"' => {
                 let mut acc = String::new();
                 while chars.peek() != Some(&c) {
@@ -996,6 +1023,8 @@ pub fn lex(code: &str) -> Vec<Token> {
                         "or" => Token::Or,
                         "pop" => Token::Pop,
                         "remove" => Token::Remove,
+                        "swap" => Token::Swap,
+                        "eval" => Token::Eval,
                         _ => Token::Ident(acc),
                     })
                 } else if OPERATOR_SYMBOLS.contains(&c) {
@@ -1085,11 +1114,15 @@ impl Parser {
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(Expr::Pop(Box::new(to_lvalue(self.operand()?)?)))
+                    Ok(Expr::Pop(Box::new(to_lvalue(self.single()?)?)))
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(Expr::Remove(Box::new(to_lvalue(self.operand()?)?)))
+                    Ok(Expr::Remove(Box::new(to_lvalue(self.single()?)?)))
+                }
+                Token::Eval => {
+                    self.advance();
+                    Ok(Expr::EvalToken)
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -1335,30 +1368,38 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expr, String> {
-        let pat = self.pattern()?;
+        if self.peek() == Some(Token::Swap) {
+            self.advance();
+            let a = to_lvalue(self.single()?)?;
+            self.require(Token::Comma, "swap between lvalues".to_string())?;
+            let b = to_lvalue(self.single()?)?;
+            Ok(Expr::Swap(Box::new(a), Box::new(b)))
+        } else {
+            let pat = self.pattern()?;
 
-        match self.peek() {
-            Some(Token::Assign) => {
-                self.advance();
-                match pat {
-                    Expr::Call(lhs, op) => match few(op) {
-                        Few::One(op) => Ok(Expr::OpAssign(
-                            Box::new(to_lvalue(*lhs)?),
-                            Box::new(*op),
-                            Box::new(self.pattern()?),
-                        )),
-                        _ => Err("call w not 1 arg is not assignop".to_string()),
-                    }
-                    _ => {
-                        Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+            match self.peek() {
+                Some(Token::Assign) => {
+                    self.advance();
+                    match pat {
+                        Expr::Call(lhs, op) => match few(op) {
+                            Few::One(op) => Ok(Expr::OpAssign(
+                                Box::new(to_lvalue(*lhs)?),
+                                Box::new(*op),
+                                Box::new(self.pattern()?),
+                            )),
+                            _ => Err("call w not 1 arg is not assignop".to_string()),
+                        }
+                        _ => {
+                            Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+                        }
                     }
                 }
+                Some(Token::Declare) => {
+                    self.advance();
+                    Ok(Expr::Declare(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+                }
+                _ => Ok(pat)
             }
-            Some(Token::Declare) => {
-                self.advance();
-                Ok(Expr::Declare(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
-            }
-            _ => Ok(pat)
         }
     }
 
@@ -1376,9 +1417,15 @@ impl Parser {
     }
 }
 
-pub fn parse(code: &str) -> Result<Expr, String> {
-    let mut p = Parser { tokens: lex(code), i: 0 };
-    p.expression()
+// allow the empty expression
+pub fn parse(code: &str) -> Result<Option<Expr>, String> {
+    let tokens = lex(code);
+    if tokens.is_empty() {
+        Ok(None)
+    } else {
+        let mut p = Parser { tokens, i: 0 };
+        p.expression().map(Some)
+    }
 }
 
 #[derive(Debug)]
@@ -1423,7 +1470,8 @@ impl Env {
         self.vars.insert(key, val)
     }
     fn insert_builtin(self: &mut Env, b: impl Builtin + 'static) {
-        self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b))));
+        let p = default_precedence(b.builtin_name());
+        self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b)), p));
     }
 }
 
@@ -1504,6 +1552,16 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
                     None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
                 }, rest, value)
             }
+        }
+        (Obj::Func(_, p), [Obj::String(r)]) => match &***r {
+            "precedence" => match value {
+                Obj::Num(f) => match f.to_f64() {
+                    Some(f) => { *p = f; Ok(()) }
+                    None => Err(NErr::TypeError(format!("precedence must be convertible to float: {}", f))),
+                }
+                f => Err(NErr::TypeError(format!("precedence must be number, got {}", f))),
+            }
+            k => Err(NErr::TypeError(format!("function key must be 'precedence', got {}", k))),
         }
         (lhs, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs, ii))),
     }
@@ -1596,33 +1654,31 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: AssignRHS<'_>) -> NRes<()> 
     }
 }
 
-fn precedence(name: &str) -> NRes<u8> {
+fn default_precedence(name: &str) -> Precedence {
     // stolen from Scala
     match name.chars().next() {
-        None => Err(NErr::SyntaxError("Can't compute precedence of empty name (internal)".to_string())),
-        Some(c) => Ok(
-            if c.is_alphanumeric() || c == '_' {
-                0
-            } else {
-                match c {
-                    '|' => 1,
-                    '^' => 2,
-                    '&' => 3,
-                    '=' | '!' => 4,
-                    '<' | '>' => 5,
-                    ':' => 6,
-                    '+' | '-' => 7,
-                    '*' | '/' | '%' => 8,
-                    _ => 9,
-                }
+        None => 0.0,
+        Some(c) => if c.is_alphanumeric() || c == '_' {
+            0.0
+        } else {
+            match c {
+                '|' => 1.0,
+                '^' => 2.0,
+                '&' => 3.0,
+                '=' | '!' => 4.0,
+                '<' | '>' => 5.0,
+                ':' => 6.0,
+                '+' | '-' => 7.0,
+                '*' | '/' | '%' => 8.0,
+                _ => 9.0,
             }
-        )
+        }
     }
 }
 
 struct ChainEvaluator {
     operands: Vec<Vec<Obj>>,
-    operators: Vec<(Func, u8)>,
+    operators: Vec<(Func, Precedence)>,
 }
 
 impl ChainEvaluator {
@@ -1643,7 +1699,7 @@ impl ChainEvaluator {
         self.run_top_popped(op)
     }
 
-    fn give(&mut self, operator: Func, precedence: u8, operand: Obj) -> NRes<()> {
+    fn give(&mut self, operator: Func, precedence: Precedence, operand: Obj) -> NRes<()> {
         while self.operators.last().map_or(false, |t| t.1 >= precedence) {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
@@ -1738,6 +1794,10 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
         }
+        (Obj::Func(_, p), Obj::String(k)) => match &***k {
+            "precedence" => Ok(Obj::from(*p)),
+            _ => Err(NErr::TypeError(format!("can't index into func {:?}", k))),
+        }
         _ => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
     }
 }
@@ -1768,9 +1828,9 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
 
 fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
-        Obj::Func(ff) => ff.run(args),
+        Obj::Func(ff, _) => ff.run(args),
         f => match few(args) {
-            Few::One(Obj::Func(f2)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)))),
+            Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), 0.0)),
             Few::One(f2) => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
             _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", f))),
         }
@@ -1808,28 +1868,30 @@ fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callb
         [] => Ok(callback(evaluate(env, body)?)),
         [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
             let mut itr = evaluate(env, expr)?;
-            let ee = Env::with_parent(env);
-            let p = eval_lvalue(&ee, lvalue)?;
             match ty {
                 ForIterationType::Normal => {
-                    assign(&mut ee.borrow_mut(), &p, AssignRHS::DeclareNull)?;
-
                     for x in mut_obj_into_iter(&mut itr)? {
+                        let ee = Env::with_parent(env);
+                        let p = eval_lvalue(&ee, lvalue)?;
+
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(false, &x))?;
+                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &x))?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
                 ForIterationType::Item => {
-                    assign(&mut ee.borrow_mut(), &p, AssignRHS::DeclareNull)?;
-
                     for (k, v) in mut_obj_into_iter_pairs(&mut itr)? {
+                        let ee = Env::with_parent(env);
+                        let p = eval_lvalue(&ee, lvalue)?;
+
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(false, &Obj::List(Rc::new(vec![key_to_obj(k), v]))))?;
+                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &Obj::List(Rc::new(vec![key_to_obj(k), v]))))?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
                 ForIterationType::Declare => {
+                    let ee = Env::with_parent(env);
+                    let p = eval_lvalue(&ee, lvalue)?;
                     assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &itr))?;
 
                     evaluate_for(&ee, rest, body, callback)?;
@@ -1863,8 +1925,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             for (oper, opd) in ops {
                 // make sure this borrow_mut goes out of scope
                 let oprr = env.borrow_mut().get_var(oper)?;
-                if let Obj::Func(b) = oprr {
-                    let prec = precedence(oper)?;
+                if let Obj::Func(b, prec) = oprr {
                     let oprd = evaluate(env, opd)?;
                     ev.give(b, prec, oprd)?;
                 } else {
@@ -1948,13 +2009,22 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
             }
         }
+        Expr::Swap(a, b) => {
+            let al = eval_lvalue(env, a)?;
+            let bl = eval_lvalue(env, b)?;
+            let ao = eval_lvalue_as_obj(env, a)?;
+            let bo = eval_lvalue_as_obj(env, b)?;
+            assign(&mut env.borrow_mut(), &al, AssignRHS::Assign(false, &bo))?;
+            assign(&mut env.borrow_mut(), &bl, AssignRHS::Assign(false, &ao))?;
+            Ok(Obj::Null)
+        }
         Expr::OpAssign(pat, op, rhs) => {
             let pv = eval_lvalue_as_obj(env, pat)?;
             let p = eval_lvalue(env, pat)?;
             let opv = evaluate(env, op)?;
 
             match opv {
-                Obj::Func(ff) => {
+                Obj::Func(ff, _) => {
                     let res = match &**rhs {
                         Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                         _ => evaluate(env, rhs),
@@ -2044,8 +2114,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 params: Rc::clone(params),
                 body: Rc::clone(body),
                 env: Rc::clone(env),
-            })))
+            }), 0.0))
         }
+        Expr::Eval(expr) => {
+            match evaluate(env, expr)? {
+                Obj::String(r) => match parse(&r) {
+                    Ok(Some(code)) => evaluate(env, &code),
+                    Ok(None) => Err(NErr::ValueError("eval: empty expression".to_string())),
+                    Err(s) => Err(NErr::ValueError(s)),
+                }
+                s => Err(NErr::ValueError(format!("can't eval {}", s))),
+            }
+        }
+        Expr::EvalToken => Ok(Obj::Func(Func::Closure(Closure {
+            params: Rc::new(vec![Box::new(Lvalue::IndexedIdent("arg".to_string(), Vec::new()))]),
+            body: Rc::new(Expr::Eval(Box::new(Expr::Ident("arg".to_string())))),
+            env: Env::with_parent(env),
+        }), 0.0)),
     }
 }
 
@@ -2054,7 +2139,7 @@ pub fn simple_eval(code: &str) -> Obj {
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
-    evaluate(&e, &parse(code).unwrap()).unwrap()
+    evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
 }
 
 pub fn initialize(env: &mut Env) {
@@ -2261,7 +2346,7 @@ pub fn initialize(env: &mut Env) {
         name: ">>".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f), Obj::Func(g)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)))),
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), 0.0)),
             _ => Err(NErr::TypeError(">>: not function".to_string()))
         }
     });
@@ -2269,7 +2354,7 @@ pub fn initialize(env: &mut Env) {
         name: "<<".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f), Obj::Func(g)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)))),
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), 0.0)),
             _ => Err(NErr::TypeError("<<: not function".to_string()))
         }
     });
@@ -2279,7 +2364,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a, b| {
             let it = mut_obj_into_iter(&mut a)?;
             match b {
-                Obj::Func(b) => Ok(Obj::List(Rc::new(
+                Obj::Func(b, _) => Ok(Obj::List(Rc::new(
                     it.map(|e| b.run(vec![e])).collect::<NRes<Vec<Obj>>>()?
                 ))),
                 _ => Err(NErr::TypeError("map: not callable".to_string()))
@@ -2305,7 +2390,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a, b| {
             let it = mut_obj_into_iter(&mut a)?;
             match b {
-                Obj::Func(b) => {
+                Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
                         let mut r = b.run(vec![e])?;
@@ -2326,7 +2411,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a, b| {
             let it = mut_obj_into_iter(&mut a)?;
             match b {
-                Obj::Func(b) => {
+                Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
                         if b.run(vec![e.clone()])?.truthy() {
@@ -2345,7 +2430,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a, b| {
             let it = mut_obj_into_iter(&mut a)?;
             match b {
-                Obj::Func(b) => {
+                Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
                         if !b.run(vec![e.clone()])?.truthy() {
@@ -2364,7 +2449,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a, b| {
             let mut it = mut_obj_into_iter(&mut a)?;
             match b {
-                Obj::Func(b) => {
+                Obj::Func(b, _) => {
                     // not sure if any standard fallible rust methods work...
                     match it.next() {
                         Some(mut cur) => {

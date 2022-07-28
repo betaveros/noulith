@@ -24,11 +24,12 @@ fn main() {
     let mut input = String::new();
     while prompt(&mut input) {
         match parse(&input) {
-            Ok(expr) => match evaluate(&e, &expr) {
+            Ok(Some(expr)) => match evaluate(&e, &expr) {
                 Ok(Obj::Null) => {}
                 Ok(e) => { println!("{}", e); }
                 Err(e) => { println!("ERROR: {}", e); }
             }
+            Ok(None) => {}
             Err(e) => { println!("PARSE ERROR: {}", e); }
         }
     }
