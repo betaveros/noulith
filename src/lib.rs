@@ -2,6 +2,7 @@
 
 // TODO: isolate
 use std::fs;
+use std::io;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -13,6 +14,7 @@ use std::cell::RefCell;
 
 use num::complex::Complex64;
 use num::bigint::BigInt;
+use num::ToPrimitive;
 
 mod nnum;
 mod gamma;
@@ -101,6 +103,9 @@ impl From<char> for Obj {
 }
 impl From<&str> for Obj {
     fn from(n: &str) -> Self { Obj::String(Rc::new(n.to_string())) }
+}
+impl From<String> for Obj {
+    fn from(n: String) -> Self { Obj::String(Rc::new(n)) }
 }
 
 macro_rules! forward_from {
@@ -610,7 +615,7 @@ impl Builtin for Zip {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "zip" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "zip" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
             }
             _ => None,
@@ -887,6 +892,7 @@ pub enum Expr {
     IntLit(BigInt),
     StringLit(Rc<String>),
     Ident(String),
+    Backref(usize),
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
     Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
@@ -990,7 +996,14 @@ pub fn lex(code: &str) -> Vec<Token> {
                 let mut acc = String::new();
                 while chars.peek() != Some(&c) {
                     match chars.next() {
-                        Some('\\') => acc.push(chars.next().expect("lexing: string literal: escape eof")), // FIXME
+                        Some('\\') => match chars.next() {
+                            Some('n') => acc.push('\n'),
+                            Some('r') => acc.push('\r'),
+                            Some('t') => acc.push('\t'),
+                            Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
+                            Some(c) => panic!("lexing: string literal: unknown escape {}", c),
+                            None => panic!("lexing: string literal: escape eof"),
+                        }
                         Some(c) => acc.push(c),
                         None => panic!("lexing: string literal hit eof")
                     }
@@ -1169,11 +1182,16 @@ impl Parser {
                 Token::RightParen => Err("unexpected right paren".to_string()),
                 Token::Lambda => {
                     self.advance();
-                    let (params0, _) = self.comma_separated()?;
-                    let params = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
-                    self.require(Token::Colon, "lambda start".to_string())?;
-                    let body = self.single()?;
-                    Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
+                    if let Some(Token::IntLit(x)) = self.peek() {
+                        self.advance();
+                        Ok(Expr::Backref(x.to_usize().ok_or(format!("backref: not usize: {}", x))?))
+                    } else {
+                        let (params0, _) = self.comma_separated()?;
+                        let params = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
+                        self.require(Token::Colon, "lambda start".to_string())?;
+                        let body = self.single()?;
+                        Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
+                    }
                 }
                 Token::If => {
                     self.advance();
@@ -1429,47 +1447,59 @@ pub fn parse(code: &str) -> Result<Option<Expr>, String> {
 }
 
 #[derive(Debug)]
+pub struct TopEnv {
+    pub backrefs: Vec<Obj>,
+}
+
+#[derive(Debug)]
 pub struct Env {
     vars: HashMap<String, Obj>,
-    parent: Option<Rc<RefCell<Env>>>,
+    parent: Result<Rc<RefCell<Env>>, TopEnv>,
 }
 impl Env {
-    pub fn new() -> Env {
-        Env { vars: HashMap::new(), parent: None }
+    pub fn new(top: TopEnv) -> Env {
+        Env { vars: HashMap::new(), parent: Err(top) }
     }
     fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(
-            Env { vars: HashMap::new(), parent: Some(Rc::clone(&env)) }
+            Env { vars: HashMap::new(), parent: Ok(Rc::clone(&env)) }
         ))
     }
-    fn get_var(self: &Env, s: &str) -> NRes<Obj> {
+    pub fn mut_top_env<T>(&mut self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
+        match &mut self.parent {
+            Ok(v) => v.borrow_mut().mut_top_env(f),
+            Err(t) => f(t),
+        }
+    }
+
+    fn get_var(&self, s: &str) -> NRes<Obj> {
         match self.vars.get(s) {
             Some(v) => Ok(v.clone()),
             None => match &self.parent {
-                Some(p) => p.borrow().get_var(s),
-                None => Err(NErr::NameError(format!("No such variable: {}", s))),
+                Ok(p) => p.borrow().get_var(s),
+                Err(_) => Err(NErr::NameError(format!("No such variable: {}", s))),
             }
         }
     }
 
-    fn modify_existing_var(self: &mut Env, key: &str, f: impl FnOnce(&mut Obj) -> ()) -> bool {
+    fn modify_existing_var(&mut self, key: &str, f: impl FnOnce(&mut Obj) -> ()) -> bool {
         match self.vars.get_mut(key) {
             Some(target) => { f(target); true }
             None => match &self.parent {
-                Some(p) => p.borrow_mut().modify_existing_var(key, f),
-                None => false,
+                Ok(p) => p.borrow_mut().modify_existing_var(key, f),
+                Err(_) => false,
             }
         }
     }
-    fn set_existing_var(self: &mut Env, key: String, val: Obj) -> bool {
+    fn set_existing_var(&mut self, key: String, val: Obj) -> bool {
         self.modify_existing_var(&key, |target| {
             *target = val
         })
     }
-    fn insert(self: &mut Env, key: String, val: Obj) -> Option<Obj> {
+    fn insert(&mut self, key: String, val: Obj) -> Option<Obj> {
         self.vars.insert(key, val)
     }
-    fn insert_builtin(self: &mut Env, b: impl Builtin + 'static) {
+    fn insert_builtin(&mut self, b: impl Builtin + 'static) {
         let p = default_precedence(b.builtin_name());
         self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b)), p));
     }
@@ -1661,16 +1691,15 @@ fn default_precedence(name: &str) -> Precedence {
         Some(c) => if c.is_alphanumeric() || c == '_' {
             0.0
         } else {
+            // FIXME blah
             match c {
-                '|' => 1.0,
-                '^' => 2.0,
-                '&' => 3.0,
-                '=' | '!' => 4.0,
-                '<' | '>' => 5.0,
-                ':' => 6.0,
-                '+' | '-' => 7.0,
-                '*' | '/' | '%' => 8.0,
-                _ => 9.0,
+                '=' | '!' | '<' | '>' => 1.0,
+                '$' => 2.0,
+                '+' | '-' | '|' => 3.0,
+                '*' | '/' | '%' => 4.0,
+                '^' => 5.0,
+                '&' => 6.0,
+                _ => 7.0,
             }
         }
     }
@@ -2131,11 +2160,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             body: Rc::new(Expr::Eval(Box::new(Expr::Ident("arg".to_string())))),
             env: Env::with_parent(env),
         }), 0.0)),
+        Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
+            match if *i == 0 { top.backrefs.last() } else { top.backrefs.get(i - 1) } {
+                Some(x) => Ok(x.clone()),
+                None => Err(NErr::IndexError("no such backref".to_string())),
+            }
+        })
     }
 }
 
 pub fn simple_eval(code: &str) -> Obj {
-    let mut env = Env::new();
+    let mut env = Env::new(TopEnv { backrefs: Vec::new() });
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
@@ -2359,6 +2394,22 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(TwoArgBuiltin {
+        name: "each".to_string(),
+        can_refer: true,
+        body: |mut a, b| {
+            let it = mut_obj_into_iter(&mut a)?;
+            match b {
+                Obj::Func(b, _) => {
+                    for e in it {
+                        b.run(vec![e])?;
+                    }
+                    Ok(Obj::Null)
+                }
+                _ => Err(NErr::TypeError("map: not callable".to_string()))
+            }
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
         name: "map".to_string(),
         can_refer: true,
         body: |mut a, b| {
@@ -2439,8 +2490,42 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::List(Rc::new(acc)))
                 }
-                _ => Err(NErr::TypeError("filter: list and func only".to_string()))
+                _ => Err(NErr::TypeError("reject: list and func only".to_string()))
             }
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "any".to_string(),
+        can_refer: true,
+        body: |args| match few2(args) {
+            Few2::Zero => Err(NErr::TypeError("any: zero args".to_string())),
+            Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a)?.any(|x| x.truthy()))),
+            Few2::Two(mut a, Obj::Func(b, _)) => {
+                for e in mut_obj_into_iter(&mut a)? {
+                    if b.run(vec![e.clone()])?.truthy() {
+                        return Ok(Obj::from(true))
+                    }
+                }
+                Ok(Obj::from(false))
+            }
+            _ => Err(NErr::TypeError("all: too many args".to_string())),
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "all".to_string(),
+        can_refer: true,
+        body: |args| match few2(args) {
+            Few2::Zero => Err(NErr::TypeError("all: zero args".to_string())),
+            Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a)?.all(|x| x.truthy()))),
+            Few2::Two(mut a, Obj::Func(b, _)) => {
+                for e in mut_obj_into_iter(&mut a)? {
+                    if !b.run(vec![e.clone()])?.truthy() {
+                        return Ok(Obj::from(false))
+                    }
+                }
+                Ok(Obj::from(true))
+            }
+            _ => Err(NErr::TypeError("all: too many args".to_string())),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -2529,11 +2614,55 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(BasicBuiltin {
+        name: "echo".to_string(),
+        can_refer: false,
+        body: |args| {
+            print!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
+            Ok(Obj::Null)
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
         can_refer: false,
         body: |args| {
             println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
             Ok(Obj::Null)
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "type".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::Null => Ok(Obj::from("null")),
+            Obj::Num(_) => Ok(Obj::from("number")),
+            Obj::List(_) => Ok(Obj::from("list")),
+            Obj::String(_) => Ok(Obj::from("string")),
+            Obj::Dict(..) => Ok(Obj::from("dict")),
+            Obj::Func(..) => Ok(Obj::from("function")),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "int".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
+            Obj::String(s) => match s.parse::<BigInt>() {
+                Ok(x) => Ok(Obj::from(x)),
+                Err(s) => Err(NErr::ValueError(format!("int: can't parse: {}", s))),
+            },
+            _ => Err(NErr::TypeError("int: expected number or string".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "float".to_string(),
+        can_refer: false,
+        body: |arg| match arg {
+            Obj::Num(n) => Ok(Obj::from(n.to_f64_re_or_inf())),
+            Obj::String(s) => match s.parse::<f64>() {
+                Ok(x) => Ok(Obj::from(x)),
+                Err(s) => Err(NErr::ValueError(format!("float: can't parse: {}", s))),
+            },
+            _ => Err(NErr::TypeError("float: expected number or string".to_string())),
         }
     });
     env.insert_builtin(BasicBuiltin {
@@ -2669,6 +2798,50 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(CartesianProduct {});
     env.insert_builtin(OneArgBuiltin {
+        name: "first".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(v) => match v.first() {
+                Some(x) => Ok(x.clone()),
+                None => Err(NErr::IndexError("first: no such index".to_string())),
+            }
+            _ => Err(NErr::ArgumentError("first: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "second".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(v) => match v.get(1) {
+                Some(x) => Ok(x.clone()),
+                None => Err(NErr::IndexError("second: no such index".to_string())),
+            }
+            _ => Err(NErr::ArgumentError("second: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "third".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(v) => match v.get(2) {
+                Some(x) => Ok(x.clone()),
+                None => Err(NErr::IndexError("third: no such index".to_string())),
+            }
+            _ => Err(NErr::ArgumentError("third: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "last".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::List(v) => match v.last() {
+                Some(x) => Ok(x.clone()),
+                None => Err(NErr::IndexError("last: no such index".to_string())),
+            }
+            _ => Err(NErr::ArgumentError("last: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
         name: "sort".to_string(),
         can_refer: false,
         body: |a| match a {
@@ -2689,6 +2862,21 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::List(v))
             }
             _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
+        }
+    });
+
+    // TODO safety, wasm version
+    env.insert_builtin(BasicBuiltin {
+        name: "input".to_string(),
+        can_refer: false,
+        body: |args| if args.is_empty() {
+            let mut input = String::new();
+            match io::stdin().read_line(&mut input) {
+                Ok(_) => Ok(Obj::from(input)),
+                Err(msg) => Err(NErr::ValueError(format!("input failed: {}", msg))),
+            }
+        } else {
+            Err(NErr::ArgumentError("input: unrecognized argument types".to_string()))
         }
     });
 
