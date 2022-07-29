@@ -22,7 +22,13 @@ mod gamma;
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
 
-type Precedence = f64;
+#[derive(Debug, Clone, Copy)]
+pub enum Assoc { Left, Right }
+#[derive(Debug, Clone, Copy)]
+pub struct Precedence(f64, Assoc);
+impl Precedence {
+    fn zero() -> Self { Precedence(0.0, Assoc::Left) }
+}
 
 #[derive(Debug)]
 enum Few<T> { Zero, One(T), Many(Vec<T>), }
@@ -42,6 +48,7 @@ impl<T> Few<T> {
         }
     }
 }
+#[derive(Debug)]
 enum Few2<T> { Zero, One(T), Two(T, T), Many(Vec<T>), }
 fn few2<T>(mut xs: Vec<T>) -> Few2<T> {
     match xs.len() {
@@ -221,7 +228,7 @@ impl Display for Obj {
                 }
                 write!(formatter, "}}")
             }
-            Obj::Func(f, p) => write!(formatter, "{:?} (precedence {})", f, p),
+            Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
         }
     }
 }
@@ -482,6 +489,18 @@ impl Func {
     }
 }
 
+impl Display for Func {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
+            Func::Closure(_) => write!(formatter, "Closure"),
+            Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
+            Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
+            Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
+        }
+    }
+}
+
 pub trait Builtin : Debug {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
 
@@ -530,7 +549,7 @@ impl Builtin for ComparisonOperator {
                 Few::One(arg) => Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(arg)
-                ), 0.0)),
+                ), Precedence::zero())),
                 Few::Many(args) => {
                     for i in 0 .. args.len() - 1 {
                         if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
@@ -745,7 +764,7 @@ impl Builtin for TwoArgBuiltin {
                 Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(arg)
-                ), 0.0))
+                ), Precedence::zero()))
             }
             Few2::Two(a, b) => (self.body)(a, b),
             f => Err(NErr::ArgumentError(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
@@ -808,7 +827,7 @@ impl Builtin for TwoNumsBuiltin {
                 Ok(Obj::Func(Func::PartialApp2(
                     Box::new(Func::Builtin(Rc::new(self.clone()))),
                     Box::new(a)
-                ), 0.0))
+                ), Precedence::zero()))
             }
             Few2::One(a) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, a))),
             Few2::Two(Obj::Num(a), Obj::Num(b)) => (self.body)(a, b),
@@ -870,7 +889,6 @@ pub enum Token {
     Lambda,
     Comma,
     Assign,
-    Declare,
     Pop,
     Remove,
     Swap,
@@ -900,6 +918,7 @@ pub enum Expr {
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
+    Annotation(Box<Expr>, Option<Box<Expr>>),
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
     Swap(Box<Lvalue>, Box<Lvalue>),
@@ -912,7 +931,6 @@ pub enum Expr {
     // function call everywhere.
     Eval(Box<Expr>),
     EvalToken,
-    Declare(Box<Lvalue>, Box<Expr>),
     Assign(Box<Lvalue>, Box<Expr>),
     OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
@@ -929,6 +947,7 @@ pub enum Expr {
 #[derive(Debug)]
 pub enum Lvalue {
     IndexedIdent(String, Vec<Box<Expr>>),
+    Annotation(Box<Lvalue>, Option<Box<Expr>>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
 }
@@ -936,6 +955,7 @@ pub enum Lvalue {
 #[derive(Debug)]
 enum EvaluatedLvalue {
     IndexedIdent(String, Vec<Obj>),
+    Annotation(Box<EvaluatedLvalue>, Option<Obj>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
 }
@@ -952,6 +972,7 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
                 ee => Err(format!("can't to_lvalue index of nonident {:?}", ee)),
             }
         }
+        Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
         Expr::CommaSeq(es) => Ok(Lvalue::CommaSeq(
             es.into_iter().map(|e| Ok(Box::new(to_lvalue(*e)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?
         )),
@@ -967,7 +988,7 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
 
 pub fn lex(code: &str) -> Vec<Token> {
     lazy_static! {
-        static ref OPERATOR_SYMBOLS: HashSet<char> = "!#$%&*+-./:<=>?@^|~".chars().collect::<HashSet<char>>();
+        static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
     }
 
     // let mut i: usize = 0;
@@ -985,6 +1006,14 @@ pub fn lex(code: &str) -> Vec<Token> {
             '\\' => tokens.push(Token::Lambda),
             ',' => tokens.push(Token::Comma),
             ';' => tokens.push(Token::Semicolon),
+            ':' => {
+                if chars.peek() == Some(&':') {
+                    chars.next();
+                    tokens.push(Token::DoubleColon);
+                } else {
+                    tokens.push(Token::Colon);
+                }
+            }
             ' ' => (),
             '\n' => (),
             '#' => {
@@ -1056,7 +1085,6 @@ pub fn lex(code: &str) -> Vec<Token> {
                         ("!" | "<" | ">" | "=", '=') => {
                             acc.push(last); tokens.push(Token::Ident(acc))
                         }
-                        (":", '=') => tokens.push(Token::Declare),
                         ("", '=') => tokens.push(Token::Assign),
                         (_, '=') => {
                             tokens.push(Token::Ident(acc));
@@ -1067,8 +1095,6 @@ pub fn lex(code: &str) -> Vec<Token> {
                             tokens.push(match acc.as_str() {
                                 "&&" => Token::And,
                                 "||" => Token::Or,
-                                ":" => Token::Colon,
-                                "::" => Token::DoubleColon,
                                 "..." => Token::Ellipsis,
                                 _ => Token::Ident(acc)
                             })
@@ -1241,12 +1267,21 @@ impl Parser {
             let pat0 = self.pattern()?;
             let pat = to_lvalue(pat0)?;
             let ty = match self.peek() {
-                Some(Token::Colon) => ForIterationType::Normal,
-                Some(Token::DoubleColon) => ForIterationType::Item,
-                Some(Token::Declare) => ForIterationType::Declare,
+                Some(Token::Colon) => {
+                    self.advance();
+                    if self.peek() == Some(Token::Assign) {
+                        self.advance();
+                        ForIterationType::Declare
+                    } else {
+                        ForIterationType::Normal
+                    }
+                }
+                Some(Token::DoubleColon) => {
+                    self.advance();
+                    ForIterationType::Item
+                }
                 p => return Err(format!("for: require : or :: or :=, got {:?}", p)),
             };
-            self.advance();
             let iteratee = self.pattern()?;
             Ok(ForIteration::Iteration(ty, Box::new(pat), Box::new(iteratee)))
         }
@@ -1280,7 +1315,6 @@ impl Parser {
             Some(Token::RightBracket) => true,
             Some(Token::RightBrace) => true,
             Some(Token::Assign) => true,
-            Some(Token::Declare) => true,
             Some(Token::Colon) => true,
             Some(Token::DoubleColon) => true,
             Some(Token::Semicolon) => true,
@@ -1385,6 +1419,21 @@ impl Parser {
         }
     }
 
+    // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think.
+    fn annotated_pattern(&mut self) -> Result<Expr, String> {
+        let pat = self.pattern()?;
+        if self.peek() == Some(Token::Colon) {
+            self.advance();
+            if self.peek_csc_stopper() {
+                Ok(Expr::Annotation(Box::new(pat), None))
+            } else {
+                Ok(Expr::Annotation(Box::new(pat), Some(Box::new(self.single()?))))
+            }
+        } else {
+            Ok(pat)
+        }
+    }
+
     fn assignment(&mut self) -> Result<Expr, String> {
         if self.peek() == Some(Token::Swap) {
             self.advance();
@@ -1393,7 +1442,7 @@ impl Parser {
             let b = to_lvalue(self.single()?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
-            let pat = self.pattern()?;
+            let pat = self.annotated_pattern()?;
 
             match self.peek() {
                 Some(Token::Assign) => {
@@ -1412,10 +1461,12 @@ impl Parser {
                         }
                     }
                 }
+                /*
                 Some(Token::Declare) => {
                     self.advance();
                     Ok(Expr::Declare(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
                 }
+                */
                 _ => Ok(pat)
             }
         }
@@ -1499,13 +1550,17 @@ impl Env {
     fn insert(&mut self, key: String, val: Obj) -> Option<Obj> {
         self.vars.insert(key, val)
     }
-    fn insert_builtin(&mut self, b: impl Builtin + 'static) {
-        let p = default_precedence(b.builtin_name());
+    fn insert_builtin_with_precedence(&mut self, b: impl Builtin + 'static, p: Precedence) {
         self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b)), p));
+    }
+    fn insert_builtin(&mut self, b: impl Builtin + 'static) {
+        let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
+        self.insert_builtin_with_precedence(b, p);
     }
 }
 
 // bool: declare if true, assign if false
+// oops we don't currently use DeclareNull, it was an attempt that got refactored out
 #[derive(Debug)]
 enum AssignRHS<'a> { DeclareNull, Assign(bool, &'a Obj) }
 #[derive(Debug)]
@@ -1583,7 +1638,7 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
                 }, rest, value)
             }
         }
-        (Obj::Func(_, p), [Obj::String(r)]) => match &***r {
+        (Obj::Func(_, Precedence(p, _)), [Obj::String(r)]) => match &***r {
             "precedence" => match value {
                 Obj::Num(f) => match f.to_f64() {
                     Some(f) => { *p = f; Ok(()) }
@@ -1680,29 +1735,33 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: AssignRHS<'_>) -> NRes<()> 
                 _ => Err(NErr::TypeError(format!("Can't unpack non-list {:?}", rhs))),
             }
         }
+        EvaluatedLvalue::Annotation(s, _type) => {
+            // TODO: use type
+            match rhs {
+                AssignRHS::DeclareNull => assign(env, s, AssignRHS::DeclareNull),
+                // note declaring to true
+                AssignRHS::Assign(_, x) => assign(env, s, AssignRHS::Assign(true, x)),
+            }
+        }
         EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
 
-fn default_precedence(name: &str) -> Precedence {
-    // stolen from Scala
-    match name.chars().next() {
-        None => 0.0,
-        Some(c) => if c.is_alphanumeric() || c == '_' {
-            0.0
-        } else {
-            // FIXME blah
-            match c {
-                '=' | '!' | '<' | '>' => 1.0,
-                '$' => 2.0,
-                '+' | '-' | '|' => 3.0,
-                '*' | '/' | '%' => 4.0,
-                '^' => 5.0,
-                '&' => 6.0,
-                _ => 7.0,
-            }
+fn default_precedence(name: &str) -> f64 {
+    name.chars().map(|c| if c.is_alphanumeric() || c == '_' {
+        0
+    } else {
+        match c {
+            '=' | '<' | '>' | '~' => 1,
+            '$' => 2,
+            '|' => 3,
+            '+' | '-' | '@' => 4,
+            '*' | '/' | '%' | '&' => 5,
+            '^' => 6,
+            '!' | '?' => 7,
+            _ => 8, // particularly .
         }
-    }
+    }).min().unwrap_or(0).to_f64().unwrap()
 }
 
 struct ChainEvaluator {
@@ -1729,7 +1788,7 @@ impl ChainEvaluator {
     }
 
     fn give(&mut self, operator: Func, precedence: Precedence, operand: Obj) -> NRes<()> {
-        while self.operators.last().map_or(false, |t| t.1 >= precedence) {
+        while self.operators.last().map_or(false, |t| t.1.0 >= precedence.0) {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
                 Some(new_op) => {
@@ -1782,6 +1841,10 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
             s.to_string(),
             v.iter().map(|e| Ok(evaluate(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         )),
+        Lvalue::Annotation(s, t) => Ok(EvaluatedLvalue::Annotation(
+            Box::new(eval_lvalue(env, s)?),
+            match t { Some(e) => Some(evaluate(env, e)?), None => None }
+        )),
         Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
             v.iter().map(|e| Ok(Box::new(eval_lvalue(env, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?
         )),
@@ -1823,7 +1886,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
         }
-        (Obj::Func(_, p), Obj::String(k)) => match &***k {
+        (Obj::Func(_, Precedence(p, _)), Obj::String(k)) => match &***k {
             "precedence" => Ok(Obj::from(*p)),
             _ => Err(NErr::TypeError(format!("can't index into func {:?}", k))),
         }
@@ -1859,7 +1922,7 @@ fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
         Obj::Func(ff, _) => ff.run(args),
         f => match few(args) {
-            Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), 0.0)),
+            Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), Precedence::zero())),
             Few::One(f2) => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
             _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", f))),
         }
@@ -1875,6 +1938,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
             }
             Ok(sr)
         },
+        Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
         Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
@@ -1988,7 +2052,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             assign(&mut env.borrow_mut(), &p, AssignRHS::Assign(false, &res))?;
             Ok(Obj::Null)
         }
-        Expr::Declare(pat, rhs) => {
+        Expr::Annotation(s, _) => evaluate(env, s),
+        /*
             let p = eval_lvalue(env, pat)?;
             let res = match &**rhs {
                 Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
@@ -1996,7 +2061,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }?;
             assign(&mut env.borrow_mut(), &p, AssignRHS::Assign(true, &res))?;
             Ok(Obj::Null)
-        }
+        */
         Expr::Pop(pat) => {
             match eval_lvalue(env, pat)? {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => {
@@ -2143,7 +2208,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 params: Rc::clone(params),
                 body: Rc::clone(body),
                 env: Rc::clone(env),
-            }), 0.0))
+            }), Precedence::zero()))
         }
         Expr::Eval(expr) => {
             match evaluate(env, expr)? {
@@ -2159,7 +2224,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             params: Rc::new(vec![Box::new(Lvalue::IndexedIdent("arg".to_string(), Vec::new()))]),
             body: Rc::new(Expr::Eval(Box::new(Expr::Ident("arg".to_string())))),
             env: Env::with_parent(env),
-        }), 0.0)),
+        }), Precedence::zero())),
         Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
             match if *i == 0 { top.backrefs.last() } else { top.backrefs.get(i - 1) } {
                 Some(x) => Ok(x.clone()),
@@ -2178,9 +2243,9 @@ pub fn simple_eval(code: &str) -> Obj {
 }
 
 pub fn initialize(env: &mut Env) {
-    env.insert_builtin(NumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "+".to_string(),
-        body: |args| { Ok(Obj::Num(args.into_iter().sum())) },
+        body: |a, b| { Ok(Obj::Num(a + b)) }
     });
     env.insert_builtin(NumsBuiltin {
         name: "-".to_string(),
@@ -2197,10 +2262,6 @@ pub fn initialize(env: &mut Env) {
         }
     });
     // for partial application
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "add".to_string(),
-        body: |a, b| { Ok(Obj::Num(a + b)) }
-    });
     env.insert_builtin(TwoNumsBuiltin {
         name: "subtract".to_string(),
         body: |a, b| { Ok(Obj::Num(a - b)) }
@@ -2378,18 +2439,18 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| call(b, vec![a]),
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: ">>".to_string(),
+        name: "->".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), 0.0)),
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), Precedence::zero())),
             _ => Err(NErr::TypeError(">>: not function".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "<<".to_string(),
+        name: "<-".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), 0.0)),
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), Precedence::zero())),
             _ => Err(NErr::TypeError("<<: not function".to_string()))
         }
     });
@@ -2508,7 +2569,7 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::from(false))
             }
-            _ => Err(NErr::TypeError("all: too many args".to_string())),
+            _ => Err(NErr::TypeError("any: too many args".to_string())),
         }
     });
     env.insert_builtin(BasicBuiltin {
@@ -2525,7 +2586,8 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::from(true))
             }
-            _ => Err(NErr::TypeError("all: too many args".to_string())),
+            Few2::Two(_, b) => Err(NErr::TypeError(format!("all: second arg not func: {}", b))),
+            ff => Err(NErr::TypeError(format!("all: too many args: {:?}", ff))),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -2787,14 +2849,9 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::List(Rc::new(vec![a, b])))
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "->".to_string(),
+        name: "=>".to_string(),
         can_refer: false,
         body: |a, b| Ok(Obj::List(Rc::new(vec![a, b])))
-    });
-    env.insert_builtin(TwoArgBuiltin {
-        name: "<-".to_string(),
-        can_refer: false,
-        body: |a, b| Ok(Obj::List(Rc::new(vec![b, a])))
     });
     env.insert_builtin(CartesianProduct {});
     env.insert_builtin(OneArgBuiltin {
