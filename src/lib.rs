@@ -1034,6 +1034,8 @@ pub enum Expr {
     Sequence(Vec<Box<Expr>>),
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<Expr>),
+    // meaningful in lvalues
+    Paren(Box<Expr>),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<Expr>>),
@@ -1044,6 +1046,7 @@ pub enum Expr {
 pub enum Lvalue {
     IndexedIdent(String, Vec<Box<Expr>>),
     Annotation(Box<Lvalue>, Option<Box<Expr>>),
+    Unannotation(Box<Lvalue>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
 }
@@ -1052,6 +1055,7 @@ pub enum Lvalue {
 enum EvaluatedLvalue {
     IndexedIdent(String, Vec<Obj>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
+    Unannotation(Box<EvaluatedLvalue>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
 }
@@ -1073,11 +1077,7 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
             es.into_iter().map(|e| Ok(Box::new(to_lvalue(*e)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
-        // FIXME
-        Expr::Sequence(xs) => match few(xs) {
-            Few::One(x) => to_lvalue(*x),
-            y => Err(format!("sequence can't be lvalue {:?}", y)),
-        }
+        Expr::Paren(p) => Ok(Lvalue::Unannotation(Box::new(to_lvalue(*p)?))),
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
 }
@@ -1263,13 +1263,22 @@ impl Parser {
                     self.advance();
                     let e = self.expression()?;
                     self.require(Token::RightParen, "normal parenthesized expr".to_string())?;
-                    Ok(e)
+                    // Only add the paren if it looks important in lvalues.
+                    match &e {
+                        // TODO: slice would go here ig
+                        Expr::Ident(_) | Expr::Index(..) => Ok(Expr::Paren(Box::new(e))),
+                        _ => Ok(e),
+                    }
                 }
                 Token::LeftBracket => {
                     self.advance();
-                    let (exs, _) = self.comma_separated()?;
-                    self.require(Token::RightBracket, "list expr".to_string())?;
-                    Ok(Expr::List(exs))
+                    if self.peek() == Some(Token::RightBracket) {
+                        self.advance(); Ok(Expr::List(Vec::new()))
+                    } else {
+                        let (exs, _) = self.comma_separated()?;
+                        self.require(Token::RightBracket, "list expr".to_string())?;
+                        Ok(Expr::List(exs))
+                    }
                 }
                 Token::LeftBrace => {
                     self.advance();
@@ -1308,9 +1317,15 @@ impl Parser {
                         self.advance();
                         Ok(Expr::Backref(x.to_usize().ok_or(format!("backref: not usize: {}", x))?))
                     } else {
-                        let (params0, _) = self.comma_separated()?;
-                        let params = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
-                        self.require(Token::Colon, "lambda start".to_string())?;
+                        let params = if self.peek() == Some(Token::Colon) {
+                            self.advance();
+                            Vec::new()
+                        } else {
+                            let (params0, _) = self.comma_separated()?;
+                            let ps = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
+                            self.require(Token::Colon, "lambda start".to_string())?;
+                            ps
+                        };
                         let body = self.single()?;
                         Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
                     }
@@ -1483,14 +1498,10 @@ impl Parser {
         Ok(op1)
     }
 
-    // No semicolons allowed, but can be empty. List literals; function declarations; LHSes of
-    // assignments. Not for function calls, I think? f(x; y) might actually be ok...
-    // bool is whether a comma was found, to distinguish (x) from (x,)
+    // Nonempty (caller should check empty condition); no semicolons allowed. List literals;
+    // function declarations; LHSes of assignments. Not for function calls, I think? f(x; y) might
+    // actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
     fn comma_separated(&mut self) -> Result<(Vec<Box<Expr>>, bool), String> {
-        if self.peek_csc_stopper() {
-            return Ok((Vec::new(), false));
-        }
-
         let mut xs = vec![Box::new(self.single()?)];
         let mut comma = false;
         while self.peek() == Some(Token::Comma) {
@@ -1570,15 +1581,21 @@ impl Parser {
 
     fn expression(&mut self) -> Result<Expr, String> {
         let mut ags = vec![Box::new(self.assignment()?)];
+        let mut semicolon = false;
 
         while self.peek() == Some(Token::Semicolon) {
-            self.i += 1;
+            self.advance();
+            semicolon = true;
             if self.peek() != None {
                 ags.push(Box::new(self.assignment()?));
             }
         }
 
-        Ok(Expr::Sequence(ags))
+        Ok(if ags.len() == 1 && !semicolon {
+            *ags.remove(0)
+        } else {
+            Expr::Sequence(ags)
+        })
     }
 }
 
@@ -1760,7 +1777,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
                 // declaration
                 if ixs.is_empty() {
                     if env.insert(s.to_string(), ty.clone(), rhs.clone()).is_some() {
-                        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}", s)))
+                        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
                     } else {
                         Ok(())
                     }
@@ -1794,6 +1811,9 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
         EvaluatedLvalue::Annotation(s, ann) => match ann {
             None => assign(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
+        }
+        EvaluatedLvalue::Unannotation(s) => {
+            assign(env, s, None, rhs)
         }
         EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
     }
@@ -1897,6 +1917,9 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
             Box::new(eval_lvalue(env, s)?),
             match t { Some(e) => Some(evaluate(env, e)?), None => None }
         )),
+        Lvalue::Unannotation(s) => Ok(EvaluatedLvalue::Unannotation(
+            Box::new(eval_lvalue(env, s)?),
+        )),
         Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
             v.iter().map(|e| Ok(Box::new(eval_lvalue(env, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?
         )),
@@ -1991,6 +2014,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
             Ok(sr)
         },
         Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
+        Lvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
         Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
@@ -2280,7 +2304,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 Some(x) => Ok(x.clone()),
                 None => Err(NErr::IndexError("no such backref".to_string())),
             }
-        })
+        }),
+        Expr::Paren(p) => evaluate(env, &*p),
     }
 }
 
