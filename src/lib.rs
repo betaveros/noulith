@@ -80,6 +80,94 @@ pub enum Obj {
     Func(Func, Precedence),
 }
 
+// more like an arbitrary predicate. want to add subscripted types to this later
+#[derive(Debug, Clone)]
+pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Func, Type, Any }
+
+impl ObjType {
+    fn name(&self) -> String {
+        match self {
+            ObjType::Null => "nulltype",
+            ObjType::Int => "int",
+            ObjType::Float => "float",
+            ObjType::Complex => "complex",
+            ObjType::Number => "number",
+            ObjType::List => "list",
+            ObjType::String => "str",
+            ObjType::Dict => "dict",
+            ObjType::Type => "type",
+            ObjType::Func => "func",
+            ObjType::Any => "anything",
+        }.to_string()
+    }
+}
+
+fn type_of(obj: &Obj) -> ObjType {
+    match obj {
+        Obj::Null => ObjType::Null,
+        Obj::Num(NNum::Int(_)) => ObjType::Int,
+        Obj::Num(NNum::Float(_)) => ObjType::Float,
+        Obj::Num(NNum::Complex(_)) => ObjType::Complex,
+        Obj::List(_) => ObjType::List,
+        Obj::String(_) => ObjType::String,
+        Obj::Dict(..) => ObjType::Dict,
+        Obj::Func(Func::Type(_), _) => ObjType::Type,
+        Obj::Func(..) => ObjType::Func,
+    }
+}
+
+fn is_type(ty: &ObjType, arg: &Obj) -> bool {
+    match (ty, arg) {
+        (ObjType::Null, Obj::Null) => true,
+        (ObjType::Int, Obj::Num(NNum::Int(_))) => true,
+        (ObjType::Float, Obj::Num(NNum::Float(_))) => true,
+        (ObjType::Complex, Obj::Num(NNum::Complex(_))) => true,
+        (ObjType::Number, Obj::Num(_)) => true,
+        (ObjType::List, Obj::List(_)) => true,
+        (ObjType::String, Obj::String(_)) => true,
+        (ObjType::Dict, Obj::Dict(..)) => true,
+        (ObjType::Func, Obj::Func(..)) => true,
+        (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
+        (ObjType::Any, _) => true,
+        _ => false,
+    }
+}
+
+fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
+    match ty {
+        ObjType::Int => match arg {
+            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
+            Obj::String(s) => match s.parse::<BigInt>() {
+                Ok(x) => Ok(Obj::from(x)),
+                Err(s) => Err(NErr::ValueError(format!("int: can't parse: {}", s))),
+            },
+            _ => Err(NErr::TypeError("int: expected number or string".to_string())),
+        }
+        ObjType::Float => match arg {
+            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
+            Obj::String(s) => match s.parse::<f64>() {
+                Ok(x) => Ok(Obj::from(x)),
+                Err(s) => Err(NErr::ValueError(format!("float: can't parse: {}", s))),
+            },
+            _ => Err(NErr::TypeError("float: expected number or string".to_string())),
+        }
+        ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
+        // TODO: complex, number, list, dict
+        _ => Err(NErr::TypeError("that type can't be called (maybe not implemented)".to_string())),
+    }
+}
+
+// TODO can we take?
+fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
+    match arg {
+        Obj::Null => Ok(ObjType::Null),
+        Obj::Func(Func::Type(t), _) => Ok(t.clone()),
+        // TODO: possibly intelligently convert some objects to types?
+        // e.g. "heterogenous tuples"
+        a => Err(NErr::TypeError(format!("can't convert {} to type for {}", a, msg))),
+    }
+}
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
 pub enum ObjKey {
     Null,
@@ -448,6 +536,7 @@ pub enum Func {
     PartialApp2(Box<Func>, Box<Obj>),
     // mathematical notation, first of second
     Composition(Box<Func>, Box<Func>),
+    Type(ObjType),
 }
 
 impl Func {
@@ -464,6 +553,10 @@ impl Func {
                 _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::Composition(f, g) => f.run(vec![g.run(args)?]),
+            Func::Type(t) => match few(args) {
+                Few::One(arg) => call_type(t, arg),
+                _ => Err(NErr::ArgumentError("Types can only take one argument".to_string()))
+            }
         }
     }
 
@@ -475,6 +568,7 @@ impl Func {
             Func::PartialApp1(f, _) => f.can_refer(),
             Func::PartialApp2(f, _) => f.can_refer(),
             Func::Composition(f, g) => f.can_refer() || g.can_refer(),
+            Func::Type(_) => false,
         }
     }
 
@@ -485,6 +579,7 @@ impl Func {
             Func::PartialApp1(..) => None,
             Func::PartialApp2(..) => None,
             Func::Composition(..) => None,
+            Func::Type(_) => None,
         }
     }
 }
@@ -497,6 +592,7 @@ impl Display for Func {
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
+            Func::Type(t) => write!(formatter, "{}", t.name()),
         }
     }
 }
@@ -859,7 +955,7 @@ impl Closure {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         let ee = Env::with_parent(&self.env);
         let p = self.params.iter().map(|e| Ok(Box::new(eval_lvalue(&ee, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
-        assign_all(&mut ee.borrow_mut(), &p, AssignRHSes::Assign(true, &args))?;
+        assign_all(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &args)?;
         evaluate(&ee, &self.body)
     }
 }
@@ -1504,7 +1600,7 @@ pub struct TopEnv {
 
 #[derive(Debug)]
 pub struct Env {
-    vars: HashMap<String, Obj>,
+    vars: HashMap<String, (ObjType, Obj)>,
     parent: Result<Rc<RefCell<Env>>, TopEnv>,
 }
 impl Env {
@@ -1525,7 +1621,7 @@ impl Env {
 
     fn get_var(&self, s: &str) -> NRes<Obj> {
         match self.vars.get(s) {
-            Some(v) => Ok(v.clone()),
+            Some(v) => Ok(v.1.clone()),
             None => match &self.parent {
                 Ok(p) => p.borrow().get_var(s),
                 Err(_) => Err(NErr::NameError(format!("No such variable: {}", s))),
@@ -1533,25 +1629,23 @@ impl Env {
         }
     }
 
-    fn modify_existing_var(&mut self, key: &str, f: impl FnOnce(&mut Obj) -> ()) -> bool {
+    fn modify_existing_var<T>(&mut self, key: &str, f: impl FnOnce(&mut (ObjType, Obj)) -> T) -> Option<T> {
         match self.vars.get_mut(key) {
-            Some(target) => { f(target); true }
+            Some(target) => Some(f(target)),
             None => match &self.parent {
                 Ok(p) => p.borrow_mut().modify_existing_var(key, f),
-                Err(_) => false,
+                Err(_) => None,
             }
         }
     }
-    fn set_existing_var(&mut self, key: String, val: Obj) -> bool {
-        self.modify_existing_var(&key, |target| {
-            *target = val
-        })
+    fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> Option<Obj> {
+        self.vars.insert(key, (ty, val)).map(|x| x.1)
     }
-    fn insert(&mut self, key: String, val: Obj) -> Option<Obj> {
-        self.vars.insert(key, val)
+    fn insert_type(&mut self, b: ObjType) {
+        self.insert(b.name(), ObjType::Any, Obj::Func(Func::Type(b), Precedence::zero()));
     }
     fn insert_builtin_with_precedence(&mut self, b: impl Builtin + 'static, p: Precedence) {
-        self.insert(b.builtin_name().to_string(), Obj::Func(Func::Builtin(Rc::new(b)), p));
+        self.insert(b.builtin_name().to_string(), ObjType::Any, Obj::Func(Func::Builtin(Rc::new(b)), p));
     }
     fn insert_builtin(&mut self, b: impl Builtin + 'static) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
@@ -1559,36 +1653,20 @@ impl Env {
     }
 }
 
-// bool: declare if true, assign if false
-// oops we don't currently use DeclareNull, it was an attempt that got refactored out
-#[derive(Debug)]
-enum AssignRHS<'a> { DeclareNull, Assign(bool, &'a Obj) }
-#[derive(Debug)]
-enum AssignRHSes<'a> { DeclareNull, Assign(bool, &'a[Obj])}
+// the ObjType is provided iff it's a declaration
 
-fn assign_all_basic(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: AssignRHSes<'_>) -> NRes<()> {
-    match rhs {
-        AssignRHSes::DeclareNull => {
-            for lhs1 in lhs.iter() {
-                assign(env, lhs1, AssignRHS::DeclareNull)?;
-            }
-            Ok(())
+fn assign_all_basic(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>, rhs: &[Obj]) -> NRes<()> {
+    if lhs.len() == rhs.len() {
+        for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
+            assign(env, lhs1, rt, rhs1)?;
         }
-        AssignRHSes::Assign(d, rhs) => {
-            if lhs.len() == rhs.len() {
-                for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
-                    assign(env, lhs1, AssignRHS::Assign(d, rhs1))?;
-                }
-                Ok(())
-            } else {
-                Err(NErr::ValueError(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
-            }
-        }
+        Ok(())
+    } else {
+        Err(NErr::ValueError(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
     }
 }
 
-fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: AssignRHSes<'_>) -> NRes<()> {
-    // still detect bad splatting even if DeclareNull
+fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>, rhs: &[Obj]) -> NRes<()> {
     let mut splat = None;
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
@@ -1602,19 +1680,12 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rhs: AssignRHSes<'_>)
         }
     }
     match splat {
-        Some((si, inner)) => match rhs {
-            AssignRHSes::DeclareNull => {
-                assign_all_basic(env, &lhs[..si], AssignRHSes::DeclareNull)?;
-                assign(env, inner, AssignRHS::DeclareNull)?;
-                assign_all_basic(env, &lhs[si + 1..], AssignRHSes::DeclareNull)
-            }
-            AssignRHSes::Assign(d, rhs) => {
-                assign_all_basic(env, &lhs[..si], AssignRHSes::Assign(d, &rhs[..si]))?;
-                assign(env, inner, AssignRHS::Assign(d, &Obj::List(Rc::new(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec()))))?;
-                assign_all_basic(env, &lhs[si + 1..], AssignRHSes::Assign(d, &rhs[rhs.len() - lhs.len() + si + 1..]))
-            }
+        Some((si, inner)) => {
+            assign_all_basic(env, &lhs[..si], rt, &rhs[..si])?;
+            assign(env, inner, rt, &Obj::List(Rc::new(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec())))?;
+            assign_all_basic(env, &lhs[si + 1..], rt, &rhs[rhs.len() - lhs.len() + si + 1..])
         }
-        None => assign_all_basic(env, lhs, rhs),
+        None => assign_all_basic(env, lhs, rt, rhs),
     }
 }
 
@@ -1682,66 +1753,47 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj
     }
 }
 
-fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rhs: AssignRHS<'_>) -> NRes<()> {
+fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
-        EvaluatedLvalue::IndexedIdent(s, ixs) => match rhs {
-            AssignRHS::DeclareNull => {
+        EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
+            Some(ty) => {
+                // declaration
                 if ixs.is_empty() {
-                    if env.insert(s.to_string(), Obj::Null).is_some() {
-                        // TODO error
-                        Err(NErr::TypeError(format!("Declaring variable that already exists: {:?}", s)))
+                    if env.insert(s.to_string(), ty.clone(), rhs.clone()).is_some() {
+                        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}", s)))
                     } else {
                         Ok(())
                     }
                 } else {
-                    Err(NErr::TypeError(format!("Can't insert new value into index expression on nonexistent variable: {:?} {:?}", s, ixs)))
+                    return Err(NErr::NameError(format!("Can't insert new value into index expression on nonexistent variable: {:?} {:?}", s, ixs)))
                 }
             }
-            AssignRHS::Assign(true, rhs) => {
+            None => {
+                // assignment
                 if ixs.is_empty() {
-                    if env.insert(s.to_string(), rhs.clone()).is_some() {
-                        // TODO error
-                        Err(NErr::TypeError(format!("Declaring/assigning variable that already exists: {:?}", s)))
-                    } else {
-                        Ok(())
-                    }
+                    env.modify_existing_var(s, |(ty, old)| {
+                        if is_type(ty, rhs) {
+                            *old = rhs.clone(); Ok(())
+                        } else {
+                            Err(NErr::NameError(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))
+                        }
+                    }).ok_or(NErr::NameError(format!("Variable {:?} not found (use := to declare)", s)))?
                 } else {
-                    return Err(NErr::TypeError(format!("Can't insert new value into index expression on nonexistent variable: {:?} {:?}", s, ixs)))
-                }
-            }
-            AssignRHS::Assign(false, rhs) => {
-                if ixs.is_empty() {
-                    if env.set_existing_var(s.to_string(), rhs.clone()) {
-                        Ok(())
-                    } else {
-                        Err(NErr::NameError(format!("Variable {:?} not found (use := to declare)", s)))?
-                    }
-                } else {
-                    let mut ret = Err(NErr::ValueError("TODO".to_string()));
-                    if env.modify_existing_var(s, |v| {
-                        ret = set_index(v, ixs, rhs.clone());
-                    }) {
-                        ret
-                    } else {
-                        Err(NErr::NameError(format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)))?
-                    }
+                    env.modify_existing_var(s, |(_type, v)| {
+                        set_index(v, ixs, rhs.clone())?; Ok(())
+                    }).ok_or(NErr::NameError(format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)))?
                 }
             }
         }
         EvaluatedLvalue::CommaSeq(ss) => {
             match rhs {
-                AssignRHS::DeclareNull => assign_all(env, ss, AssignRHSes::DeclareNull),
-                AssignRHS::Assign(d, Obj::List(ls)) => assign_all(env, ss, AssignRHSes::Assign(d, ls)),
+                Obj::List(ls) => assign_all(env, ss, rt, ls),
                 _ => Err(NErr::TypeError(format!("Can't unpack non-list {:?}", rhs))),
             }
         }
-        EvaluatedLvalue::Annotation(s, _type) => {
-            // TODO: use type
-            match rhs {
-                AssignRHS::DeclareNull => assign(env, s, AssignRHS::DeclareNull),
-                // note declaring to true
-                AssignRHS::Assign(_, x) => assign(env, s, AssignRHS::Assign(true, x)),
-            }
+        EvaluatedLvalue::Annotation(s, ann) => match ann {
+            None => assign(env, s, Some(&ObjType::Any), rhs),
+            Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
         }
         EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
     }
@@ -1968,7 +2020,7 @@ fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callb
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &x))?;
+                        assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &x)?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
@@ -1978,14 +2030,14 @@ fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callb
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &Obj::List(Rc::new(vec![key_to_obj(k), v]))))?;
+                        assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &Obj::List(Rc::new(vec![key_to_obj(k), v])))?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
                 ForIterationType::Declare => {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, lvalue)?;
-                    assign(&mut ee.borrow_mut(), &p, AssignRHS::Assign(true, &itr))?;
+                    assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &itr)?;
 
                     evaluate_for(&ee, rest, body, callback)?;
                 }
@@ -2049,7 +2101,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                 _ => evaluate(env, rhs),
             }?;
-            assign(&mut env.borrow_mut(), &p, AssignRHS::Assign(false, &res))?;
+            assign(&mut env.borrow_mut(), &p, None, &res)?;
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
@@ -2065,16 +2117,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Pop(pat) => {
             match eval_lvalue(env, pat)? {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => {
-                    let mut popped = Err(NErr::TypeError("failed to pop??".to_string()));
-                    env.borrow_mut().modify_existing_var(&s, |vv| {
-                        popped = modify_existing_index(vv, &ixs, |x| match x {
+                    env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
+                        modify_existing_index(vv, &ixs, |x| match x {
                             Obj::List(xs) => {
                                 Rc::make_mut(xs).pop().ok_or(NErr::NameError("can't pop empty".to_string()))
                             }
                             _ => Err(NErr::TypeError("can't pop".to_string())),
-                        });
-                    });
-                    popped
+                        })
+                    }).ok_or(NErr::TypeError("failed to pop??".to_string()))?
                 }
                 _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
             }
@@ -2085,7 +2135,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     [] => Err(NErr::ValueError("can't remove flat identifier".to_string())),
                     [rest @ .., last_i] => {
                         let mut removed = Err(NErr::TypeError("failed to remove??".to_string()));
-                        env.borrow_mut().modify_existing_var(&s, |vv| {
+                        env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
                             removed = modify_existing_index(vv, &rest, |x| match (x, last_i) {
                                 (Obj::List(xs), i) => {
                                     let ii = pythonic_index(xs, i)?;
@@ -2108,8 +2158,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             let bl = eval_lvalue(env, b)?;
             let ao = eval_lvalue_as_obj(env, a)?;
             let bo = eval_lvalue_as_obj(env, b)?;
-            assign(&mut env.borrow_mut(), &al, AssignRHS::Assign(false, &bo))?;
-            assign(&mut env.borrow_mut(), &bl, AssignRHS::Assign(false, &ao))?;
+            assign(&mut env.borrow_mut(), &al, None, &bo)?;
+            assign(&mut env.borrow_mut(), &bl, None, &ao)?;
             Ok(Obj::Null)
         }
         Expr::OpAssign(pat, op, rhs) => {
@@ -2125,10 +2175,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     }?;
                     if !ff.can_refer() {
                         // Drop the Rc from the lvalue so that pure functions can try to consume it
-                        assign(&mut env.borrow_mut(), &p, AssignRHS::Assign(false, &Obj::Null))?;
+                        assign(&mut env.borrow_mut(), &p, None, &Obj::Null)?;
                     }
                     let fres = ff.run(vec![pv, res])?;
-                    assign(&mut env.borrow_mut(), &p, AssignRHS::Assign(false, &fres))?;
+                    assign(&mut env.borrow_mut(), &p, None, &fres)?;
                     Ok(Obj::Null)
                 }
                 _ => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
@@ -2691,42 +2741,21 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::Null)
         }
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "type".to_string(),
+    env.insert_builtin(TwoArgBuiltin {
+        name: "is".to_string(),
         can_refer: false,
-        body: |arg| match arg {
-            Obj::Null => Ok(Obj::from("null")),
-            Obj::Num(_) => Ok(Obj::from("number")),
-            Obj::List(_) => Ok(Obj::from("list")),
-            Obj::String(_) => Ok(Obj::from("string")),
-            Obj::Dict(..) => Ok(Obj::from("dict")),
-            Obj::Func(..) => Ok(Obj::from("function")),
-        }
+        body: |a, b| Ok(Obj::from(is_type(&to_type(&b, "builtin 'is'")?, &a))),
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "int".to_string(),
-        can_refer: false,
-        body: |arg| match arg {
-            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
-            Obj::String(s) => match s.parse::<BigInt>() {
-                Ok(x) => Ok(Obj::from(x)),
-                Err(s) => Err(NErr::ValueError(format!("int: can't parse: {}", s))),
-            },
-            _ => Err(NErr::TypeError("int: expected number or string".to_string())),
-        }
-    });
-    env.insert_builtin(OneArgBuiltin {
-        name: "float".to_string(),
-        can_refer: false,
-        body: |arg| match arg {
-            Obj::Num(n) => Ok(Obj::from(n.to_f64_re_or_inf())),
-            Obj::String(s) => match s.parse::<f64>() {
-                Ok(x) => Ok(Obj::from(x)),
-                Err(s) => Err(NErr::ValueError(format!("float: can't parse: {}", s))),
-            },
-            _ => Err(NErr::TypeError("float: expected number or string".to_string())),
-        }
-    });
+    env.insert_type(ObjType::Null);
+    env.insert_type(ObjType::Int);
+    env.insert_type(ObjType::Float);
+    env.insert_type(ObjType::Complex);
+    env.insert_type(ObjType::Number);
+    env.insert_type(ObjType::String);
+    env.insert_type(ObjType::List);
+    env.insert_type(ObjType::Dict);
+    env.insert_type(ObjType::Func);
+    env.insert_type(ObjType::Type);
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
         can_refer: false,
