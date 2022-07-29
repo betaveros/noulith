@@ -1712,6 +1712,34 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
         (Obj::List(v), [i, rest @ ..]) => {
             set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
         }
+        (Obj::String(s), [i]) => match value {
+            Obj::String(v) => {
+                let mut_s = Rc::make_mut(s);
+                if v.as_bytes().len() == 1 {
+                    // FIXME lmao
+                    let mut owned = std::mem::take(mut_s).into_bytes();
+                    let i = match pythonic_index(&owned, i) {
+                        Ok(i) => i,
+                        Err(e) => {
+                            // put it baaaack!!
+                            *mut_s = String::from_utf8(owned).unwrap();
+                            return Err(e)
+                        }
+                    };
+                    owned[i..i+1].copy_from_slice(v.as_bytes());
+                    match String::from_utf8(owned) {
+                        Ok(r) => { *mut_s = r; Ok(()) }
+                        Err(err) => {
+                            *mut_s = String::from_utf8_lossy(err.as_bytes()).into_owned();
+                            Err(NErr::ValueError(format!("assigning to string result not utf-8 (string corrupted)")))
+                        }
+                    }
+                } else {
+                    Err(NErr::ValueError(format!("assigning to string index, not a byte")))
+                }
+            }
+            _ => Err(NErr::ValueError(format!("assigning to string index, not a string")))
+        }
         (Obj::Dict(v, _), [kk, rest @ ..]) => {
             let k = to_key(kk.clone())?;
             let mut_d = Rc::make_mut(v);
@@ -1937,7 +1965,7 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     }
 }
 
-fn pythonic_index(xs: &Vec<Obj>, i: &Obj) -> NRes<usize> {
+fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
             Some(n) => {
@@ -1961,6 +1989,12 @@ fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
 fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
         (Obj::List(xx), ii) => Ok(xx[pythonic_index(xx, ii)?].clone()),
+        (Obj::String(s), ii) => {
+            let bs = s.as_bytes();
+            let i = pythonic_index(bs, ii)?;
+            // TODO this was the path of least resistance; idk what good semantics actually are
+            Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+        }
         (Obj::Dict(xx, def), _) => {
             let k = to_key(ir)?;
             match xx.get(&k) {
@@ -1982,6 +2016,14 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
 fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
         (Obj::Null, _) => Ok(Obj::Null),
+        (Obj::String(s), ii) => {
+            let bs = s.as_bytes();
+            // TODO above
+            match pythonic_index(bs, ii) {
+                Ok(i) => Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned())),
+                Err(_) => Ok(Obj::Null),
+            }
+        }
         (Obj::List(xx), ii) => {
             // Not sure about catching *every* err from pythonic_index here...
             match pythonic_index(xx, ii) {
