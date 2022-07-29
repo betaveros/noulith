@@ -1819,21 +1819,31 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
     }
 }
 
+const DEFAULT_PRECEDENCE: f64 = 0.0;
+const COMPARISON_PRECEDENCE: f64 = 1.0;
+const STRING_PRECEDENCE: f64 = 2.0;
+const OR_PRECEDENCE: f64 = 3.0;
+const PLUS_PRECEDENCE: f64 = 4.0;
+const MULTIPLY_PRECEDENCE: f64 = 5.0;
+const EXPONENT_PRECEDENCE: f64 = 6.0;
+const INDEX_PRECEDENCE: f64 = 7.0;
+const DOT_PRECEDENCE: f64 = 8.0;
+
 fn default_precedence(name: &str) -> f64 {
     name.chars().map(|c| if c.is_alphanumeric() || c == '_' {
-        0
+        DEFAULT_PRECEDENCE
     } else {
         match c {
-            '=' | '<' | '>' | '~' => 1,
-            '$' => 2,
-            '|' => 3,
-            '+' | '-' | '@' => 4,
-            '*' | '/' | '%' | '&' => 5,
-            '^' => 6,
-            '!' | '?' => 7,
-            _ => 8, // particularly .
+            '=' | '<' | '>' | '~' => COMPARISON_PRECEDENCE,
+            '$' => STRING_PRECEDENCE,
+            '|' => OR_PRECEDENCE,
+            '+' | '-' | '@' => PLUS_PRECEDENCE,
+            '*' | '/' | '%' | '&' => MULTIPLY_PRECEDENCE,
+            '^' => EXPONENT_PRECEDENCE,
+            '!' | '?' => INDEX_PRECEDENCE,
+            _ => DOT_PRECEDENCE, // particularly .
         }
-    }).min().unwrap_or(0).to_f64().unwrap()
+    }).reduce(f64::min).unwrap_or(0.0)
 }
 
 struct ChainEvaluator {
@@ -2399,6 +2409,26 @@ pub fn initialize(env: &mut Env) {
         name: "^".to_string(),
         body: |a, b| { Ok(Obj::Num(a.pow_num(&b))) }
     });
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "&".to_string(),
+        body: |a, b| { Ok(Obj::Num(a & b)) }
+    });
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "|".to_string(),
+        body: |a, b| { Ok(Obj::Num(a | b)) }
+    });
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "@".to_string(),
+        body: |a, b| { Ok(Obj::Num(a ^ b)) }
+    });
+    env.insert_builtin_with_precedence(TwoNumsBuiltin {
+        name: "<<".to_string(),
+        body: |a, b| { Ok(Obj::Num(a << b)) }
+    }, Precedence(EXPONENT_PRECEDENCE, Assoc::Left));
+    env.insert_builtin_with_precedence(TwoNumsBuiltin {
+        name: ">>".to_string(),
+        body: |a, b| { Ok(Obj::Num(a >> b)) }
+    }, Precedence(EXPONENT_PRECEDENCE, Assoc::Left));
     env.insert_builtin(OneNumBuiltin {
         name: "abs".to_string(),
         body: |a| { Ok(Obj::Num(a.abs())) }

@@ -2,7 +2,7 @@
 // and doesn't just randomly coerce floats like ints...
 
 use std::cmp::Ordering;
-use std::ops::{Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Neg, Not, Deref};
+use std::ops::{Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Neg, Not, Shl, Shr, Deref};
 use std::ops::{AddAssign, SubAssign};
 use std::iter::{Sum, Product};
 use std::hash::{Hash, Hasher};
@@ -734,6 +734,25 @@ impl_force_bi_binary_method!(BitAnd, bitand, BitAnd::bitand);
 impl_force_bi_binary_method!(BitOr, bitor, BitOr::bitor);
 impl_force_bi_binary_method!(BitXor, bitxor, BitXor::bitxor);
 
+impl Shl<NNum> for NNum {
+    type Output = Self;
+    fn shl(self, other: NNum) -> Self {
+        match (self, other.to_usize()) {
+            (NNum::Int(a), Some(s)) => NNum::Int(a << s),
+            _ => NNum::Float(f64::NAN),
+        }
+    }
+}
+impl Shr<NNum> for NNum {
+    type Output = Self;
+    fn shr(self, other: NNum) -> Self {
+        match (self, other.to_usize()) {
+            (NNum::Int(a), Some(s)) => NNum::Int(a >> s),
+            _ => NNum::Float(f64::NAN),
+        }
+    }
+}
+
 fn lazy_is_prime(n: &BigInt) -> bool {
     if n <= &BigInt::from(1) {
         false
@@ -768,24 +787,6 @@ fn lazy_is_prime(n: &BigInt) -> bool {
 impl NNum {
     pub fn gcd(&self, other: &NNum) -> NNum {
         force_bi_binary_match!(self, other, gcd, Integer::gcd)
-    }
-
-    pub fn shl_opt(&self, other: &NNum) -> Option<NNum> {
-        let shift_amount: usize = other.to_usize()?;
-        Some(match self {
-            NNum::Int(a) => NNum::Int(a << shift_amount),
-            NNum::Float(a) => NNum::Int(a.trunc().to_bigint()? << shift_amount),
-            NNum::Complex(a) => NNum::Int(a.re.trunc().to_bigint()? << shift_amount),
-        })
-    }
-
-    pub fn shr_opt(&self, other: &NNum) -> Option<NNum> {
-        let shift_amount: usize = other.to_usize()?;
-        Some(match self {
-            NNum::Int(a) => NNum::Int(a >> shift_amount),
-            NNum::Float(a) => NNum::Int(a.trunc().to_bigint()? >> shift_amount),
-            NNum::Complex(a) => NNum::Int(a.re.trunc().to_bigint()? >> shift_amount),
-        })
     }
 
     pub fn is_prime(&self) -> bool {
