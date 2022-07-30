@@ -12,6 +12,8 @@ use std::rc::Rc;
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 
+use regex::Regex;
+
 use num::complex::Complex64;
 use num::bigint::BigInt;
 use num::ToPrimitive;
@@ -1424,20 +1426,38 @@ impl Lexer<'_> {
                             acc.push(*cc);
                             self.next();
                         }
-                        self.emit(match acc.as_str() {
-                            "if" => Token::If,
-                            "else" => Token::Else,
-                            "for" => Token::For,
-                            "yield" => Token::Yield,
-                            "and" => Token::And,
-                            "or" => Token::Or,
-                            "pop" => Token::Pop,
-                            "remove" => Token::Remove,
-                            "swap" => Token::Swap,
-                            "every" => Token::Every,
-                            "eval" => Token::Eval,
-                            _ => Token::Ident(acc),
-                        })
+                        if acc == "R" {
+                            // wow
+                            match self.next() {
+                                Some(delim @ ('\'' | '"')) => {
+                                    let mut acc = String::new();
+                                    while self.peek() != Some(&delim) {
+                                        match self.next() {
+                                            Some(c) => acc.push(c),
+                                            None => panic!("lexing: string literal hit eof")
+                                        }
+                                    }
+                                    self.next();
+                                    self.emit(Token::StringLit(Rc::new(acc)))
+                                }
+                                _ => panic!("lexing: raw string literal: no quote")
+                            }
+                        } else {
+                            self.emit(match acc.as_str() {
+                                "if" => Token::If,
+                                "else" => Token::Else,
+                                "for" => Token::For,
+                                "yield" => Token::Yield,
+                                "and" => Token::And,
+                                "or" => Token::Or,
+                                "pop" => Token::Pop,
+                                "remove" => Token::Remove,
+                                "swap" => Token::Swap,
+                                "every" => Token::Every,
+                                "eval" => Token::Eval,
+                                _ => Token::Ident(acc),
+                            })
+                        }
                     } else if OPERATOR_SYMBOLS.contains(&c) {
                         // Most operators ending in = parse weird. It's hard to pop the last character
                         // off a String because of UTF-8 stuff so keep them separate until the last
@@ -3556,6 +3576,52 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(s))
         }
     });
+
+    env.insert_builtin(TwoArgBuiltin {
+        name: "search".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                if r.capture_locations().len() == 1 {
+                    match r.find(&a) {
+                        None => Ok(Obj::Null),
+                        Some(c) => Ok(Obj::from(c.as_str())),
+                    }
+                } else {
+                    match r.captures(&a) {
+                        None => Ok(Obj::Null),
+                        Some(c) => Ok(Obj::list(c.iter().map(|cap| match cap {
+                            None => Obj::Null, // didn't participate
+                            Some(s) => Obj::from(s.as_str()),
+                        }).collect())),
+                    }
+                }
+            }
+            _ => Err(NErr::ArgumentError("search: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "search_all".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                if r.capture_locations().len() == 1 {
+                    Ok(Obj::list(r.find_iter(&a).map(|c| Obj::from(c.as_str())).collect()))
+                } else {
+                    Ok(Obj::list(r.captures_iter(&a).map(|c|
+                        Obj::list(c.iter().map(|cap| match cap {
+                            None => Obj::Null, // didn't participate
+                            Some(s) => Obj::from(s.as_str()),
+                        }).collect())
+                    ).collect()))
+                }
+            }
+            _ => Err(NErr::ArgumentError("search: unrecognized argument types".to_string()))
+        }
+    });
+
     // Haskell-ism for partial application (when that works)
     env.insert_builtin(TwoArgBuiltin {
         name: "!!".to_string(),
