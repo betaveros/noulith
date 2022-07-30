@@ -69,6 +69,31 @@ impl<T> Few2<T> {
     }
 }
 
+#[derive(Debug)]
+enum Few3<T> { Zero, One(T), Two(T, T), Three(T, T, T), Many(Vec<T>), }
+fn few3<T>(mut xs: Vec<T>) -> Few3<T> {
+    match xs.len() {
+        0 => Few3::Zero,
+        1 => Few3::One(xs.remove(0)),
+        2 => Few3::Two(xs.remove(0), xs.pop().unwrap()),
+        3 => Few3::Three(xs.remove(0), xs.remove(0), xs.pop().unwrap()),
+        _ => Few3::Many(xs),
+    }
+}
+/*
+impl<T> Few3<T> {
+    fn len(&self) -> usize {
+        match self {
+            Few3::Zero => 0,
+            Few3::One(..) => 1,
+            Few3::Two(..) => 2,
+            Few3::Three(..) => 3,
+            Few3::Many(x) => x.len(),
+        }
+    }
+}
+*/
+
 #[derive(Debug, Clone)]
 pub enum Obj {
     Null,
@@ -76,7 +101,7 @@ pub enum Obj {
     // Float(f64),
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
-    Dict(Rc<HashMap<ObjKey, Obj>>, Option<Rc<Obj>>), // default value
+    Dict(Rc<HashMap<ObjKey, Obj>>, Option<Box<Obj>>), // default value
     Func(Func, Precedence),
 }
 
@@ -157,8 +182,23 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
         }
         ObjType::Dict => match arg {
             Obj::Dict(x, d) => Ok(Obj::Dict(x, d)),
+            // nonsensical but maybe this is something some day
+            /*
             mut arg => Ok(Obj::Dict(
                     Rc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
+                    */
+            mut arg => Ok(Obj::Dict(
+                    Rc::new(
+                        mut_obj_into_iter(&mut arg, "dict conversion")?
+                        .map(|p| match p {
+                            // TODO not taking but blech
+                            Obj::List(xs) => match xs.as_slice() {
+                                [k, v] => Ok((to_key(k.clone())?, v.clone())),
+                                _ => Err(NErr::TypeError("dict conversion: not pair".to_string())),
+                            }
+                            _ => Err(NErr::TypeError("dict conversion: not list".to_string())),
+                        }).collect::<NRes<HashMap<ObjKey, Obj>>>()?
+                    ), None)),
         }
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
         // TODO: complex, number, list, dict
@@ -702,6 +742,80 @@ impl Builtin for ComparisonOperator {
                     },
                     accept: self.accept,
                 }))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TilBuiltin {}
+
+impl Builtin for TilBuiltin {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::Two(Obj::Num(a), Obj::Num(b)) => {
+                let n1 = into_bigint_ok(a)?;
+                let n2 = into_bigint_ok(b)?;
+                // TODO: should be lazy
+                Ok(Obj::List(Rc::new(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
+            }
+            Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
+                let n1 = into_bigint_ok(a)?;
+                let n2 = into_bigint_ok(b)?;
+                let n3 = into_bigint_ok(c)?;
+                // TODO: should be lazy
+                Ok(Obj::List(Rc::new(num::range_step(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect())))
+            }
+            _ => Err(NErr::ArgumentError(format!("Bad args for til")))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { "til" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+
+#[derive(Debug, Clone)]
+struct ToBuiltin {}
+
+impl Builtin for ToBuiltin {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::Two(Obj::Num(a), Obj::Num(b)) => {
+                let n1 = into_bigint_ok(a)?;
+                let n2 = into_bigint_ok(b)?;
+                // TODO: should be lazy
+                Ok(Obj::List(Rc::new(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
+            }
+            Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, a), // sugar lmao
+            Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
+                let n1 = into_bigint_ok(a)?;
+                let n2 = into_bigint_ok(b)?;
+                let n3 = into_bigint_ok(c)?;
+                // TODO: should be lazy
+                Ok(Obj::List(Rc::new(num::range_step_inclusive(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect())))
+            }
+            _ => Err(NErr::ArgumentError(format!("Bad args for to")))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { "to" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
             }
             _ => None,
@@ -1885,6 +1999,17 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                 }, rest, value, every)
             }
         }
+        (Obj::Dict(v, _), [EvaluatedIndexOrSlice::Slice(None, None), rest @ ..]) => {
+            let mut_d = Rc::make_mut(v);
+            if every {
+                for (_, vv) in mut_d.iter_mut() {
+                    set_index(vv, rest, value.clone(), true)?;
+                }
+                Ok(())
+            } else {
+                Err(NErr::TypeError(format!("can't slice dictionaries except with every")))
+            }
+        }
         (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::String(r))]) => match &***r {
             "precedence" => match value {
                 Obj::Num(f) => match f.to_f64() {
@@ -2620,7 +2745,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         }
         Expr::Dict(def, xs) => {
             let dv = match def {
-                Some(de) => Some(Rc::new(evaluate(env, de)?)),
+                Some(de) => Some(Box::new(evaluate(env, de)?)),
                 None => None,
             };
             let mut acc = HashMap::new();
@@ -2718,6 +2843,8 @@ pub fn simple_eval(code: &str) -> Obj {
 }
 
 pub fn initialize(env: &mut Env) {
+    env.insert("null".to_string(), ObjType::Null, Obj::Null);
+
     env.insert_builtin(TwoNumsBuiltin {
         name: "+".to_string(),
         body: |a, b| { Ok(Obj::Num(a + b)) }
@@ -2843,24 +2970,8 @@ pub fn initialize(env: &mut Env) {
         name: "odd".to_string(),
         body: |a| { Ok(Obj::Num(NNum::iverson(a.mod_floor(&NNum::from(2)) == NNum::from(1)))) }
     });
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "til".to_string(),
-        body: |a, b| {
-            let n1 = into_bigint_ok(a)?;
-            let n2 = into_bigint_ok(b)?;
-            // TODO: should be lazy
-            Ok(Obj::List(Rc::new(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
-        }
-    });
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "to".to_string(),
-        body: |a, b| {
-            let n1 = into_bigint_ok(a)?;
-            let n2 = into_bigint_ok(b)?;
-            // TODO: should be lazy
-            Ok(Obj::List(Rc::new(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect())))
-        }
-    });
+    env.insert_builtin(TilBuiltin {});
+    env.insert_builtin(ToBuiltin {});
     env.insert_builtin(OneArgBuiltin {
         name: "ord".to_string(),
         can_refer: false,
@@ -2981,6 +3092,33 @@ pub fn initialize(env: &mut Env) {
                 ))),
                 _ => Err(NErr::TypeError("map: not callable".to_string()))
             }
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "map_keys".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::Dict(mut d, def), Obj::Func(b, _)) => {
+                Ok(Obj::Dict(Rc::new(
+                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((to_key(b.run(vec![key_to_obj(k)])?)?, v))).collect::<NRes<HashMap<ObjKey, Obj>>>()?
+                ), def))
+            }
+            _ => Err(NErr::TypeError("map_keys: not dict or callable".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "map_values".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::Dict(mut d, def), Obj::Func(b, _)) => {
+                Ok(Obj::Dict(Rc::new(
+                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((k, b.run(vec![v])?))).collect::<NRes<HashMap<ObjKey, Obj>>>()?
+                ), match def {
+                    Some(def) => Some(Box::new(b.run(vec![*def])?)),
+                    None => None
+                }))
+            }
+            _ => Err(NErr::TypeError("map_keys: not dict or callable".to_string()))
         }
     });
     env.insert_builtin(OneArgBuiltin {
