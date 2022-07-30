@@ -785,15 +785,19 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     }
 }
 
+fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj{
+    Obj::Func(Func::PartialApp2(
+        Box::new(Func::Builtin(Rc::new(f.clone()))),
+        Box::new(arg)
+    ), Precedence::zero())
+}
+
 impl Builtin for ComparisonOperator {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             match few(args) {
                 Few::Zero => Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name))),
-                Few::One(arg) => Ok(Obj::Func(Func::PartialApp2(
-                    Box::new(Func::Builtin(Rc::new(self.clone()))),
-                    Box::new(arg)
-                ), Precedence::zero())),
+                Few::One(arg) => Ok(clone_and_part_app_2(self, arg)),
                 Few::Many(args) => {
                     for i in 0 .. args.len() - 1 {
                         if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
@@ -848,6 +852,7 @@ struct TilBuiltin {}
 impl Builtin for TilBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
+            Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
@@ -885,6 +890,7 @@ struct ToBuiltin {}
 impl Builtin for ToBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
+            Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
@@ -921,30 +927,36 @@ impl Builtin for ToBuiltin {
 struct Zip {}
 
 impl Builtin for Zip {
-    fn run(&self, mut args: Vec<Obj>) -> NRes<Obj> {
-        let mut func = None;
-        // I can't believe this works (type annotation for me not the compiler)
-        let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
-        for arg in args.iter_mut() {
-            match (arg, &mut func) {
-                (Obj::Func(f, _), None) => {
-                    func = Some(f.clone());
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::ArgumentError("zip: no args".to_string())),
+            Few::One(a) => Ok(clone_and_part_app_2(self, a)),
+            Few::Many(mut args) => {
+                let mut func = None;
+                // I can't believe this works (type annotation for me not the compiler)
+                let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
+                for arg in args.iter_mut() {
+                    match (arg, &mut func) {
+                        (Obj::Func(f, _), None) => {
+                            func = Some(f.clone());
+                        }
+                        (Obj::Func(..), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
+                        (arg, _) => iterators.push(mut_obj_into_iter(arg, "zip")?),
+                    }
                 }
-                (Obj::Func(..), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
-                (arg, _) => iterators.push(mut_obj_into_iter(arg, "zip")?),
+                if iterators.is_empty() {
+                    Err(NErr::ArgumentError("zip: zero iterables".to_string()))?
+                }
+                let mut ret = Vec::new();
+                while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
+                    ret.push(match &func {
+                        Some(f) => f.run(batch)?,
+                        None => Obj::list(batch),
+                    })
+                }
+                Ok(Obj::list(ret))
             }
         }
-        if iterators.is_empty() {
-            Err(NErr::ArgumentError("zip: zero iterables".to_string()))?
-        }
-        let mut ret = Vec::new();
-        while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
-            ret.push(match &func {
-                Some(f) => f.run(batch)?,
-                None => Obj::list(batch),
-            })
-        }
-        Ok(Obj::list(ret))
     }
 
     fn builtin_name(&self) -> &str { "zip" }
@@ -981,41 +993,47 @@ fn cartesian_foreach(acc: &mut Vec<Obj>, seqs: &[Seq], f: &mut impl FnMut(&Vec<O
 
 impl Builtin for CartesianProduct {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        // Bit overgeneral, also are we interested in accepting a function?
-        let mut seqs = Vec::new();
-        let mut scalar = None;
-        for arg in args {
-            match arg {
-                Obj::Seq(s) => seqs.push(s),
-                Obj::Num(n) => match scalar {
-                    None => scalar = Some(into_bigint_ok(n)?),
-                    Some(_) => Err(NErr::ArgumentError("cartesian product: more than one integer".to_string()))?,
-                }
-                _ => Err(NErr::ArgumentError("cartesian product: non-sequence non-integer".to_string()))?,
-            }
-        }
-
-        match (scalar, few(seqs)) {
-            (Some(s), Few::One(seq)) => {
-                let mut acc = Vec::new();
-                for _ in num::range(BigInt::from(0), s) {
-                    for e in seq_to_cloning_iter(&seq) {
-                        acc.push(e);
+        match few(args) {
+            Few::Zero => Err(NErr::ArgumentError("**: no args".to_string())),
+            Few::One(a) => Ok(clone_and_part_app_2(self, a)),
+            Few::Many(args) => {
+                // Bit overgeneral, also are we interested in accepting a function?
+                let mut seqs = Vec::new();
+                let mut scalar = None;
+                for arg in args {
+                    match arg {
+                        Obj::Seq(s) => seqs.push(s),
+                        Obj::Num(n) => match scalar {
+                            None => scalar = Some(into_bigint_ok(n)?),
+                            Some(_) => Err(NErr::ArgumentError("cartesian product: more than one integer".to_string()))?,
+                        }
+                        _ => Err(NErr::ArgumentError("cartesian product: non-sequence non-integer".to_string()))?,
                     }
                 }
-                Ok(Obj::list(acc))
+
+                match (scalar, few(seqs)) {
+                    (Some(s), Few::One(seq)) => {
+                        let mut acc = Vec::new();
+                        for _ in num::range(BigInt::from(0), s) {
+                            for e in seq_to_cloning_iter(&seq) {
+                                acc.push(e);
+                            }
+                        }
+                        Ok(Obj::list(acc))
+                    }
+                    (None, Few::Many(seqs)) => {
+                        let mut acc = Vec::new();
+                        let mut ret = Vec::new();
+                        let mut f = |k: &Vec<Obj>| {
+                            ret.push(Obj::list(k.clone()));
+                            Ok(())
+                        };
+                        cartesian_foreach(&mut acc, seqs.as_slice(), &mut f)?;
+                        Ok(Obj::list(ret))
+                    }
+                    _ => Err(NErr::ArgumentError("cartesian product: bad combo of scalars and sequences".to_string()))?,
+                }
             }
-            (None, Few::Many(seqs)) => {
-                let mut acc = Vec::new();
-                let mut ret = Vec::new();
-                let mut f = |k: &Vec<Obj>| {
-                    ret.push(Obj::list(k.clone()));
-                    Ok(())
-                };
-                cartesian_foreach(&mut acc, seqs.as_slice(), &mut f)?;
-                Ok(Obj::list(ret))
-            }
-            _ => Err(NErr::ArgumentError("cartesian product: bad combo of scalars and sequences".to_string()))?,
         }
     }
 
@@ -1025,6 +1043,91 @@ impl Builtin for CartesianProduct {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "**" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+// takes an optional starting value
+#[derive(Debug, Clone)]
+struct Fold {}
+
+impl Builtin for Fold {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        // TODO partial app
+        match few3(args) {
+            Few3::Zero => Err(NErr::ArgumentError("fold: no args".to_string())),
+            Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
+            Few3::Two(mut s, f) => {
+                let mut it = mut_obj_into_iter(&mut s, "fold")?;
+                match f {
+                    Obj::Func(f, _) => match it.next() {
+                        Some(mut cur) => {
+                            // not sure if any standard fallible rust methods work...
+                            for e in it {
+                                cur = f.run(vec![cur, e])?;
+                            }
+                            Ok(cur)
+                        }
+                        None => Err(NErr::ValueError("fold: empty seq".to_string())),
+                    }
+                    _ => Err(NErr::TypeError("fold: not callable".to_string()))
+                }
+            }
+            Few3::Three(mut s, f, mut cur) => {
+                let it = mut_obj_into_iter(&mut s, "fold")?;
+                match f {
+                    Obj::Func(f, _) => {
+                        // not sure if any standard fallible rust methods work...
+                        for e in it {
+                            cur = f.run(vec![cur, e])?;
+                        }
+                        Ok(cur)
+                    }
+                    _ => Err(NErr::TypeError("fold: not callable".to_string()))
+                }
+            }
+            Few3::Many(_) => Err(NErr::ArgumentError("fold: too many args".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str { "fold" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "from" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+// it's just "with" lmao
+#[derive(Debug, Clone)]
+struct Replace {}
+
+impl Builtin for Replace {
+    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::Three(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b)), Obj::Seq(Seq::String(c))) => {
+                // rust's replacement syntax is $n or ${n} for nth group
+                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                Ok(Obj::from(r.replace(&a, &*c).into_owned()))
+            }
+            _ => Err(NErr::TypeError("replace: must get three strings".to_string()))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { "replace" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "with" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
             }
             _ => None,
@@ -1077,13 +1180,8 @@ pub struct TwoArgBuiltin {
 impl Builtin for TwoArgBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
-            Few2::One(arg) => {
-                // partial application, spicy
-                Ok(Obj::Func(Func::PartialApp2(
-                    Box::new(Func::Builtin(Rc::new(self.clone()))),
-                    Box::new(arg)
-                ), Precedence::zero()))
-            }
+            // partial application, spicy
+            Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few2::Two(a, b) => (self.body)(a, b),
             f => Err(NErr::ArgumentError(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
         }
@@ -1140,13 +1238,8 @@ pub struct TwoNumsBuiltin {
 impl Builtin for TwoNumsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
-            Few2::One(a @ Obj::Num(_)) => {
-                // partial application, spicy
-                Ok(Obj::Func(Func::PartialApp2(
-                    Box::new(Func::Builtin(Rc::new(self.clone()))),
-                    Box::new(a)
-                ), Precedence::zero()))
-            }
+            // partial application, spicy
+            Few2::One(arg @ Obj::Num(_)) => Ok(clone_and_part_app_2(self, arg)),
             Few2::One(a) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, a))),
             Few2::Two(Obj::Num(a), Obj::Num(b)) => (self.body)(a, b),
             Few2::Two(a, b) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?} {:?}", self.name, a, b))),
@@ -2506,6 +2599,20 @@ fn pythonic_slice<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(usiz
     ))
 }
 
+fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
+    match i {
+        Obj::Num(ii) => match ii.to_isize() {
+            Some(n) => if xs.len() == 0 {
+                Err(NErr::IndexError("Empty, can't cyclic index".to_string()))
+            } else {
+                Ok(n.rem_euclid(xs.len() as isize) as usize)
+            }
+            _ => Err(NErr::IndexError(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
+        }
+        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) index: {:?}", i))),
+    }
+}
+
 fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
     match xr {
         Seq::List(xx) => Ok(xx[pythonic_index_isize(&xx, i)?].clone()),
@@ -2544,6 +2651,20 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             _ => Err(NErr::TypeError(format!("can't index into func {:?}", k))),
         }
         (xr, ir) => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
+    }
+}
+
+fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
+    match (&xr, ir) {
+        // TODO other sequences
+        (Obj::Seq(Seq::List(xx)), ii) => Ok(xx[cyclic_index(xx, &ii)?].clone()),
+        (Obj::Seq(Seq::String(s)), ii) => {
+            let bs = s.as_bytes();
+            let i = cyclic_index(bs, &ii)?;
+            // TODO this was the path of least resistance; idk what good semantics actually are
+            Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+        }
+        (xr, ir) => Err(NErr::TypeError(format!("can't cyclically index {:?} {:?}", xr, ir))),
     }
 }
 
@@ -3142,6 +3263,16 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a, b| call(a, vec![b]),
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "apply".to_string(),
+        can_refer: true,
+        body: |mut a, b| call(b, mut_obj_into_iter(&mut a, "apply")?.collect()),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "of".to_string(),
+        can_refer: true,
+        body: |a, mut b| call(a, mut_obj_into_iter(&mut b, "of")?.collect()),
+    });
     env.insert_builtin(BasicBuiltin {
         name: "by".to_string(),
         can_refer: false,
@@ -3151,6 +3282,16 @@ pub fn initialize(env: &mut Env) {
         name: "with".to_string(),
         can_refer: false,
         body: |_| Err(NErr::TypeError("with: cannot call".to_string())),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "from".to_string(),
+        can_refer: false,
+        body: |_| Err(NErr::TypeError("from: cannot call".to_string())),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "default".to_string(),
+        can_refer: false,
+        body: |_| Err(NErr::TypeError("default: cannot call".to_string())),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "in".to_string(),
@@ -3361,28 +3502,7 @@ pub fn initialize(env: &mut Env) {
             ff => Err(NErr::TypeError(format!("all: too many args: {:?}", ff))),
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
-        name: "fold".to_string(),
-        can_refer: true,
-        body: |mut a, b| {
-            let mut it = mut_obj_into_iter(&mut a, "fold")?;
-            match b {
-                Obj::Func(b, _) => {
-                    // not sure if any standard fallible rust methods work...
-                    match it.next() {
-                        Some(mut cur) => {
-                            for e in it {
-                                cur = b.run(vec![cur, e])?;
-                            }
-                            Ok(cur)
-                        }
-                        None => Err(NErr::ValueError("fold: empty seq".to_string())),
-                    }
-                }
-                _ => Err(NErr::TypeError("map: not callable".to_string()))
-            }
-        }
-    });
+    env.insert_builtin(Fold {});
     env.insert_builtin(TwoArgBuiltin {
         name: "append".to_string(),
         can_refer: false,
@@ -3546,6 +3666,38 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::ArgumentError("split :(".to_string())),
         }
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "starts_with".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.starts_with(&*t))),
+            _ => Err(NErr::ArgumentError("starts_with :(".to_string())),
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "ends_with".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.ends_with(&*t))),
+            _ => Err(NErr::ArgumentError("ends_with :(".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "strip".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
+            _ => Err(NErr::ArgumentError("strip :(".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "trim".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
+            _ => Err(NErr::ArgumentError("trim :(".to_string())),
+        }
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "words".to_string(),
         can_refer: false,
@@ -3632,6 +3784,11 @@ pub fn initialize(env: &mut Env) {
         name: "!?".to_string(),
         can_refer: false,
         body: safe_index,
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "!%".to_string(),
+        can_refer: false,
+        body: obj_cyclic_index,
     });
 
     // Lists
@@ -3771,6 +3928,44 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             _ => Err(NErr::ArgumentError("|.: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "discard".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), b) => {
+                Rc::make_mut(&mut a).remove(&to_key(b)?);
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            _ => Err(NErr::ArgumentError("discard: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "-.".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), b) => {
+                Rc::make_mut(&mut a).remove(&to_key(b)?);
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            _ => Err(NErr::ArgumentError("-.: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "insert".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::List(b))) => match b.as_slice() {
+                [k, v] => {
+                    // TODO could take b theoretically, but, pain
+                    // TODO maybe fail if key exists? have |.. = "upsert"?
+                    Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
+                    Ok(Obj::Seq(Seq::Dict(a, d)))
+                }
+                _ => Err(NErr::ArgumentError("insert: RHS must be pair".to_string()))
+            }
+            _ => Err(NErr::ArgumentError("insert: unrecognized argument types".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
