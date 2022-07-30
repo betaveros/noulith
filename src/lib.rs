@@ -591,6 +591,8 @@ pub enum Func {
     PartialApp2(Box<Func>, Box<Obj>),
     // mathematical notation, first of second
     Composition(Box<Func>, Box<Func>),
+    // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
+    Flip(Box<Func>),
     Type(ObjType),
 }
 
@@ -608,6 +610,12 @@ impl Func {
                 _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::Composition(f, g) => f.run(vec![g.run(args)?]),
+            Func::Flip(f) => match few2(args) {
+                // weird lol
+                Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
+                Few2::Two(a, b) => f.run(vec![b, a]),
+                _ => Err(NErr::ArgumentError("Flipped function can only be called on two arguments".to_string()))
+            }
             Func::Type(t) => match few(args) {
                 Few::One(arg) => call_type(t, arg),
                 _ => Err(NErr::ArgumentError("Types can only take one argument".to_string()))
@@ -623,6 +631,7 @@ impl Func {
             Func::PartialApp1(f, _) => f.can_refer(),
             Func::PartialApp2(f, _) => f.can_refer(),
             Func::Composition(f, g) => f.can_refer() || g.can_refer(),
+            Func::Flip(f) => f.can_refer(),
             Func::Type(_) => false,
         }
     }
@@ -634,6 +643,7 @@ impl Func {
             Func::PartialApp1(..) => None,
             Func::PartialApp2(..) => None,
             Func::Composition(..) => None,
+            Func::Flip(..) => None,
             Func::Type(_) => None,
         }
     }
@@ -647,6 +657,7 @@ impl Display for Func {
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
+            Func::Flip(f) => write!(formatter, "Flip({})", f),
             Func::Type(t) => write!(formatter, "{}", t.name()),
         }
     }
@@ -2842,6 +2853,20 @@ pub fn simple_eval(code: &str) -> Obj {
     evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
 }
 
+fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
+    // this might coerce too hard but idk
+    let mut acc = String::new();
+    let mut started = false;
+    for arg in mut_obj_into_iter(&mut obj, "join")? {
+        if started {
+            acc += joiner;
+        }
+        acc += format!("{}", arg).as_str();
+        started = true;
+    }
+    Ok(acc)
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("null".to_string(), ObjType::Null, Obj::Null);
 
@@ -3391,29 +3416,46 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "join".to_string(),
         can_refer: false,
-        body: |mut a, b| {
-            // this might coerce too hard but idk
-            let mut acc = String::new();
-            let mut started = false;
-            for arg in mut_obj_into_iter(&mut a, "join")? {
-                if started {
-                    acc += format!("{}", b).as_str();
-                }
-                acc += format!("{}", arg).as_str();
-                started = true;
-            }
-            Ok(Obj::String(Rc::new(acc)))
+        body: |a, b| {
+            Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?))
         }
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(TwoArgBuiltin {
         name: "split".to_string(),
         can_refer: false,
-        body: |args| {
-            match few2(args) {
-                Few2::One(Obj::String(s)) => Ok(Obj::List(Rc::new(s.split_whitespace().map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
-                Few2::Two(Obj::String(s), Obj::String(t)) => Ok(Obj::List(Rc::new(s.split(&*t).map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
-                _ => Err(NErr::ArgumentError("split :(".to_string())),
-            }
+        body: |a, b| match (a, b) {
+            (Obj::String(s), Obj::String(t)) => Ok(Obj::List(Rc::new(s.split(&*t).map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
+            _ => Err(NErr::ArgumentError("split :(".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "words".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::String(s) => Ok(Obj::List(Rc::new(s.split_whitespace().map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
+            _ => Err(NErr::ArgumentError("words :(".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "lines".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::String(s) => Ok(Obj::List(Rc::new(s.split_terminator('\n').map(|w| Obj::String(Rc::new(w.to_string()))).collect()))),
+            _ => Err(NErr::ArgumentError("lines :(".to_string())),
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "unwords".to_string(),
+        can_refer: false,
+        body: |a| Ok(Obj::from(simple_join(a, " ")?)),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "unlines".to_string(),
+        can_refer: false,
+        body: |a| {
+            let mut s = simple_join(a, "\n")?;
+            s.push('\n');
+            Ok(Obj::from(s))
         }
     });
     // Haskell-ism for partial application (when that works)
@@ -3473,6 +3515,24 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::List(Rc::new(vec![a, b])))
     });
     env.insert_builtin(CartesianProduct {});
+    env.insert_builtin(OneArgBuiltin {
+        name: "id".to_string(),
+        can_refer: false,
+        body: |a| Ok(a),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "const".to_string(),
+        can_refer: false,
+        body: |_, b| Ok(b),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "flip".to_string(),
+        can_refer: true,
+        body: |a| match a {
+            Obj::Func(f, _) => Ok(Obj::Func(Func::Flip(Box::new(f)), Precedence::zero())),
+            _ => Err(NErr::TypeError("flip: not function".to_string()))
+        }
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "first".to_string(),
         can_refer: false,
@@ -3595,6 +3655,21 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |mut a| {
             Ok(Obj::Dict(Rc::new(mut_obj_into_iter(&mut a, "set conversion")?.map(|k| Ok((to_key(k)?, Obj::Null))).collect::<NRes<HashMap<ObjKey,Obj>>>()?), None))
+        }
+    });
+    // TODO
+    env.insert_builtin(OneArgBuiltin {
+        name: "items".to_string(),
+        can_refer: false,
+        body: |mut a| {
+            Ok(Obj::List(Rc::new(mut_obj_into_iter_pairs(&mut a, "items conversion")?.map(|(k, v)| Obj::List(Rc::new(vec![key_to_obj(k), v]))).collect())))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "enumerate".to_string(),
+        can_refer: false,
+        body: |mut a| {
+            Ok(Obj::List(Rc::new(mut_obj_into_iter_pairs(&mut a, "enumerate conversion")?.map(|(k, v)| Obj::List(Rc::new(vec![key_to_obj(k), v]))).collect())))
         }
     });
 
