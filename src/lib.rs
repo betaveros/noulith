@@ -1098,137 +1098,185 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
     }
 }
 
-pub fn lex(code: &str) -> Vec<Token> {
-    lazy_static! {
-        static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
+#[derive(Clone, Copy)]
+struct CodeLoc {
+    line: usize,
+    col: usize,
+}
+
+pub struct LocToken {
+    token: Token,
+    start: CodeLoc,
+    end: CodeLoc,
+}
+
+struct Lexer<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    start: CodeLoc,
+
+    // maintained at what chars.next() would give
+    cur: CodeLoc,
+    tokens: Vec<LocToken>,
+}
+
+impl Lexer<'_> {
+    fn peek(&mut self) -> Option<&char> {
+        self.chars.peek()
     }
 
-    // let mut i: usize = 0;
-    let mut tokens = Vec::new();
-    let mut chars = code.chars().peekable();
-
-    while let Some(c) = chars.next() {
+    fn next(&mut self) -> Option<char> {
+        let c = self.chars.next();
         match c {
-            '(' => tokens.push(Token::LeftParen),
-            ')' => tokens.push(Token::RightParen),
-            '[' => tokens.push(Token::LeftBracket),
-            ']' => tokens.push(Token::RightBracket),
-            '{' => tokens.push(Token::LeftBrace),
-            '}' => tokens.push(Token::RightBrace),
-            '\\' => tokens.push(Token::Lambda),
-            ',' => tokens.push(Token::Comma),
-            ';' => tokens.push(Token::Semicolon),
-            ':' => {
-                if chars.peek() == Some(&':') {
-                    chars.next();
-                    tokens.push(Token::DoubleColon);
-                } else {
-                    tokens.push(Token::Colon);
-                }
-            }
-            ' ' => (),
-            '\n' => (),
-            '#' => {
-                loop {
-                    if let None | Some('\n') = chars.next() { break; }
-                }
-            }
-            '\'' | '"' => {
-                let mut acc = String::new();
-                while chars.peek() != Some(&c) {
-                    match chars.next() {
-                        Some('\\') => match chars.next() {
-                            Some('n') => acc.push('\n'),
-                            Some('r') => acc.push('\r'),
-                            Some('t') => acc.push('\t'),
-                            Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
-                            Some(c) => panic!("lexing: string literal: unknown escape {}", c),
-                            None => panic!("lexing: string literal: escape eof"),
-                        }
-                        Some(c) => acc.push(c),
-                        None => panic!("lexing: string literal hit eof")
-                    }
-                }
-                chars.next();
-                tokens.push(Token::StringLit(Rc::new(acc)))
-            }
-            c => {
-                if c.is_digit(10) {
-                    let mut acc = c.to_string();
+            Some('\n') => { self.cur.line += 1; self.cur.col = 1; }
+            Some(_) => { self.cur.col += 1; }
+            None => {}
+        }
+        c
+    }
 
-                    while let Some(cc) = chars.peek().filter(|d| d.is_digit(10)) {
-                        acc.push(*cc);
-                        chars.next();
-                    }
-                    tokens.push(Token::IntLit(acc.parse::<BigInt>().unwrap()))
-                } else if c.is_alphabetic() {
-                    let mut acc = c.to_string();
+    fn emit(&mut self, token: Token) {
+        self.tokens.push(LocToken { token, start: self.start, end: self.cur });
+        self.start = self.cur;
+    }
 
-                    while let Some(cc) = chars.peek().filter(|c| c.is_alphanumeric() || **c == '_') {
-                        acc.push(*cc);
-                        chars.next();
+    fn lex(&mut self) {
+        lazy_static! {
+            static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
+        }
+
+        // let mut chars = code.chars().peekable();
+        while let Some(c) = self.next() {
+            match c {
+                '(' => self.emit(Token::LeftParen),
+                ')' => self.emit(Token::RightParen),
+                '[' => self.emit(Token::LeftBracket),
+                ']' => self.emit(Token::RightBracket),
+                '{' => self.emit(Token::LeftBrace),
+                '}' => self.emit(Token::RightBrace),
+                '\\' => self.emit(Token::Lambda),
+                ',' => self.emit(Token::Comma),
+                ';' => self.emit(Token::Semicolon),
+                ':' => {
+                    if self.peek() == Some(&':') {
+                        self.next();
+                        self.emit(Token::DoubleColon);
+                    } else {
+                        self.emit(Token::Colon);
                     }
-                    tokens.push(match acc.as_str() {
-                        "if" => Token::If,
-                        "else" => Token::Else,
-                        "for" => Token::For,
-                        "yield" => Token::Yield,
-                        "and" => Token::And,
-                        "or" => Token::Or,
-                        "pop" => Token::Pop,
-                        "remove" => Token::Remove,
-                        "swap" => Token::Swap,
-                        "every" => Token::Every,
-                        "eval" => Token::Eval,
-                        _ => Token::Ident(acc),
-                    })
-                } else if OPERATOR_SYMBOLS.contains(&c) {
-                    // Most operators ending in = parse weird. It's hard to pop the last character
-                    // off a String because of UTF-8 stuff so keep them separate until the last
-                    // possible moment.
-                    let mut last = c;
+                }
+                ' ' => (),
+                '\n' => (),
+                '#' => {
+                    loop {
+                        if let None | Some('\n') = self.next() { break; }
+                    }
+                }
+                '\'' | '"' => {
                     let mut acc = String::new();
-
-                    while let Some(cc) = chars.peek().filter(|c| OPERATOR_SYMBOLS.contains(c)) {
-                        acc.push(last);
-                        last = *cc;
-                        chars.next();
+                    while self.peek() != Some(&c) {
+                        match self.next() {
+                            Some('\\') => match self.next() {
+                                Some('n') => acc.push('\n'),
+                                Some('r') => acc.push('\r'),
+                                Some('t') => acc.push('\t'),
+                                Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
+                                Some(c) => panic!("lexing: string literal: unknown escape {}", c),
+                                None => panic!("lexing: string literal: escape eof"),
+                            }
+                            Some(c) => acc.push(c),
+                            None => panic!("lexing: string literal hit eof")
+                        }
                     }
-                    match (acc.as_str(), last) {
-                        ("!" | "<" | ">" | "=", '=') => {
-                            acc.push(last); tokens.push(Token::Ident(acc))
+                    self.next();
+                    self.emit(Token::StringLit(Rc::new(acc)))
+                }
+                c => {
+                    if c.is_digit(10) {
+                        let mut acc = c.to_string();
+
+                        while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
+                            acc.push(*cc);
+                            self.next();
                         }
-                        ("", '=') => tokens.push(Token::Assign),
-                        (_, '=') => {
-                            tokens.push(Token::Ident(acc));
-                            tokens.push(Token::Assign)
+                        self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap()))
+                    } else if c.is_alphabetic() {
+                        let mut acc = c.to_string();
+
+                        while let Some(cc) = self.peek().filter(|c| c.is_alphanumeric() || **c == '_') {
+                            acc.push(*cc);
+                            self.next();
                         }
-                        (_, _) => {
+                        self.emit(match acc.as_str() {
+                            "if" => Token::If,
+                            "else" => Token::Else,
+                            "for" => Token::For,
+                            "yield" => Token::Yield,
+                            "and" => Token::And,
+                            "or" => Token::Or,
+                            "pop" => Token::Pop,
+                            "remove" => Token::Remove,
+                            "swap" => Token::Swap,
+                            "every" => Token::Every,
+                            "eval" => Token::Eval,
+                            _ => Token::Ident(acc),
+                        })
+                    } else if OPERATOR_SYMBOLS.contains(&c) {
+                        // Most operators ending in = parse weird. It's hard to pop the last character
+                        // off a String because of UTF-8 stuff so keep them separate until the last
+                        // possible moment.
+                        let mut last = c;
+                        let mut acc = String::new();
+
+                        while let Some(cc) = self.peek().filter(|c| OPERATOR_SYMBOLS.contains(c)) {
                             acc.push(last);
-                            tokens.push(match acc.as_str() {
-                                "&&" => Token::And,
-                                "||" => Token::Or,
-                                "..." => Token::Ellipsis,
-                                _ => Token::Ident(acc)
-                            })
+                            last = *cc;
+                            self.next();
+                        }
+                        match (acc.as_str(), last) {
+                            ("!" | "<" | ">" | "=", '=') => {
+                                acc.push(last); self.emit(Token::Ident(acc))
+                            }
+                            ("", '=') => self.emit(Token::Assign),
+                            (_, '=') => {
+                                self.emit(Token::Ident(acc));
+                                self.emit(Token::Assign)
+                            }
+                            (_, _) => {
+                                acc.push(last);
+                                self.emit(match acc.as_str() {
+                                    "&&" => Token::And,
+                                    "||" => Token::Or,
+                                    "..." => Token::Ellipsis,
+                                    _ => Token::Ident(acc)
+                                })
+                            }
                         }
                     }
                 }
             }
         }
     }
-    tokens
+}
+
+pub fn lex(code: &str) -> Vec<LocToken> {
+    let mut lexer = Lexer {
+        chars: code.chars().peekable(),
+        start: CodeLoc { line: 1, col: 1 },
+        cur: CodeLoc { line: 1, col: 1 },
+        tokens: Vec::new(),
+    };
+    lexer.lex();
+    lexer.tokens
 }
 
 struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<LocToken>,
     i: usize,
 }
 
 impl Parser {
-
     fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.i)
+        self.tokens.get(self.i).map(|lt| &lt.token)
     }
 
     fn advance(&mut self) {
@@ -1243,11 +1291,18 @@ impl Parser {
         }
     }
 
+    fn peek_err(&self) -> String {
+        match self.tokens.get(self.i) {
+            Some(LocToken { token, start, end }) => format!("{:?} (at {}:{}-{})", token, start.line, start.col, end.col),
+            None => "EOF".to_string()
+        }
+    }
+
     fn require(&mut self, expected: Token, message: String) -> Result<(), String> {
         if self.try_consume(&expected) { // wat
             Ok(())
         } else {
-            Err(format!("{}; required {:?}, got {:?}", message, expected, self.peek()))
+            Err(format!("{}; required {:?}, got {:?}", message, expected, self.peek_err()))
         }
     }
 
@@ -1334,7 +1389,7 @@ impl Parser {
                     self.require(Token::RightBrace, "dict expr end".to_string())?;
                     Ok(Expr::Dict(def, xs))
                 }
-                Token::RightParen => Err("unexpected right paren".to_string()),
+                Token::RightParen => Err(format!("Unexpected {}", self.peek_err())),
                 Token::Lambda => {
                     self.advance();
                     if let Some(Token::IntLit(x)) = self.peek().cloned() {
@@ -1375,14 +1430,14 @@ impl Parser {
                         match self.peek() {
                             Some(Token::RightParen) => { self.advance(); break }
                             Some(Token::Semicolon) => { self.advance(); }
-                            k => Err(format!("for: expected right paren or semicolon after iteration, got {:?}", k))?,
+                            _ => Err(format!("for: expected right paren or semicolon after iteration, got {}", self.peek_err()))?,
                         }
                     }
                     let do_yield = self.try_consume(&Token::Yield);
                     let body = self.assignment()?;
                     Ok(Expr::For(its, do_yield, Box::new(body)))
                 }
-                _ => Err(format!("unexpected {:?}", token)),
+                _ => Err(format!("Unexpected {}", self.peek_err())),
             }
         } else {
             Err("atom: ran out of stuff to parse".to_string())
@@ -1408,7 +1463,7 @@ impl Parser {
                     self.advance();
                     ForIterationType::Item
                 }
-                p => return Err(format!("for: require : or :: or :=, got {:?}", p)),
+                _ => return Err(format!("for: require : or :: or :=, got {}", self.peek_err())),
             };
             let iteratee = self.pattern()?;
             Ok(ForIteration::Iteration(ty, Box::new(pat), Box::new(iteratee)))
@@ -1509,7 +1564,7 @@ impl Parser {
                 _ => {
                     let ret = Expr::Call(Box::new(op1), vec![Box::new(second)]);
                     if !self.peek_chain_stopper() {
-                        Err(format!("saw non-identifier in operator position: these chains must be short, got {:?} after", self.peek()))
+                        Err(format!("saw non-identifier in operator position: these chains must be short, got {} after", self.peek_err()))
                     } else {
                         Ok(ret)
                     }
@@ -1554,7 +1609,7 @@ impl Parser {
     fn pattern(&mut self) -> Result<Expr, String> {
         let (exs, comma) = self.comma_separated()?;
         match (few(exs), comma) {
-            (Few::Zero, _) => Err("Expected pattern, got nothing".to_string()),
+            (Few::Zero, _) => Err(format!("Expected pattern, got nothing, next is {}", self.peek_err())),
             (Few::One(ex), false) => Ok(*ex),
             (Few::One(ex), true) => Ok(Expr::CommaSeq(vec![ex])),
             (Few::Many(exs), _) => Ok(Expr::CommaSeq(exs))
@@ -1576,9 +1631,10 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expr, String> {
+        let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
             let a = to_lvalue(self.single()?)?;
-            self.require(Token::Comma, "swap between lvalues".to_string())?;
+            self.require(Token::Comma, format!("swap between lvalues at {}", ag_start_err))?;
             let b = to_lvalue(self.single()?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
@@ -1597,7 +1653,7 @@ impl Parser {
                                 Box::new(*op),
                                 Box::new(self.pattern()?),
                             )),
-                            _ => Err("call w not 1 arg is not assignop".to_string()),
+                            _ => Err(format!("call w not 1 arg is not assignop, at {}", ag_start_err)),
                         }
                         _ => {
                             Ok(Expr::Assign(every, Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
@@ -1611,7 +1667,7 @@ impl Parser {
                 }
                 */
                 _ => if every {
-                    Err("`every` as not assignment".to_string())
+                    Err(format!("`every` as not assignment at {} now {}", ag_start_err, self.peek_err()))
                 } else {
                     Ok(pat)
                 }
@@ -1636,6 +1692,10 @@ impl Parser {
             Expr::Sequence(ags)
         })
     }
+
+    fn is_at_end(&self) -> bool {
+        self.i == self.tokens.len()
+    }
 }
 
 // allow the empty expression
@@ -1645,7 +1705,12 @@ pub fn parse(code: &str) -> Result<Option<Expr>, String> {
         Ok(None)
     } else {
         let mut p = Parser { tokens, i: 0 };
-        p.expression().map(Some)
+        let ret = p.expression().map(Some);
+        if p.is_at_end() {
+            ret
+        } else {
+            Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+        }
     }
 }
 
