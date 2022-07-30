@@ -437,10 +437,9 @@ pub struct NTotalNum(pub NNum);
 
 impl fmt::Display for NTotalNum {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{}t", self.0)
+        write!(formatter, "{}", self.0)
     }
 }
-
 
 impl Deref for NTotalNum {
     type Target = NNum;

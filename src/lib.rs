@@ -457,6 +457,8 @@ pub enum MutObjIntoIterPairs<'a> {
     String(usize, std::str::Chars<'a>),
 }
 
+// TODO: change these to go through some new enum like MutSeq<'_> or something so we have a uniform
+// place to make objects sequences, in case we add, e.g., bytes or pointers
 fn mut_obj_into_iter(obj: &mut Obj) -> NRes<MutObjIntoIter<'_>> {
     match obj {
         Obj::List(v) => Ok(MutObjIntoIter::List(mut_rc_vec_into_iter(v))),
@@ -988,6 +990,7 @@ pub enum Token {
     Pop,
     Remove,
     Swap,
+    Every,
     Eval,
     // Newline,
 }
@@ -1002,6 +1005,12 @@ pub enum ForIteration {
 }
 
 #[derive(Debug)]
+pub enum IndexOrSlice {
+    Index(Box<Expr>),
+    Slice(Option<Box<Expr>>, Option<Box<Expr>>),
+}
+
+#[derive(Debug)]
 pub enum Expr {
     IntLit(BigInt),
     StringLit(Rc<String>),
@@ -1010,7 +1019,7 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
     Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
-    Index(Box<Expr>, Box<Expr>), // TODO: or slice
+    Index(Box<Expr>, IndexOrSlice),
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
@@ -1027,8 +1036,9 @@ pub enum Expr {
     // function call everywhere.
     Eval(Box<Expr>),
     EvalToken,
-    Assign(Box<Lvalue>, Box<Expr>),
-    OpAssign(Box<Lvalue>, Box<Expr>, Box<Expr>),
+    // bool: Every
+    Assign(bool, Box<Lvalue>, Box<Expr>),
+    OpAssign(bool, Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     For(Vec<ForIteration>, bool /* yield */, Box<Expr>),
     Sequence(Vec<Box<Expr>>),
@@ -1044,7 +1054,7 @@ pub enum Expr {
 
 #[derive(Debug)]
 pub enum Lvalue {
-    IndexedIdent(String, Vec<Box<Expr>>),
+    IndexedIdent(String, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Box<Expr>>),
     Unannotation(Box<Lvalue>),
     CommaSeq(Vec<Box<Lvalue>>),
@@ -1052,8 +1062,14 @@ pub enum Lvalue {
 }
 
 #[derive(Debug)]
+enum EvaluatedIndexOrSlice {
+    Index(Obj),
+    Slice(Option<Obj>, Option<Obj>),
+}
+
+#[derive(Debug)]
 enum EvaluatedLvalue {
-    IndexedIdent(String, Vec<Obj>),
+    IndexedIdent(String, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
     Unannotation(Box<EvaluatedLvalue>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
@@ -1162,6 +1178,7 @@ pub fn lex(code: &str) -> Vec<Token> {
                         "pop" => Token::Pop,
                         "remove" => Token::Remove,
                         "swap" => Token::Swap,
+                        "every" => Token::Every,
                         "eval" => Token::Eval,
                         _ => Token::Ident(acc),
                     })
@@ -1210,21 +1227,27 @@ struct Parser {
 
 impl Parser {
 
-    fn peek(&self) -> Option<Token> {
-        self.tokens.get(self.i).cloned()
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.i)
     }
 
     fn advance(&mut self) {
         self.i += 1;
     }
 
-    fn require(&mut self, expected: Token, message: String) -> Result<(), String> {
-        let peeked = self.peek();
-        if peeked.as_ref() != Some(&expected) { // wat
-            Err(format!("{}; required {:?}, got {:?}", message, expected, peeked))
+    fn try_consume(&mut self, desired: &Token) -> bool {
+        if self.peek() == Some(desired) {
+            self.advance(); true
         } else {
-            self.advance();
+            false
+        }
+    }
+
+    fn require(&mut self, expected: Token, message: String) -> Result<(), String> {
+        if self.try_consume(&expected) { // wat
             Ok(())
+        } else {
+            Err(format!("{}; required {:?}, got {:?}", message, expected, self.peek()))
         }
     }
 
@@ -1232,16 +1255,19 @@ impl Parser {
         if let Some(token) = self.peek() {
             match token {
                 Token::IntLit(n) => {
+                    let n = n.clone();
                     self.advance();
                     Ok(Expr::IntLit(n))
                 }
                 Token::StringLit(s) => {
+                    let s = s.clone();
                     self.advance();
                     Ok(Expr::StringLit(s))
                 }
                 Token::Ident(s) => {
+                    let s = s.clone();
                     self.advance();
-                    Ok(Expr::Ident(s.to_string()))
+                    Ok(Expr::Ident(s))
                 }
                 Token::Ellipsis => {
                     self.advance();
@@ -1272,8 +1298,8 @@ impl Parser {
                 }
                 Token::LeftBracket => {
                     self.advance();
-                    if self.peek() == Some(Token::RightBracket) {
-                        self.advance(); Ok(Expr::List(Vec::new()))
+                    if self.try_consume(&Token::RightBracket) {
+                        Ok(Expr::List(Vec::new()))
                     } else {
                         let (exs, _) = self.comma_separated()?;
                         self.require(Token::RightBracket, "list expr".to_string())?;
@@ -1285,8 +1311,7 @@ impl Parser {
                     // Dict(Vec<(Box<Expr>, Option<Box<Expr>>)>),
                     let mut xs = Vec::new();
                     let mut def = None;
-                    if self.peek() == Some(Token::Colon) {
-                        self.advance();
+                    if self.try_consume(&Token::Colon) {
                         def = Some(Box::new(self.single()?));
                         if !self.peek_csc_stopper() {
                             self.require(Token::Comma, "dict expr".to_string())?;
@@ -1295,8 +1320,7 @@ impl Parser {
 
                     while !self.peek_csc_stopper() {
                         let c1 = Box::new(self.single()?);
-                        let c2 = if self.peek() == Some(Token::Colon) {
-                            self.advance();
+                        let c2 = if self.try_consume(&Token::Colon) {
                             Some(Box::new(self.single()?))
                         } else {
                             None
@@ -1313,12 +1337,11 @@ impl Parser {
                 Token::RightParen => Err("unexpected right paren".to_string()),
                 Token::Lambda => {
                     self.advance();
-                    if let Some(Token::IntLit(x)) = self.peek() {
+                    if let Some(Token::IntLit(x)) = self.peek().cloned() {
                         self.advance();
                         Ok(Expr::Backref(x.to_usize().ok_or(format!("backref: not usize: {}", x))?))
                     } else {
-                        let params = if self.peek() == Some(Token::Colon) {
-                            self.advance();
+                        let params = if self.try_consume(&Token::Colon) {
                             Vec::new()
                         } else {
                             let (params0, _) = self.comma_separated()?;
@@ -1336,8 +1359,8 @@ impl Parser {
                     let cond = self.expression()?;
                     self.require(Token::RightParen, "if cond end".to_string())?;
                     let body = self.assignment()?;
-                    let else_body = if self.peek() == Some(Token::Else) {
-                        self.advance(); Some(Box::new(self.assignment()?))
+                    let else_body = if self.try_consume(&Token::Else) {
+                        Some(Box::new(self.assignment()?))
                     } else {
                         None
                     };
@@ -1355,11 +1378,7 @@ impl Parser {
                             k => Err(format!("for: expected right paren or semicolon after iteration, got {:?}", k))?,
                         }
                     }
-                    let do_yield = if self.peek() == Some(Token::Yield) {
-                        self.advance(); true
-                    } else {
-                        false
-                    };
+                    let do_yield = self.try_consume(&Token::Yield);
                     let body = self.assignment()?;
                     Ok(Expr::For(its, do_yield, Box::new(body)))
                 }
@@ -1371,8 +1390,7 @@ impl Parser {
     }
 
     fn for_iteration(&mut self) -> Result<ForIteration, String> {
-        if self.peek() == Some(Token::If) {
-            self.advance();
+        if self.try_consume(&Token::If) {
             Ok(ForIteration::Guard(Box::new(self.single()?)))
         } else {
             let pat0 = self.pattern()?;
@@ -1380,8 +1398,7 @@ impl Parser {
             let ty = match self.peek() {
                 Some(Token::Colon) => {
                     self.advance();
-                    if self.peek() == Some(Token::Assign) {
-                        self.advance();
+                    if self.try_consume(&Token::Assign) {
                         ForIterationType::Declare
                     } else {
                         ForIterationType::Normal
@@ -1411,9 +1428,29 @@ impl Parser {
                 }
                 Some(Token::LeftBracket) => {
                     self.advance();
-                    let c = self.single()?;
-                    self.require(Token::RightBracket, "index expr".to_string())?;
-                    cur = Expr::Index(Box::new(cur), Box::new(c));
+                    if self.try_consume(&Token::Colon) {
+                        if self.try_consume(&Token::RightBracket) {
+                            cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, None));
+                        } else {
+                            let c = self.single()?;
+                            self.require(Token::RightBracket, "index expr".to_string())?;
+                            cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, Some(Box::new(c))));
+                        }
+                    } else {
+                        let c = self.single()?;
+                        if self.try_consume(&Token::Colon) {
+                            if self.try_consume(&Token::RightBracket) {
+                                cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), None));
+                            } else {
+                                let cc = self.single()?;
+                                self.require(Token::RightBracket, "index expr".to_string())?;
+                                cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), Some(Box::new(cc))));
+                            }
+                        } else {
+                            self.require(Token::RightBracket, "index expr".to_string())?;
+                            cur = Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c)));
+                        }
+                    }
                 }
                 _ => break Ok(cur)
             }
@@ -1462,8 +1499,9 @@ impl Parser {
                         let mut ops = vec![(op.to_string(), Box::new(self.operand()?))];
 
                         while let Some(Token::Ident(op)) = self.peek() {
+                            let op = op.to_string();
                             self.advance();
-                            ops.push((op.to_string(), Box::new(self.operand()?)));
+                            ops.push((op, Box::new(self.operand()?)));
                         }
                         Ok(Expr::Chain(Box::new(op1), ops))
                     }
@@ -1482,8 +1520,7 @@ impl Parser {
 
     fn logic_and(&mut self) -> Result<Expr, String> {
         let mut op1 = self.chain()?;
-        while self.peek() == Some(Token::And) {
-            self.advance();
+        while self.try_consume(&Token::And) {
             op1 = Expr::And(Box::new(op1), Box::new(self.chain()?));
         }
         Ok(op1)
@@ -1491,8 +1528,7 @@ impl Parser {
 
     fn single(&mut self) -> Result<Expr, String> {
         let mut op1 = self.logic_and()?;
-        while self.peek() == Some(Token::Or) {
-            self.advance();
+        while self.try_consume(&Token::Or) {
             op1 = Expr::Or(Box::new(op1), Box::new(self.logic_and()?));
         }
         Ok(op1)
@@ -1504,8 +1540,7 @@ impl Parser {
     fn comma_separated(&mut self) -> Result<(Vec<Box<Expr>>, bool), String> {
         let mut xs = vec![Box::new(self.single()?)];
         let mut comma = false;
-        while self.peek() == Some(Token::Comma) {
-            self.i += 1;
+        while self.try_consume(&Token::Comma) {
             comma = true;
             if self.peek_csc_stopper() {
                 return Ok((xs, comma))
@@ -1529,8 +1564,7 @@ impl Parser {
     // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think.
     fn annotated_pattern(&mut self) -> Result<Expr, String> {
         let pat = self.pattern()?;
-        if self.peek() == Some(Token::Colon) {
-            self.advance();
+        if self.try_consume(&Token::Colon) {
             if self.peek_csc_stopper() {
                 Ok(Expr::Annotation(Box::new(pat), None))
             } else {
@@ -1542,13 +1576,14 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expr, String> {
-        if self.peek() == Some(Token::Swap) {
-            self.advance();
+        if self.try_consume(&Token::Swap) {
             let a = to_lvalue(self.single()?)?;
             self.require(Token::Comma, "swap between lvalues".to_string())?;
             let b = to_lvalue(self.single()?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
+            let every = self.try_consume(&Token::Every);
+            // TODO: parsing can be different after Every
             let pat = self.annotated_pattern()?;
 
             match self.peek() {
@@ -1557,6 +1592,7 @@ impl Parser {
                     match pat {
                         Expr::Call(lhs, op) => match few(op) {
                             Few::One(op) => Ok(Expr::OpAssign(
+                                every,
                                 Box::new(to_lvalue(*lhs)?),
                                 Box::new(*op),
                                 Box::new(self.pattern()?),
@@ -1564,7 +1600,7 @@ impl Parser {
                             _ => Err("call w not 1 arg is not assignop".to_string()),
                         }
                         _ => {
-                            Ok(Expr::Assign(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+                            Ok(Expr::Assign(every, Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
                         }
                     }
                 }
@@ -1574,7 +1610,11 @@ impl Parser {
                     Ok(Expr::Declare(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
                 }
                 */
-                _ => Ok(pat)
+                _ => if every {
+                    Err("`every` as not assignment".to_string())
+                } else {
+                    Ok(pat)
+                }
             }
         }
     }
@@ -1583,8 +1623,7 @@ impl Parser {
         let mut ags = vec![Box::new(self.assignment()?)];
         let mut semicolon = false;
 
-        while self.peek() == Some(Token::Semicolon) {
-            self.advance();
+        while self.try_consume(&Token::Semicolon) {
             semicolon = true;
             if self.peek() != None {
                 ags.push(Box::new(self.assignment()?));
@@ -1706,13 +1745,29 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
     }
 }
 
-fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
+// Modifying parts of a &mut Obj
+// =============================
+
+fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every: bool) -> NRes<()> {
     match (lhs, indexes) {
         (lhs, []) => { *lhs = value; Ok(()) }
-        (Obj::List(v), [i, rest @ ..]) => {
-            set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
+        (Obj::List(v), [EvaluatedIndexOrSlice::Index(i), rest @ ..]) => {
+            set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value, every)
         }
-        (Obj::String(s), [i]) => match value {
+        (Obj::List(v), [EvaluatedIndexOrSlice::Slice(i, j), rest @ ..]) => {
+            if every {
+                let v = Rc::make_mut(v);
+                let (lo, hi) = pythonic_slice(v, i.as_ref(), j.as_ref())?;
+                for i in lo..hi {
+                    set_index(&mut v[i], rest, value.clone(), true)?;
+                }
+                Ok(())
+            } else {
+                todo!("assgn to slice")
+                // set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
+            }
+        }
+        (Obj::String(s), [EvaluatedIndexOrSlice::Index(i)]) => match value {
             Obj::String(v) => {
                 let mut_s = Rc::make_mut(s);
                 if v.as_bytes().len() == 1 {
@@ -1740,7 +1795,7 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
             }
             _ => Err(NErr::ValueError(format!("assigning to string index, not a string")))
         }
-        (Obj::Dict(v, _), [kk, rest @ ..]) => {
+        (Obj::Dict(v, _), [EvaluatedIndexOrSlice::Index(kk), rest @ ..]) => {
             let k = to_key(kk.clone())?;
             let mut_d = Rc::make_mut(v);
             // We might create a new map entry, but only at the end, which is a bit of a
@@ -1751,10 +1806,10 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
                 set_index(match mut_d.get_mut(&k) {
                     Some(vvv) => vvv,
                     None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
-                }, rest, value)
+                }, rest, value, every)
             }
         }
-        (Obj::Func(_, Precedence(p, _)), [Obj::String(r)]) => match &***r {
+        (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::String(r))]) => match &***r {
             "precedence" => match value {
                 Obj::Num(f) => match f.to_f64() {
                     Some(f) => { *p = f; Ok(()) }
@@ -1768,15 +1823,17 @@ fn set_index(lhs: &mut Obj, indexes: &[Obj], value: Obj) -> NRes<()> {
     }
 }
 
-fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj) -> NRes<Obj>) -> NRes<Obj> {
+// be careful not to call this with both lhs holding a mutable reference into a RefCell and rhs
+// trying to take such a reference!
+fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: impl FnOnce(&mut Obj) -> NRes<Obj>) -> NRes<Obj> {
     match indexes.split_first() {
         None => f(lhs),
         Some((i, rest)) => {
             match (lhs, i) {
-                (Obj::List(v), i) => {
+                (Obj::List(v), EvaluatedIndexOrSlice::Index(i)) => {
                     modify_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
                 }
-                (Obj::Dict(v, def), kk) => {
+                (Obj::Dict(v, def), EvaluatedIndexOrSlice::Index(kk)) => {
                     let k = to_key(kk.clone())?;
                     let mut_d = Rc::make_mut(v);
                     // FIXME improve
@@ -1798,37 +1855,86 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[Obj], f: impl FnOnce(&mut Obj
     }
 }
 
+// same here...
+fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: &mut impl FnMut(&mut Obj) -> NRes<()>) -> NRes<()> {
+    match indexes.split_first() {
+        None => f(lhs),
+        Some((i, rest)) => {
+            match (lhs, i) {
+                (Obj::List(v), EvaluatedIndexOrSlice::Index(i)) => {
+                    modify_every_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
+                }
+                (Obj::List(v), EvaluatedIndexOrSlice::Slice(lo, hi)) => {
+                    let (lo, hi) = pythonic_slice(v, lo.as_ref(), hi.as_ref())?;
+                    for m in &mut Rc::make_mut(v)[lo..hi] {
+                        modify_every_existing_index(m, rest, f)?
+                    }
+                    Ok(())
+                }
+                (Obj::Dict(v, def), EvaluatedIndexOrSlice::Index(kk)) => {
+                    let k = to_key(kk.clone())?;
+                    let mut_d = Rc::make_mut(v);
+                    // FIXME improve
+                    if !mut_d.contains_key(&k) {
+                        match def {
+                            Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
+                            None => return Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k))),
+                        }
+                    }
+                    modify_every_existing_index(match mut_d.get_mut(&k) {
+                        Some(vvv) => vvv,
+                        // shouldn't happen:
+                        None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                    }, rest, f)
+                }
+                (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
+            }
+        }
+    }
+}
+
+fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
+    if env.insert(s.to_string(), ty, rhs).is_some() {
+        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
+    } else {
+        Ok(())
+    }
+}
+
+fn assign_respecting_type(env: &mut Env, s: &str, ixs: &[EvaluatedIndexOrSlice], rhs: &Obj, every: bool) -> NRes<()> {
+    env.modify_existing_var(s, |(ty, v)| {
+        // Eagerly check type only if ixs is empty, otherwise we can't really do
+        // that (at least not in full generality)
+        if ixs.is_empty() && !is_type(ty, rhs) {
+            Err(NErr::NameError(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
+        }
+        set_index(v, ixs, rhs.clone(), every)?;
+        // Check type after the fact. TODO if we ever do subscripted types: this
+        // will be super inefficient lmao, we can be smart tho
+        if !ixs.is_empty() && !is_type(ty, &v) {
+            Err(NErr::NameError(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, rhs, ty.name())))
+        } else {
+            Ok(())
+        }
+    }).ok_or(NErr::NameError(if ixs.is_empty() {
+         format!("Variable {:?} not found (use := to declare)", s)
+    } else {
+         format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)
+    }))?
+}
+
 fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
             Some(ty) => {
                 // declaration
                 if ixs.is_empty() {
-                    if env.insert(s.to_string(), ty.clone(), rhs.clone()).is_some() {
-                        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
-                    } else {
-                        Ok(())
-                    }
+                    insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::NameError(format!("Can't insert new value into index expression on nonexistent variable: {:?} {:?}", s, ixs)))
+                    return Err(NErr::NameError(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
                 }
             }
-            None => {
-                // assignment
-                if ixs.is_empty() {
-                    env.modify_existing_var(s, |(ty, old)| {
-                        if is_type(ty, rhs) {
-                            *old = rhs.clone(); Ok(())
-                        } else {
-                            Err(NErr::NameError(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))
-                        }
-                    }).ok_or(NErr::NameError(format!("Variable {:?} not found (use := to declare)", s)))?
-                } else {
-                    env.modify_existing_var(s, |(_type, v)| {
-                        set_index(v, ixs, rhs.clone())?; Ok(())
-                    }).ok_or(NErr::NameError(format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)))?
-                }
-            }
+            None => assign_respecting_type(env, s, ixs, rhs, false),
         }
         EvaluatedLvalue::CommaSeq(ss) => {
             match rhs {
@@ -1846,6 +1952,73 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
         EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
+
+fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
+    match lhs {
+        EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
+            Some(ty) => {
+                // declaration
+                if ixs.is_empty() {
+                    insert_declare(env, s, ty.clone(), rhs.clone())
+                } else {
+                    return Err(NErr::NameError(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
+                }
+            }
+            None => assign_respecting_type(env, s, ixs, rhs, true),
+        }
+        EvaluatedLvalue::CommaSeq(ss) => {
+            for v in ss {
+                assign_every(env, v, rt, rhs)?;
+            }
+            Ok(())
+        }
+        EvaluatedLvalue::Annotation(s, ann) => match ann {
+            None => assign_every(env, s, Some(&ObjType::Any), rhs),
+            Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs),
+        }
+        EvaluatedLvalue::Unannotation(s) => {
+            assign_every(env, s, None, rhs)
+        }
+        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
+    }
+}
+
+// different: doesn't hold a mutable borrow to the environment when calling rhs; doesn't accept
+// declarations
+fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl FnMut(Obj) -> NRes<Obj>) -> NRes<()> {
+    match lhs {
+        EvaluatedLvalue::IndexedIdent(s, ixs) => {
+            // drop borrow immediately
+            let mut old: Obj = env.borrow_mut().get_var(s)?;
+
+            if ixs.is_empty() {
+                let new = rhs(old)?;
+                env.borrow_mut().modify_existing_var(s, |(ty, old)| {
+                    if is_type(ty, &new) {
+                        *old = new.clone(); Ok(())
+                    } else {
+                        Err(NErr::NameError(format!("Modify every: assignment to {} type check failed: {} not {}", s, new, ty.name())))
+                    }
+                }).ok_or(NErr::NameError(format!("Variable {:?} not found in modify every", s)))?
+            } else {
+                modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
+                    // TODO take??
+                    *x = rhs(x.clone())?; Ok(())
+                })
+            }
+        }
+        EvaluatedLvalue::CommaSeq(ss) => {
+            for v in ss {
+                modify_every(env, v, rhs)?;
+            }
+            Ok(())
+        }
+        EvaluatedLvalue::Annotation(..) => Err(NErr::TypeError(format!("No annotations in modify every: {:?}", lhs))),
+        EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
+        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
+    }
+}
+
 
 const DEFAULT_PRECEDENCE: f64 = 0.0;
 const COMPARISON_PRECEDENCE: f64 = 1.0;
@@ -1945,11 +2118,20 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
     Ok(acc)
 }
 
+fn eval_index_or_slice(env: &Rc<RefCell<Env>>, expr: &IndexOrSlice) -> NRes<EvaluatedIndexOrSlice> {
+    match expr {
+        IndexOrSlice::Index(v) => Ok(EvaluatedIndexOrSlice::Index(evaluate(env, v)?)),
+        IndexOrSlice::Slice(a, b) => Ok(EvaluatedIndexOrSlice::Slice(
+                match a { Some(a) => Some(evaluate(env, a)?), None => None },
+                match b { Some(b) => Some(evaluate(env, b)?), None => None })),
+    }
+}
+
 fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     match expr {
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
             s.to_string(),
-            v.iter().map(|e| Ok(evaluate(env, e)?)).collect::<NRes<Vec<Obj>>>()?
+            v.iter().map(|e| Ok(eval_index_or_slice(env, e)?)).collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?
         )),
         Lvalue::Annotation(s, t) => Ok(EvaluatedLvalue::Annotation(
             Box::new(eval_lvalue(env, s)?),
@@ -1986,16 +2168,39 @@ fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
     let ii = pythonic_index(xs, i)?; Ok(&mut xs[ii])
 }
 
+// for slicing
+fn clamped_pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
+    match i {
+        Obj::Num(ii) => match ii.to_isize() {
+            Some(n) => {
+                if n >= 0 { return Ok((n as usize).min(xs.len())) }
+
+                let i2 = n + (xs.len() as isize);
+                if i2 < 0 { Ok(0) } else { Ok(i2 as usize) }
+            }
+            _ => Err(NErr::IndexError(format!("Slice index out of bounds of isize or non-integer: {:?}", ii)))
+        }
+        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) slice index: {:?}", i))),
+    }
+}
+
+fn pythonic_slice<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(usize, usize)> {
+    Ok((
+        match lo { Some(lo) => clamped_pythonic_index(xs, &lo)?, None => 0 },
+        match hi { Some(hi) => clamped_pythonic_index(xs, &hi)?, None => xs.len() },
+    ))
+}
+
 fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
-    match (&xr, &ir) {
-        (Obj::List(xx), ii) => Ok(xx[pythonic_index(xx, ii)?].clone()),
+    match (&xr, ir) {
+        (Obj::List(xx), ii) => Ok(xx[pythonic_index(xx, &ii)?].clone()),
         (Obj::String(s), ii) => {
             let bs = s.as_bytes();
-            let i = pythonic_index(bs, ii)?;
+            let i = pythonic_index(bs, &ii)?;
             // TODO this was the path of least resistance; idk what good semantics actually are
             Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
         }
-        (Obj::Dict(xx, def), _) => {
+        (Obj::Dict(xx, def), ir) => {
             let k = to_key(ir)?;
             match xx.get(&k) {
                 Some(e) => Ok(e.clone()),
@@ -2005,13 +2210,37 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
         }
-        (Obj::Func(_, Precedence(p, _)), Obj::String(k)) => match &***k {
+        (Obj::Func(_, Precedence(p, _)), Obj::String(k)) => match &**k {
             "precedence" => Ok(Obj::from(*p)),
             _ => Err(NErr::TypeError(format!("can't index into func {:?}", k))),
         }
-        _ => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
+        (xr, ir) => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
     }
 }
+
+fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
+    match (&xr, lo, hi) {
+        (Obj::List(xx), lo, hi) => {
+            let (lo, hi) = pythonic_slice(xx, lo.as_ref(), hi.as_ref())?;
+            Ok(Obj::List(Rc::new(xx[lo..hi].to_vec())))
+        }
+        (Obj::String(s), lo, hi) => {
+            let bs = s.as_bytes();
+            let (lo, hi) = pythonic_slice(bs, lo.as_ref(), hi.as_ref())?;
+            // TODO this was the path of least resistance; idk what good semantics actually are
+            Ok(Obj::from(String::from_utf8_lossy(&bs[lo..hi]).into_owned()))
+        }
+        (xr, lo, hi) => Err(NErr::TypeError(format!("can't slice {:?} {:?} {:?}", xr, lo, hi))),
+    }
+}
+
+fn index_or_slice(xr: Obj, ir: EvaluatedIndexOrSlice) -> NRes<Obj> {
+    match ir {
+        EvaluatedIndexOrSlice::Index(i) => index(xr, i),
+        EvaluatedIndexOrSlice::Slice(i, j) => slice(xr, i, j),
+    }
+}
+
 
 fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
@@ -2061,7 +2290,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         Lvalue::IndexedIdent(s, v) => {
             let mut sr = env.borrow_mut().get_var(s)?;
             for ix in v {
-                sr = index(sr, evaluate(env, ix)?)?.clone();
+                sr = index_or_slice(sr, eval_index_or_slice(env, ix)?)?.clone();
             }
             Ok(sr)
         },
@@ -2074,6 +2303,29 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         Lvalue::Splat(_) => Err(NErr::SyntaxError("Can't evaluate splat on LHS of assignment??".to_string())),
     }
 }
+
+/*
+// note we must (?) not hold a mutable borrow of env while calling f since f might (will probably?)
+// also get one
+fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<()> {
+    match expr {
+        Lvalue::IndexedIdent(s, v) => {
+            let mut sr = env.borrow_mut().get_var(s)?;
+            for ix in v {
+                sr = index_or_slice(sr, eval_index_or_slice(env, ix)?)?.clone();
+            }
+            Ok(sr)
+        },
+        Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
+        Lvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
+        Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
+            v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
+        ))),
+        // maybe if commaseq eagerly looks for splats...
+        Lvalue::Splat(_) => Err(NErr::SyntaxError("Can't evaluate splat on LHS of assignment??".to_string())),
+    }
+}
+*/
 
 fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     match (a, b) {
@@ -2138,8 +2390,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Ident(s) => env.borrow_mut().get_var(s),
         Expr::Index(x, i) => {
             let xr = evaluate(env, x)?;
-            let ir = evaluate(env, i)?;
-            index(xr, ir)
+            let ir = eval_index_or_slice(env, i)?;
+            index_or_slice(xr, ir)
         }
         Expr::Chain(op1, ops) => {
             let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
@@ -2171,13 +2423,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 evaluate(env, rhs)
             }
         }
-        Expr::Assign(pat, rhs) => {
+        Expr::Assign(every, pat, rhs) => {
             let p = eval_lvalue(env, pat)?;
             let res = match &**rhs {
                 Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
                 _ => evaluate(env, rhs),
             }?;
-            assign(&mut env.borrow_mut(), &p, None, &res)?;
+            if *every {
+                assign_every(&mut env.borrow_mut(), &p, None, &res)?;
+            } else {
+                assign(&mut env.borrow_mut(), &p, None, &res)?;
+            }
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
@@ -2210,20 +2466,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
                     [] => Err(NErr::ValueError("can't remove flat identifier".to_string())),
                     [rest @ .., last_i] => {
-                        let mut removed = Err(NErr::TypeError("failed to remove??".to_string()));
                         env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
-                            removed = modify_existing_index(vv, &rest, |x| match (x, last_i) {
-                                (Obj::List(xs), i) => {
+                            modify_existing_index(vv, &rest, |x| match (x, last_i) {
+                                (Obj::List(xs), EvaluatedIndexOrSlice::Index(i)) => {
                                     let ii = pythonic_index(xs, i)?;
                                     Ok(Rc::make_mut(xs).remove(ii))
                                 }
-                                (Obj::Dict(xs, _), i) => {
+                                (Obj::List(xs), EvaluatedIndexOrSlice::Slice(i, j)) => {
+                                    let (lo, hi) = pythonic_slice(xs, i.as_ref(), j.as_ref())?;
+                                    Ok(Obj::List(Rc::new(Rc::make_mut(xs).drain(lo..hi).collect())))
+                                }
+                                (Obj::Dict(xs, _), EvaluatedIndexOrSlice::Index(i)) => {
                                     Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::KeyError("key not found in dict".to_string()))
                                 }
+                                // TODO: remove parts of strings...
                                 _ => Err(NErr::TypeError("can't remove".to_string())),
-                            });
-                        });
-                        removed
+                            })
+                        }).ok_or(NErr::NameError("var not found to remove".to_string()))?
                     }
                 }
                 _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
@@ -2238,26 +2497,39 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             assign(&mut env.borrow_mut(), &bl, None, &ao)?;
             Ok(Obj::Null)
         }
-        Expr::OpAssign(pat, op, rhs) => {
-            let pv = eval_lvalue_as_obj(env, pat)?;
-            let p = eval_lvalue(env, pat)?;
-            let opv = evaluate(env, op)?;
-
-            match opv {
-                Obj::Func(ff, _) => {
-                    let res = match &**rhs {
-                        Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
-                        _ => evaluate(env, rhs),
-                    }?;
-                    if !ff.can_refer() {
-                        // Drop the Rc from the lvalue so that pure functions can try to consume it
-                        assign(&mut env.borrow_mut(), &p, None, &Obj::Null)?;
+        Expr::OpAssign(every, pat, op, rhs) => {
+            if *every {
+                let p = eval_lvalue(env, pat)?;
+                match evaluate(env, rhs)? {
+                    Obj::Func(ff, _) => {
+                        let res = match &**rhs {
+                            Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
+                            _ => evaluate(env, rhs),
+                        }?;
+                        modify_every(env, &p, &mut |x| { ff.run(vec![x, res.clone()]) })?;
+                        Ok(Obj::Null)
                     }
-                    let fres = ff.run(vec![pv, res])?;
-                    assign(&mut env.borrow_mut(), &p, None, &fres)?;
-                    Ok(Obj::Null)
+                    opv => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
                 }
-                _ => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
+            } else {
+                let pv = eval_lvalue_as_obj(env, pat)?;
+                let p = eval_lvalue(env, pat)?;
+                match evaluate(env, op)? {
+                    Obj::Func(ff, _) => {
+                        let res = match &**rhs {
+                            Expr::CommaSeq(xs) => Ok(Obj::List(Rc::new(eval_seq(env, xs)?))),
+                            _ => evaluate(env, rhs),
+                        }?;
+                        if !ff.can_refer() {
+                            // Drop the Rc from the lvalue so that pure functions can try to consume it
+                            assign(&mut env.borrow_mut(), &p, None, &Obj::Null)?;
+                        }
+                        let fres = ff.run(vec![pv, res])?;
+                        assign(&mut env.borrow_mut(), &p, None, &fres)?;
+                        Ok(Obj::Null)
+                    }
+                    opv => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
+                }
             }
         }
         Expr::Call(f, args) => {
