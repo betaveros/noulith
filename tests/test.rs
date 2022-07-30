@@ -128,6 +128,13 @@ fn comparisons() {
     assert_eq!(simple_eval("((-1) < 2) < 2"), Obj::from(1));
     assert_eq!(simple_eval("(-1) < (2 < 2)"), Obj::from(1));
 }
+#[test]
+fn minmax() {
+    assert_eq!(simple_eval("3 min 4"), Obj::from(3));
+    assert_eq!(simple_eval("3 max 4"), Obj::from(4));
+    assert_eq!(simple_eval("min(3 to 5)"), Obj::from(3));
+    assert_eq!(simple_eval("max(3 to 5)"), Obj::from(5));
+}
 
 #[test]
 fn opassigns() {
