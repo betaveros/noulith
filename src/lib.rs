@@ -1488,7 +1488,7 @@ impl Closure {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     IntLit(BigInt),
-    // FloatLit(f64),
+    FloatLit(f64),
     StringLit(Rc<String>),
     FormatString(Rc<String>),
     Ident(String),
@@ -1537,6 +1537,7 @@ pub enum IndexOrSlice {
 #[derive(Debug)]
 pub enum Expr {
     IntLit(BigInt),
+    FloatLit(f64),
     StringLit(Rc<String>),
     FormatString(Rc<String>),
     Ident(String),
@@ -1697,6 +1698,31 @@ impl<'a> Lexer<'a> {
         acc
     }
 
+    fn lex_base_and_emit(&mut self, base: u32) {
+        let mut x = BigInt::from(0);
+        while let Some(cc) = self.peek().and_then(|d| d.to_digit(base)) {
+            self.next();
+            x = base * x + cc;
+        }
+        self.emit(Token::IntLit(x))
+    }
+
+    fn lex_base_64_and_emit(&mut self) {
+        let mut x = BigInt::from(0);
+        while let Some(cc) = self.peek().and_then(|d| match d {
+            'A'..='Z' => Some((*d as u32) - ('A' as u32)),
+            'a'..='z' => Some((*d as u32) - ('a' as u32) + 26),
+            '0'..='9' => Some((*d as u32) - ('0' as u32) + 52),
+            '+' | '-' => Some(62),
+            '/' | '_' => Some(63),
+            _ => None,
+        }) {
+            self.next();
+            x = 64 * x + cc;
+        }
+        self.emit(Token::IntLit(x))
+    }
+
     fn lex(&mut self) {
         lazy_static! {
             static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
@@ -1746,7 +1772,37 @@ impl<'a> Lexer<'a> {
                             acc.push(*cc);
                             self.next();
                         }
-                        self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap()))
+                        if self.peek() == Some(&'.') {
+                            acc.push('.');
+                            self.next();
+                            while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
+                                acc.push(*cc);
+                                self.next();
+                            }
+                            self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                        } else {
+                            match (acc.as_str(), self.peek()) {
+                                ("0", Some('x' | 'X')) => { self.next(); self.lex_base_and_emit(16) }
+                                ("0", Some('b' | 'B')) => { self.next(); self.lex_base_and_emit(2) }
+                                ("0", Some('o' | 'O')) => { self.next(); self.lex_base_and_emit(8) }
+                                ( _ , Some('r' | 'R')) => {
+                                    // radix. not sure who does this actually? common lisp?
+                                    match acc.parse::<u32>() {
+                                        Ok(radix) if 2 <= radix && radix <= 36 => {
+                                            self.next();
+                                            self.lex_base_and_emit(radix)
+                                        }
+                                        Ok(64) => {
+                                            self.next();
+                                            self.lex_base_64_and_emit()
+                                        }
+                                        _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
+                                    }
+
+                                }
+                                _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
+                            }
+                        }
                     } else if c.is_alphabetic() {
                         let mut acc = c.to_string();
 
@@ -1882,6 +1938,11 @@ impl Parser {
                     let n = n.clone();
                     self.advance();
                     Ok(Expr::IntLit(n))
+                }
+                Token::FloatLit(n) => {
+                    let n = *n;
+                    self.advance();
+                    Ok(Expr::FloatLit(n))
                 }
                 Token::StringLit(s) => {
                     let s = s.clone();
@@ -3092,6 +3153,7 @@ fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callb
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
+        Expr::FloatLit(n) => Ok(Obj::from(*n)),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
         Expr::FormatString(s) => {
             // TODO: split this up? honestly idk
