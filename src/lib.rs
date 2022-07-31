@@ -110,11 +110,13 @@ pub enum Seq {
     String(Rc<String>),
     List(Rc<Vec<Obj>>),
     Dict(Rc<HashMap<ObjKey, Obj>>, Option<Box<Obj>>), // default value
+    Vector(Rc<Vec<NNum>>),
+    Bytes(Rc<Vec<u8>>),
 }
 
 // more like an arbitrary predicate. want to add subscripted types to this later
 #[derive(Debug, Clone)]
-pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Func, Type, Any }
+pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Vector, Bytes, Func, Type, Any }
 
 impl ObjType {
     fn name(&self) -> String {
@@ -127,6 +129,8 @@ impl ObjType {
             ObjType::List => "list",
             ObjType::String => "str",
             ObjType::Dict => "dict",
+            ObjType::Vector => "vector",
+            ObjType::Bytes => "bytes",
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
@@ -143,6 +147,8 @@ fn type_of(obj: &Obj) -> ObjType {
         Obj::Seq(Seq::List(_)) => ObjType::List,
         Obj::Seq(Seq::String(_)) => ObjType::String,
         Obj::Seq(Seq::Dict(..)) => ObjType::Dict,
+        Obj::Seq(Seq::Vector(_)) => ObjType::Vector,
+        Obj::Seq(Seq::Bytes(..)) => ObjType::Bytes,
         Obj::Func(Func::Type(_), _) => ObjType::Type,
         Obj::Func(..) => ObjType::Func,
     }
@@ -187,6 +193,23 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(mut_obj_into_iter(&mut arg, "list conversion")?.collect())),
         }
+        ObjType::String => Ok(Obj::from(format!("{}", arg))),
+        ObjType::Bytes => match arg {
+            Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
+            mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                mut_obj_into_iter(&mut arg, "bytes conversion")?
+                .map(|e| match e {
+                    Obj::Num(n) => n.to_u8().ok_or(NErr::value_error(format!("can't to byte: {}", n))),
+                    x => Err(NErr::value_error(format!("can't to byte: {}", x))),
+                })
+                .collect::<NRes<Vec<u8>>>()?
+            )))),
+        }
+        ObjType::Vector => match arg {
+            Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
+            mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?.map(Ok)),
+        }
         ObjType::Dict => match arg {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
             // nonsensical but maybe this is something some day
@@ -206,7 +229,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                         }).collect::<NRes<HashMap<ObjKey, Obj>>>()?, None)),
         }
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
-        // TODO: complex, number, list, dict
+        // TODO: complex, number, vector, bytes
         _ => Err(NErr::type_error("that type can't be called (maybe not implemented)".to_string())),
     }
 }
@@ -229,6 +252,8 @@ pub enum ObjKey {
     String(Rc<String>),
     List(Rc<Vec<ObjKey>>),
     Dict(Rc<Vec<(ObjKey, ObjKey)>>),
+    Vector(Rc<Vec<NTotalNum>>),
+    Bytes(Rc<Vec<u8>>),
 }
 
 impl Obj {
@@ -239,6 +264,8 @@ impl Obj {
             Obj::Seq(Seq::String(x)) => !x.is_empty(),
             Obj::Seq(Seq::List(x)) => !x.is_empty(),
             Obj::Seq(Seq::Dict(x, _)) => !x.is_empty(),
+            Obj::Seq(Seq::Vector(x)) => !x.is_empty(),
+            Obj::Seq(Seq::Bytes(x)) => !x.is_empty(),
             Obj::Func(..) => true,
         }
     }
@@ -356,6 +383,8 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
             pairs.sort();
             Ok(ObjKey::Dict(Rc::new(pairs)))
         }
+        Obj::Seq(Seq::Vector(x)) => Ok(ObjKey::Vector(Rc::new(x.iter().map(|e| NTotalNum(e.clone())).collect()))),
+        Obj::Seq(Seq::Bytes(x)) => Ok(ObjKey::Bytes(x)),
         Obj::Func(..) => Err(NErr::type_error("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
@@ -371,6 +400,8 @@ fn key_to_obj(key: ObjKey) -> Obj {
         ObjKey::Dict(mut d) => Obj::dict(
                 mut_rc_vec_into_iter(&mut d).map(
                     |(k, v)| (k, key_to_obj(v))).collect::<HashMap<ObjKey,Obj>>(), None),
+        ObjKey::Vector(v) => Obj::Seq(Seq::Vector(Rc::new(v.iter().map(|x| x.0.clone()).collect()))),
+        ObjKey::Bytes(v) => Obj::Seq(Seq::Bytes(v)),
     }
 }
 
@@ -386,10 +417,10 @@ pub struct MyFmtFlags {
 
 impl MyFmtFlags {
     pub fn new() -> MyFmtFlags {
-        MyFmtFlags::budgeted(usize::MAX)
+        MyFmtFlags { base: FmtBase::Decimal, repr: false, budget: usize::MAX }
     }
-    pub fn budgeted(budget: usize) -> MyFmtFlags {
-        MyFmtFlags { base: FmtBase::Decimal, repr: false, budget }
+    pub fn budgeted_repr(budget: usize) -> MyFmtFlags {
+        MyFmtFlags { base: FmtBase::Decimal, repr: true, budget }
     }
     fn deduct(&mut self, amt: usize) {
         if self.budget >= amt {
@@ -400,94 +431,156 @@ impl MyFmtFlags {
     }
 }
 
-impl Obj {
+impl MyDisplay for NNum {
+    fn is_null(&self) -> bool { false }
+    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+        match flags.base {
+            FmtBase::Decimal => write!(formatter, "{}", self),
+            FmtBase::Binary => write!(formatter, "{:b}", self),
+            FmtBase::Octal => write!(formatter, "{:o}", self),
+            FmtBase::LowerHex => write!(formatter, "{:x}", self),
+            FmtBase::UpperHex => write!(formatter, "{:X}", self),
+        }
+    }
+}
+impl MyDisplay for NTotalNum {
+    fn is_null(&self) -> bool { false }
+    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+        self.0.fmt_with_mut(formatter, flags)
+    }
+}
+
+fn write_string(s: &str, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+    flags.deduct(s.len() / 2);
+    if flags.repr {
+        // FIXME??
+        write!(formatter, "{:?}", s)
+    } else {
+        write!(formatter, "{}", s)
+    }
+}
+fn write_slice(v: &[impl MyDisplay], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+    let old_repr = flags.repr;
+    flags.repr = true;
+    // Regardless of budget, always fmt first and last
+    match v {
+        [] => {},
+        [only] => only.fmt_with_mut(formatter, flags)?,
+        [first, rest @ .., last] => {
+            first.fmt_with_mut(formatter, flags)?;
+            write!(formatter, ", ")?;
+            for x in rest {
+                if flags.budget == 0 {
+                    // TODO this has the "sometimes longer than what's omitted"
+                    // property
+                    write!(formatter, "..., ")?;
+                    break
+                }
+                x.fmt_with_mut(formatter, flags)?;
+                write!(formatter, ", ")?;
+            }
+            last.fmt_with_mut(formatter, flags)?;
+        }
+    }
+    flags.repr = old_repr;
+    Ok(())
+}
+
+fn write_pairs<'a,'b>(it: impl Iterator<Item=(&'a (impl MyDisplay + 'a), &'b (impl MyDisplay + 'b))>, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+    let old_repr = flags.repr;
+    flags.repr = true;
+    let mut started = false;
+    for (k, v) in it {
+        if started {
+            write!(formatter, ", ")?;
+            if flags.budget == 0 {
+                write!(formatter, "...")?;
+                break
+            }
+        }
+        started = true;
+        k.fmt_with_mut(formatter, flags)?;
+        if !v.is_null() {
+            write!(formatter, ": ")?;
+            v.fmt_with_mut(formatter, flags)?;
+        }
+    }
+    flags.repr = old_repr;
+    Ok(())
+}
+
+fn write_bytes(s: &[u8], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+    flags.deduct(s.len());
+    write!(formatter, "B[")?;
+    match s {
+        [] => {},
+        [only] => { write!(formatter, "{}", only)?; }
+        [first, rest @ .., last] => {
+            write!(formatter, "{},", first)?;
+            for x in rest {
+                if flags.budget == 0 {
+                    // TODO this has the "sometimes longer than what's omitted"
+                    // property
+                    write!(formatter, "..., ")?;
+                    break
+                }
+                write!(formatter, "{},", x)?;
+            }
+            write!(formatter, "{}", last)?;
+        }
+    }
+    write!(formatter, "]")
+}
+
+trait MyDisplay {
+    fn is_null(&self) -> bool;
+    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result;
+}
+
+impl MyDisplay for Obj {
+    fn is_null(&self) -> bool { self == &Obj::Null } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         flags.deduct(1);
         match self {
             Obj::Null => write!(formatter, "null"),
-            Obj::Num(n) => match flags.base {
-                FmtBase::Decimal => write!(formatter, "{}", n),
-                FmtBase::Binary => write!(formatter, "{:b}", n),
-                FmtBase::Octal => write!(formatter, "{:o}", n),
-                FmtBase::LowerHex => write!(formatter, "{:x}", n),
-                FmtBase::UpperHex => write!(formatter, "{:X}", n),
-            }
-            Obj::Seq(Seq::String(s)) => {
-                flags.deduct(s.len() / 2);
-                if flags.repr {
-                    // FIXME??
-                    write!(formatter, "{:?}", s)
-                } else {
-                    write!(formatter, "{}", s)
-                }
-            }
+            Obj::Num(n) => n.fmt_with_mut(formatter, flags),
+            Obj::Seq(Seq::String(s)) => write_string(s, formatter, flags),
             Obj::Seq(Seq::List(xs)) => {
                 write!(formatter, "[")?;
-                let old_repr = flags.repr;
-                flags.repr = true;
-                // Regardless of budget, always fmt first and last
-                match xs.as_slice() {
-                    [] => {},
-                    [only] => only.fmt_with_mut(formatter, flags)?,
-                    [first, rest @ .., last] => {
-                        first.fmt_with_mut(formatter, flags)?;
-                        write!(formatter, ", ")?;
-                        for x in rest {
-                            if flags.budget == 0 {
-                                // TODO this has the "sometimes longer than what's omitted"
-                                // property
-                                write!(formatter, "..., ")?;
-                                break
-                            }
-                            x.fmt_with_mut(formatter, flags)?;
-                            write!(formatter, ", ")?;
-                        }
-                        last.fmt_with_mut(formatter, flags)?;
-                    }
-                }
-
-                flags.repr = old_repr;
+                write_slice(xs.as_slice(), formatter, flags)?;
                 write!(formatter, "]")
             }
             Obj::Seq(Seq::Dict(xs, def)) => {
                 write!(formatter, "{{")?;
-                let old_repr = flags.repr;
-                flags.repr = true;
-                let mut started = false;
                 match def {
                     Some(v) => {
-                        started = true;
                         write!(formatter, "(default: ")?;
+                        let old_repr = flags.repr;
+                        flags.repr = true;
                         v.fmt_with_mut(formatter, flags)?;
+                        flags.repr = old_repr;
                         write!(formatter, ")")?;
+                        // TODO: spacing considerations, pain
                     }
                     None => {}
                 }
-                for (k, v) in xs.iter() {
-                    if started {
-                        write!(formatter, ", ")?;
-                        if flags.budget == 0 {
-                            write!(formatter, "...")?;
-                            break
-                        }
-                    }
-                    started = true;
-                    k.fmt_with_mut(formatter, flags)?;
-                    match v {
-                        Obj::Null => {}
-                        v => {
-                            write!(formatter, ": ")?;
-                            v.fmt_with_mut(formatter, flags)?;
-                        }
-                    }
-                }
-                flags.repr = old_repr;
+                write_pairs(xs.iter(), formatter, flags)?;
                 write!(formatter, "}}")
+            }
+            Obj::Seq(Seq::Vector(xs)) => {
+                write!(formatter, "V(")?;
+                write_slice(xs.as_slice(), formatter, flags)?;
+                write!(formatter, ")")
+            }
+            Obj::Seq(Seq::Bytes(xs)) => {
+                write_bytes(xs.as_slice(), formatter, flags)
             }
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
         }
     }
+}
 
+impl Obj {
     pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
         self.fmt_with_mut(formatter, &mut flags)
     }
@@ -509,113 +602,43 @@ impl Display for Obj {
 
 impl Display for ObjKey {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ObjKey::Null => write!(formatter, "null"),
-            ObjKey::Num(n) => write!(formatter, "{}", n),
-            ObjKey::String(s) => write!(formatter, "{}", s),
-            ObjKey::List(xs) => {
-                write!(formatter, "[")?;
-                let mut started = false;
-                for x in xs.iter() {
-                    if started { write!(formatter, ", ")?; }
-                    started = true;
-                    write!(formatter, "{}", x)?;
-                }
-                write!(formatter, "]")
-            }
-            ObjKey::Dict(xs) => {
-                write!(formatter, "{{")?;
-                let mut started = false;
-                for (k, v) in xs.iter() {
-                    if started { write!(formatter, ", ")?; }
-                    started = true;
-                    write!(formatter, "{}: {}", k, v)?;
-                }
-                write!(formatter, "}}")
-            }
-        }
+        self.fmt_with_mut(formatter, &mut MyFmtFlags::new())
     }
 }
 
 // FIXME massive copypasta
-impl ObjKey {
+impl MyDisplay for ObjKey {
+    fn is_null(&self) -> bool { self == &ObjKey::Null } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         flags.deduct(1);
         match self {
             ObjKey::Null => write!(formatter, "null"),
-            ObjKey::Num(n) => match flags.base {
-                FmtBase::Decimal => write!(formatter, "{}", n),
-                FmtBase::Binary => write!(formatter, "{:b}", n),
-                FmtBase::Octal => write!(formatter, "{:o}", n),
-                FmtBase::LowerHex => write!(formatter, "{:x}", n),
-                FmtBase::UpperHex => write!(formatter, "{:X}", n),
-            }
-            ObjKey::String(s) => {
-                flags.deduct(s.len() / 2);
-                if flags.repr {
-                    // FIXME??
-                    write!(formatter, "{:?}", s)
-                } else {
-                    write!(formatter, "{}", s)
-                }
-            }
+            ObjKey::Num(n) => n.fmt_with_mut(formatter, flags),
+            ObjKey::String(s) => write_string(s, formatter, flags),
             ObjKey::List(xs) => {
                 write!(formatter, "[")?;
-                let old_repr = flags.repr;
-                flags.repr = true;
-                // Regardless of budget, always fmt first and last
-                match xs.as_slice() {
-                    [] => {},
-                    [only] => only.fmt_with_mut(formatter, flags)?,
-                    [first, rest @ .., last] => {
-                        first.fmt_with_mut(formatter, flags)?;
-                        write!(formatter, ", ")?;
-                        for x in rest {
-                            if flags.budget == 0 {
-                                // TODO this has the "sometimes longer than what's omitted"
-                                // property
-                                write!(formatter, "..., ")?;
-                                break
-                            }
-                            x.fmt_with_mut(formatter, flags)?;
-                            write!(formatter, ", ")?;
-                        }
-                        last.fmt_with_mut(formatter, flags)?;
-                    }
-                }
-
-                flags.repr = old_repr;
+                write_slice(xs.as_slice(), formatter, flags)?;
                 write!(formatter, "]")
             }
             ObjKey::Dict(xs) => {
                 write!(formatter, "{{")?;
-                let old_repr = flags.repr;
-                flags.repr = true;
-                let mut started = false;
-                for (k, v) in xs.iter() {
-                    if started {
-                        write!(formatter, ", ")?;
-                        if flags.budget == 0 {
-                            write!(formatter, "...")?;
-                            break
-                        }
-                    }
-                    started = true;
-                    k.fmt_with_mut(formatter, flags)?;
-                    match v {
-                        ObjKey::Null => {}
-                        v => {
-                            write!(formatter, ": ")?;
-                            v.fmt_with_mut(formatter, flags)?;
-                        }
-                    }
-                }
-                flags.repr = old_repr;
+                write_pairs(xs.iter().map(|x| (&x.0, &x.1)), formatter, flags)?;
                 write!(formatter, "}}")
+            }
+            ObjKey::Vector(xs) => {
+                write!(formatter, "V[")?;
+                write_slice(xs.as_slice(), formatter, flags)?;
+                write!(formatter, "]")
+            }
+            ObjKey::Bytes(xs) => {
+                write_bytes(xs.as_slice(), formatter, flags)
             }
         }
     }
 
+}
+
+impl ObjKey {
     pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
         self.fmt_with_mut(formatter, &mut flags)
     }
@@ -690,6 +713,8 @@ pub enum ObjToCloningIter<'a> {
     List(std::slice::Iter<'a, Obj>),
     Dict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
     String(std::str::Chars<'a>),
+    Vector(std::slice::Iter<'a, NNum>),
+    Bytes(std::slice::Iter<'a, u8>),
 }
 
 fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
@@ -697,17 +722,17 @@ fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
         Seq::List(v) => ObjToCloningIter::List(v.iter()),
         Seq::Dict(v, _) => ObjToCloningIter::Dict(v.iter()),
         Seq::String(s) => ObjToCloningIter::String(s.chars()),
+        Seq::Vector(v) => ObjToCloningIter::Vector(v.iter()),
+        Seq::Bytes(v) => ObjToCloningIter::Bytes(v.iter()),
     }
 }
 
-/*
-fn obj_to_cloning_iter(obj: &Obj) -> NRes<ObjToCloningIter<'_>> {
+fn obj_to_cloning_iter<'a,'b>(obj: &'a Obj, purpose: &'b str) -> NRes<ObjToCloningIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(seq_to_cloning_iter(s)),
-        _ => Err(NErr::type_error("cannot convert to cloning iter".to_string())),
+        _ => Err(NErr::type_error(format!("{}; not iterable", purpose))),
     }
 }
-*/
 
 impl Iterator for ObjToCloningIter<'_> {
     type Item = Obj;
@@ -717,6 +742,8 @@ impl Iterator for ObjToCloningIter<'_> {
             ObjToCloningIter::List(it) => it.next().cloned(),
             ObjToCloningIter::Dict(it) => Some(key_to_obj(it.next()?.0.clone())),
             ObjToCloningIter::String(it) => Some(Obj::from(it.next()?)),
+            ObjToCloningIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
+            ObjToCloningIter::Bytes(it) => Some(Obj::from(*it.next()? as usize)),
         }
     }
 }
@@ -726,6 +753,8 @@ pub enum MutObjIntoIter<'a> {
     List(RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
     String(std::str::Chars<'a>),
+    Vector(RcVecIter<'a, NNum>),
+    Bytes(RcVecIter<'a, u8>),
 }
 
 // iterates over (index, value) or (key, value)
@@ -733,6 +762,8 @@ pub enum MutObjIntoIterPairs<'a> {
     List(usize, RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
     String(usize, std::str::Chars<'a>),
+    Vector(usize, RcVecIter<'a, NNum>),
+    Bytes(usize, RcVecIter<'a, u8>),
 }
 
 fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
@@ -740,6 +771,8 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
         Seq::List(v) => MutObjIntoIter::List(mut_rc_vec_into_iter(v)),
         Seq::Dict(v, _) => MutObjIntoIter::Dict(mut_rc_hash_map_into_iter(v)),
         Seq::String(s) => MutObjIntoIter::String(s.chars()),
+        Seq::Vector(v) => MutObjIntoIter::Vector(mut_rc_vec_into_iter(v)),
+        Seq::Bytes(v) => MutObjIntoIter::Bytes(mut_rc_vec_into_iter(v)),
     }
 }
 
@@ -758,6 +791,8 @@ impl Iterator for MutObjIntoIter<'_> {
             MutObjIntoIter::List(it) => it.next(),
             MutObjIntoIter::Dict(it) => Some(key_to_obj(it.next()?.0)),
             MutObjIntoIter::String(it) => Some(Obj::from(it.next()?)),
+            MutObjIntoIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
+            MutObjIntoIter::Bytes(it) => Some(Obj::from(it.next()? as usize)),
         }
     }
 }
@@ -767,6 +802,8 @@ fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
         Seq::List(v) => MutObjIntoIterPairs::List(0, mut_rc_vec_into_iter(v)),
         Seq::Dict(v, _) => MutObjIntoIterPairs::Dict(mut_rc_hash_map_into_iter(v)),
         Seq::String(s) => MutObjIntoIterPairs::String(0, s.chars()),
+        Seq::Vector(v) => MutObjIntoIterPairs::Vector(0, mut_rc_vec_into_iter(v)),
+        Seq::Bytes(v) => MutObjIntoIterPairs::Bytes(0, mut_rc_vec_into_iter(v)),
     }
 }
 
@@ -785,6 +822,8 @@ impl Iterator for MutObjIntoIterPairs<'_> {
             MutObjIntoIterPairs::List(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
             MutObjIntoIterPairs::Dict(it) => it.next(),
             MutObjIntoIterPairs::String(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
+            MutObjIntoIterPairs::Vector(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::Num(o))) }
+            MutObjIntoIterPairs::Bytes(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o as usize))) }
         }
     }
 }
@@ -795,6 +834,8 @@ impl Seq {
             Seq::List(d) => d.len(),
             Seq::String(d) => d.len(),
             Seq::Dict(d, _) => d.len(),
+            Seq::Vector(v) => v.len(),
+            Seq::Bytes(v) => v.len(),
         }
     }
 
@@ -811,6 +852,14 @@ impl Seq {
                 Ok(Seq::String(Rc::new(r.into_iter().collect())))
             }
             Seq::Dict(..) => Err(NErr::type_error("can't reverse dict".to_string())),
+            Seq::Vector(mut v) => {
+                Rc::make_mut(&mut v).reverse();
+                Ok(Seq::Vector(v))
+            }
+            Seq::Bytes(mut v) => {
+                Rc::make_mut(&mut v).reverse();
+                Ok(Seq::Bytes(v))
+            }
         }
     }
 }
@@ -1407,11 +1456,25 @@ pub struct OneNumBuiltin {
     body: fn(a: NNum) -> NRes<Obj>,
 }
 
+fn to_obj_vector(iter: impl Iterator<Item=NRes<Obj>>) -> NRes<Obj> {
+    Ok(Obj::Seq(Seq::Vector(Rc::new(iter.map(|e| match e? {
+        Obj::Num(n) => Ok(n),
+        x => Err(NErr::type_error(format!("can't convert to vector, non-number: {}", x))),
+    }).collect::<NRes<Vec<NNum>>>()?))))
+}
+
+fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj> {
+    match a {
+        Obj::Num(a) => body(a),
+        Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(mut_rc_vec_into_iter(&mut a).map(body)),
+        x => Err(NErr::argument_error(format!("only accepts numbers, got {:?}", x))),
+    }
+}
+
 impl Builtin for OneNumBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(Obj::Num(n)) => err_add_name((self.body)(n), &self.name),
-            Few::One(x) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?}", self.name, x))),
+            Few::One(x) => err_add_name(expect_nums_and_vectorize_1(self.body, x), &self.name),
             f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len())))
         }
     }
@@ -1445,14 +1508,30 @@ pub struct TwoNumsBuiltin {
     body: fn(a: NNum, b: NNum) -> NRes<Obj>,
 }
 
+fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj) -> NRes<Obj> {
+    match (a, b) {
+        (Obj::Num(a), Obj::Num(b)) => body(a, b),
+        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => to_obj_vector(mut_rc_vec_into_iter(&mut b).map(|e| body(a.clone(), e))),
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => to_obj_vector(mut_rc_vec_into_iter(&mut a).map(|e| body(e, b.clone()))),
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => if a.len() == b.len() {
+            to_obj_vector(
+                mut_rc_vec_into_iter(&mut a)
+                .zip(mut_rc_vec_into_iter(&mut b))
+                .map(|(a, b)| body(a, b)))
+        } else {
+            Err(NErr::value_error(format!("vectorized op: different lengths: {} {}", a.len(), b.len())))
+        },
+        (a, b) => Err(NErr::argument_error(format!("only accepts numbers (or vectors), got {:?} {:?}", a, b))),
+    }
+}
+
 impl Builtin for TwoNumsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             // partial application, spicy
-            Few2::One(arg @ Obj::Num(_)) => Ok(clone_and_part_app_2(self, arg)),
-            Few2::One(a) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?}", self.name, a))),
-            Few2::Two(Obj::Num(a), Obj::Num(b)) => err_add_name((self.body)(a, b), &self.name),
-            Few2::Two(a, b) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?} {:?}", self.name, a, b))),
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => Ok(clone_and_part_app_2(self, arg)),
+            Few2::One(a) => Err(NErr::argument_error(format!("{} only accepts numbers (or vectors), got {:?}", self.name, a))),
+            Few2::Two(a, b) => err_add_name(expect_nums_and_vectorize_2(self.body, a, b), &self.name),
             f => Err(NErr::argument_error(format!("{} only accepts two numbers, got {}", self.name, f.len()))),
         }
     }
@@ -1493,6 +1572,7 @@ pub enum Token {
     FormatString(Rc<String>),
     Ident(String),
     LeftParen,
+    VLeftParen,
     RightParen,
     LeftBracket,
     RightBracket,
@@ -1545,6 +1625,7 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
     Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
+    Vector(Vec<Box<Expr>>),
     Index(Box<Expr>, IndexOrSlice),
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
@@ -1836,6 +1917,13 @@ impl<'a> Lexer<'a> {
                                 }
                                 _ => panic!("lexing: raw string literal: no quote")
                             }
+                        } else if acc == "V" {
+                            match self.next() {
+                                Some('(') => {
+                                    self.emit(Token::VLeftParen)
+                                }
+                                _ => panic!("lexing: V: what")
+                            }
                         } else {
                             self.emit(match acc.as_str() {
                                 "if" => Token::If,
@@ -1984,6 +2072,16 @@ impl Parser {
                         // TODO: slice would go here ig
                         Expr::Ident(_) | Expr::Index(..) => Ok(Expr::Paren(Box::new(e))),
                         _ => Ok(e),
+                    }
+                }
+                Token::VLeftParen => {
+                    self.advance();
+                    if self.try_consume(&Token::RightParen) {
+                        Ok(Expr::Vector(Vec::new()))
+                    } else {
+                        let (exs, _) = self.comma_separated()?;
+                        self.require(Token::RightParen, "vector expr".to_string())?;
+                        Ok(Expr::Vector(exs))
                     }
                 }
                 Token::LeftBracket => {
@@ -2344,11 +2442,13 @@ pub fn parse(code: &str) -> Result<Option<Expr>, String> {
         Ok(None)
     } else {
         let mut p = Parser { tokens, i: 0 };
-        let ret = p.expression().map(Some);
-        if p.is_at_end() {
-            ret
-        } else {
-            Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+        match p.expression() {
+            Ok(ret) => if p.is_at_end() {
+                Ok(Some(ret))
+            } else {
+                Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+            }
+            Err(err) => Err(err),
         }
     }
 }
@@ -2455,74 +2555,100 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
 fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every: bool) -> NRes<()> {
     match (lhs, indexes) {
         (lhs, []) => { *lhs = value; Ok(()) }
-        (Obj::Seq(Seq::List(v)), [EvaluatedIndexOrSlice::Index(i), rest @ ..]) => {
-            set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value, every)
-        }
-        (Obj::Seq(Seq::List(v)), [EvaluatedIndexOrSlice::Slice(i, j), rest @ ..]) => {
-            if every {
-                let v = Rc::make_mut(v);
-                let (lo, hi) = pythonic_slice(v, i.as_ref(), j.as_ref())?;
-                for i in lo..hi {
-                    set_index(&mut v[i], rest, value.clone(), true)?;
-                }
-                Ok(())
-            } else {
-                todo!("assgn to slice")
-                // set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
+        (Obj::Seq(s), [fi, rest @ ..]) => match (s, fi) {
+            (Seq::List(v), EvaluatedIndexOrSlice::Index(i)) => {
+                set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value, every)
             }
-        }
-        (Obj::Seq(Seq::String(s)), [EvaluatedIndexOrSlice::Index(i)]) => match value {
-            Obj::Seq(Seq::String(v)) => {
-                let mut_s = Rc::make_mut(s);
-                if v.as_bytes().len() == 1 {
-                    // FIXME lmao
-                    let mut owned = std::mem::take(mut_s).into_bytes();
-                    let i = match pythonic_index(&owned, i) {
-                        Ok(i) => i,
-                        Err(e) => {
-                            // put it baaaack!!
-                            *mut_s = String::from_utf8(owned).unwrap();
-                            return Err(e)
-                        }
-                    };
-                    owned[i..i+1].copy_from_slice(v.as_bytes());
-                    match String::from_utf8(owned) {
-                        Ok(r) => { *mut_s = r; Ok(()) }
-                        Err(err) => {
-                            *mut_s = String::from_utf8_lossy(err.as_bytes()).into_owned();
-                            Err(NErr::value_error(format!("assigning to string result not utf-8 (string corrupted)")))
-                        }
+            (Seq::List(v), EvaluatedIndexOrSlice::Slice(i, j)) => {
+                if every {
+                    let v = Rc::make_mut(v);
+                    let (lo, hi) = pythonic_slice(v, i.as_ref(), j.as_ref())?;
+                    for i in lo..hi {
+                        set_index(&mut v[i], rest, value.clone(), true)?;
                     }
+                    Ok(())
                 } else {
-                    Err(NErr::value_error(format!("assigning to string index, not a byte")))
+                    todo!("assgn to slice")
+                    // set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
                 }
             }
-            _ => Err(NErr::value_error(format!("assigning to string index, not a string")))
-        }
-        (Obj::Seq(Seq::Dict(v, _)), [EvaluatedIndexOrSlice::Index(kk), rest @ ..]) => {
-            let k = to_key(kk.clone())?;
-            let mut_d = Rc::make_mut(v);
-            // We might create a new map entry, but only at the end, which is a bit of a
-            // mismatch for Rust's map API if we want to recurse all the way
-            if rest.is_empty() {
-                mut_d.insert(k, value); Ok(())
-            } else {
-                set_index(match mut_d.get_mut(&k) {
-                    Some(vvv) => vvv,
-                    None => Err(NErr::type_error(format!("setting dictionary: nothing at key {:?} {:?}", mut_d, k)))?,
-                }, rest, value, every)
-            }
-        }
-        (Obj::Seq(Seq::Dict(v, _)), [EvaluatedIndexOrSlice::Slice(None, None), rest @ ..]) => {
-            let mut_d = Rc::make_mut(v);
-            if every {
-                for (_, vv) in mut_d.iter_mut() {
-                    set_index(vv, rest, value.clone(), true)?;
+            (Seq::String(s), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
+                Obj::Seq(Seq::String(v)) => {
+                    let mut_s = Rc::make_mut(s);
+                    if v.as_bytes().len() == 1 {
+                        // FIXME lmao
+                        let mut owned = std::mem::take(mut_s).into_bytes();
+                        let i = match pythonic_index(&owned, i) {
+                            Ok(i) => i,
+                            Err(e) => {
+                                // put it baaaack!!
+                                *mut_s = String::from_utf8(owned).unwrap();
+                                return Err(e)
+                            }
+                        };
+                        owned[i..i+1].copy_from_slice(v.as_bytes());
+                        match String::from_utf8(owned) {
+                            Ok(r) => { *mut_s = r; Ok(()) }
+                            Err(err) => {
+                                *mut_s = String::from_utf8_lossy(err.as_bytes()).into_owned();
+                                Err(NErr::value_error(format!("assigning to string result not utf-8 (string corrupted)")))
+                            }
+                        }
+                    } else {
+                        Err(NErr::value_error(format!("assigning to string index, not a byte")))
+                    }
                 }
-                Ok(())
-            } else {
-                Err(NErr::type_error(format!("can't slice dictionaries except with every")))
+                _ => Err(NErr::value_error(format!("assigning to string index, not a string")))
             }
+            (Seq::String(_), _) => Err(NErr::type_error(format!("string bad slice"))),
+            (Seq::Dict(v, _), EvaluatedIndexOrSlice::Index(kk)) => {
+                let k = to_key(kk.clone())?;
+                let mut_d = Rc::make_mut(v);
+                // We might create a new map entry, but only at the end, which is a bit of a
+                // mismatch for Rust's map API if we want to recurse all the way
+                if rest.is_empty() {
+                    mut_d.insert(k, value); Ok(())
+                } else {
+                    set_index(match mut_d.get_mut(&k) {
+                        Some(vvv) => vvv,
+                        None => Err(NErr::type_error(format!("setting dictionary: nothing at key {:?} {:?}", mut_d, k)))?,
+                    }, rest, value, every)
+                }
+            }
+            (Seq::Dict(v, _), EvaluatedIndexOrSlice::Slice(None, None)) if rest.is_empty() => {
+                let mut_d = Rc::make_mut(v);
+                if every {
+                    for (_, vv) in mut_d.iter_mut() {
+                        set_index(vv, rest, value.clone(), true)?;
+                    }
+                    Ok(())
+                } else {
+                    Err(NErr::type_error(format!("can't slice dictionaries except with every")))
+                }
+            }
+            (Seq::Dict(..), _) => Err(NErr::type_error(format!("dict bad slice"))),
+            (Seq::Vector(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => {
+                match value {
+                    Obj::Num(n) => {
+                        let i = pythonic_index(v, i)?;
+                        Rc::make_mut(v)[i] = n;
+                        Ok(())
+                    }
+                    _ => Err(NErr::type_error(format!("vec bad value assgn")))
+                }
+            }
+            (Seq::Vector(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
+            (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => {
+                match value {
+                    Obj::Num(n) => {
+                        let i = pythonic_index(v, i)?;
+                        Rc::make_mut(v)[i] = n.to_u8().ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
+                        Ok(())
+                    }
+                    _ => Err(NErr::type_error(format!("bytes bad value assgn")))
+                }
+            }
+            (Seq::Bytes(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
         }
         (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))]) => match &***r {
             "precedence" => match value {
@@ -2534,7 +2660,7 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
             }
             k => Err(NErr::key_error(format!("function key must be 'precedence', got {}", k))),
         }
-        (lhs, ii) => Err(NErr::index_error(format!("can't index {:?} {:?}", lhs, ii))),
+        (lhs, ii) => Err(NErr::index_error(format!("can't set index {:?} {:?}", lhs, ii))),
     }
 }
 
@@ -2564,7 +2690,8 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: im
                         None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
                     }, rest, f)
                 }
-                (lhs2, ii) => Err(NErr::type_error(format!("can't index {:?} {:?}", lhs2, ii))),
+                // TODO everything
+                (lhs2, ii) => Err(NErr::type_error(format!("can't modify index {:?} {:?}", lhs2, ii))),
             }
         }
     }
@@ -2602,7 +2729,8 @@ fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice],
                         None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
                     }, rest, f)
                 }
-                (lhs2, ii) => Err(NErr::type_error(format!("can't index {:?} {:?}", lhs2, ii))),
+                // TODO everything
+                (lhs2, ii) => Err(NErr::type_error(format!("can't modify every index {:?} {:?}", lhs2, ii))),
             }
         }
     }
@@ -2654,7 +2782,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
         EvaluatedLvalue::CommaSeq(ss) => {
             match rhs {
                 Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls),
-                _ => Err(NErr::type_error(format!("Can't unpack non-list {:?}", rhs))),
+                rhs => assign_all(env, ss, rt, obj_to_cloning_iter(&rhs, "unpacking")?.collect::<Vec<Obj>>().as_slice()),
             }
         }
         EvaluatedLvalue::Annotation(s, ann) => match ann {
@@ -2926,6 +3054,8 @@ fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
 fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
     match xr {
         Seq::List(xx) => Ok(xx[pythonic_index_isize(&xx, i)?].clone()),
+        Seq::Vector(x) => Ok(Obj::Num(x[pythonic_index_isize(&x, i)?].clone())),
+        Seq::Bytes(x) => Ok(Obj::from(x[pythonic_index_isize(&x, i)?] as usize)),
         Seq::String(s) => {
             let bs = s.as_bytes();
             let i = pythonic_index_isize(bs, i)?;
@@ -2939,22 +3069,26 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
 
 fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, ir) {
-        (Obj::Seq(Seq::List(xx)), ii) => Ok(xx[pythonic_index(xx, &ii)?].clone()),
-        (Obj::Seq(Seq::String(s)), ii) => {
-            let bs = s.as_bytes();
-            let i = pythonic_index(bs, &ii)?;
-            // TODO this was the path of least resistance; idk what good semantics actually are
-            Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
-        }
-        (Obj::Seq(Seq::Dict(xx, def)), ir) => {
-            let k = to_key(ir)?;
-            match xx.get(&k) {
-                Some(e) => Ok(e.clone()),
-                None => match def {
-                    Some(d) => Ok((&**d).clone()),
-                    None => Err(NErr::key_error(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
+        (Obj::Seq(s), ii) => match s {
+            Seq::List(xx) => Ok(xx[pythonic_index(xx, &ii)?].clone()),
+            Seq::String(s) => {
+                let bs = s.as_bytes();
+                let i = pythonic_index(bs, &ii)?;
+                // TODO this was the path of least resistance; idk what good semantics actually are
+                Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+            }
+            Seq::Dict(xx, def) => {
+                let k = to_key(ii)?;
+                match xx.get(&k) {
+                    Some(e) => Ok(e.clone()),
+                    None => match def {
+                        Some(d) => Ok((&**d).clone()),
+                        None => Err(NErr::key_error(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
+                    }
                 }
             }
+            Seq::Vector(v) => Ok(Obj::Num(v[pythonic_index(v, &ii)?].clone())),
+            Seq::Bytes(v) => Ok(Obj::from(v[pythonic_index(v, &ii)?] as usize)),
         }
         (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
             "precedence" => Ok(Obj::from(*p)),
@@ -2966,14 +3100,19 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
 
 fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, ir) {
-        // TODO other sequences
-        (Obj::Seq(Seq::List(xx)), ii) => Ok(xx[cyclic_index(xx, &ii)?].clone()),
-        (Obj::Seq(Seq::String(s)), ii) => {
-            let bs = s.as_bytes();
-            let i = cyclic_index(bs, &ii)?;
-            // TODO this was the path of least resistance; idk what good semantics actually are
-            Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+        (Obj::Seq(s), ii) => match s {
+            Seq::List(xx) => Ok(xx[cyclic_index(xx, &ii)?].clone()),
+            Seq::String(s) => {
+                let bs = s.as_bytes();
+                let i = cyclic_index(bs, &ii)?;
+                // TODO this was the path of least resistance; idk what good semantics actually are
+                Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+            }
+            Seq::Dict(..) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ii))),
+            Seq::Vector(xx) => Ok(Obj::Num(xx[cyclic_index(xx, &ii)?].clone())),
+            Seq::Bytes(xx) => Ok(Obj::from(xx[cyclic_index(xx, &ii)?] as usize)),
         }
+        // TODO other sequences
         (xr, ir) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ir))),
     }
 }
@@ -3005,28 +3144,44 @@ fn index_or_slice(xr: Obj, ir: EvaluatedIndexOrSlice) -> NRes<Obj> {
 fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
         (Obj::Null, _) => Ok(Obj::Null),
-        (Obj::Seq(Seq::String(s)), ii) => {
-            let bs = s.as_bytes();
-            // TODO above
-            match pythonic_index(bs, ii) {
-                Ok(i) => Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned())),
-                Err(_) => Ok(Obj::Null),
+        (Obj::Seq(s), ii) => match s {
+            Seq::String(s) => {
+                let bs = s.as_bytes();
+                // TODO above
+                match pythonic_index(bs, ii) {
+                    Ok(i) => Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned())),
+                    Err(_) => Ok(Obj::Null),
+                }
             }
-        }
-        (Obj::Seq(Seq::List(xx)), ii) => {
-            // Not sure about catching *every* err from pythonic_index here...
-            match pythonic_index(xx, ii) {
-                Ok(i) => Ok(xx[i].clone()),
-                Err(_) => Ok(Obj::Null),
+            Seq::List(xx) => {
+                // Not sure about catching *every* err from pythonic_index here...
+                match pythonic_index(xx, ii) {
+                    Ok(i) => Ok(xx[i].clone()),
+                    Err(_) => Ok(Obj::Null),
+                }
             }
-        }
-        (Obj::Seq(Seq::Dict(xx, def)), _) => {
-            let k = to_key(ir)?;
-            match xx.get(&k) {
-                Some(e) => Ok(e.clone()),
-                None => match def {
-                    Some(d) => Ok((&**d).clone()),
-                    None => Ok(Obj::Null),
+            Seq::Dict(xx, def) => {
+                let k = to_key(ir)?;
+                match xx.get(&k) {
+                    Some(e) => Ok(e.clone()),
+                    None => match def {
+                        Some(d) => Ok((&**d).clone()),
+                        None => Ok(Obj::Null),
+                    }
+                }
+            }
+            Seq::Vector(v) => {
+                // ^
+                match pythonic_index(v, ii) {
+                    Ok(i) => Ok(Obj::Num(v[i].clone())),
+                    Err(_) => Ok(Obj::Null),
+                }
+            }
+            Seq::Bytes(v) => {
+                // ^
+                match pythonic_index(v, ii) {
+                    Ok(i) => Ok(Obj::from(v[i] as usize)),
+                    Err(_) => Ok(Obj::Null),
                 }
             }
         }
@@ -3096,9 +3251,9 @@ fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<
 
 fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     match (a, b) {
-        (a, Obj::Seq(Seq::List(mut v))) => Ok(mut_rc_vec_into_iter(&mut v).any(|x| x == a)),
         (a, Obj::Seq(Seq::Dict(v, _))) => Ok(v.contains_key(&to_key(a)?)),
         (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(v))) => Ok((*v).contains(&*s)),
+        (a, Obj::Seq(mut s)) => Ok(mut_seq_into_iter(&mut s).any(|x| x == a)),
         _ => Err(NErr::type_error("in: not compatible".to_string())),
     }
 }
@@ -3308,6 +3463,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                                     Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::key_error("key not found in dict".to_string()))
                                 }
                                 // TODO: remove parts of strings...
+                                // TODO: vecs, bytes...
                                 _ => Err(NErr::type_error("can't remove".to_string())),
                             })
                         }).ok_or(NErr::name_error("var not found to remove".to_string()))?
@@ -3369,6 +3525,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Splat(_) => Err(NErr::syntax_error("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
         Expr::List(xs) => {
             Ok(Obj::from(eval_seq(env, xs)?))
+        }
+        Expr::Vector(xs) => {
+            to_obj_vector(eval_seq(env, xs)?.into_iter().map(Ok))
         }
         Expr::Dict(def, xs) => {
             let dv = match def {
@@ -3490,18 +3649,14 @@ pub fn initialize(env: &mut Env) {
         name: "+".to_string(),
         body: |a, b| { Ok(Obj::Num(a + b)) }
     });
-    env.insert_builtin(NumsBuiltin {
+    env.insert_builtin(BasicBuiltin {
         name: "-".to_string(),
-        body: |args| match few(args) {
-            Few::Zero => Err(NErr::argument_error("received 0 args".to_string())),
-            Few::One(s) => Ok(Obj::Num(-s)),
-            Few::Many(mut ss) => {
-                let mut s = ss.remove(0);
-                for arg in ss {
-                    s -= &arg;
-                }
-                Ok(Obj::Num(s))
-            }
+        can_refer: false,
+        body: |args| match few2(args) {
+            Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
+            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a-b)), a, b),
+            Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         }
     });
     // for partial application
@@ -3690,7 +3845,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "<.".to_string(),
         can_refer: true,
-        body: |a, b| call(b, vec![a]),
+        body: |a, b| call(a, vec![b]),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ">>>".to_string(),
@@ -3974,6 +4129,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_type(ObjType::String);
     env.insert_type(ObjType::List);
     env.insert_type(ObjType::Dict);
+    env.insert_type(ObjType::Vector);
+    env.insert_type(ObjType::Bytes);
     env.insert_type(ObjType::Func);
     env.insert_type(ObjType::Type);
     env.insert_builtin(BasicBuiltin {

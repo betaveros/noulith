@@ -323,6 +323,13 @@ impl NNum {
         }
     }
 
+    pub fn to_u8(&self) -> Option<u8> {
+        match self {
+            NNum::Int(n) => n.to_u8(),
+            _ => None,
+        }
+    }
+
     pub fn to_usize(&self) -> Option<usize> {
         match self {
             NNum::Int(n) => n.to_usize(),
