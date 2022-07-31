@@ -3,6 +3,7 @@
 // TODO: isolate
 use std::fs;
 use std::io;
+use std::io::Read;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -329,6 +330,15 @@ fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
 }
 */
+fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
+    n.clamp_to_usize().ok_or(NErr::ValueError("bad number to usize".to_string()))
+}
+fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
+    match n {
+        Obj::Num(n) => clamp_to_usize_ok(n),
+        _ => Err(NErr::TypeError("bad scalar".to_string())),
+    }
+}
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
     n.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
 }
@@ -1806,9 +1816,13 @@ impl Parser {
             match self.peek() {
                 Some(Token::LeftParen) => {
                     self.advance();
-                    let (cs, _) = self.comma_separated()?;
-                    self.require(Token::RightParen, "call expr".to_string())?;
-                    cur = Expr::Call(Box::new(cur), cs);
+                    if self.try_consume(&Token::RightParen) {
+                        cur = Expr::Call(Box::new(cur), Vec::new());
+                    } else {
+                        let (cs, _) = self.comma_separated()?;
+                        self.require(Token::RightParen, "call expr".to_string())?;
+                        cur = Expr::Call(Box::new(cur), cs);
+                    }
                 }
                 Some(Token::LeftBracket) => {
                     self.advance();
@@ -3324,19 +3338,19 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| call(b, vec![a]),
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "->".to_string(),
+        name: ">>>".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), Precedence::zero())),
-            _ => Err(NErr::TypeError(">>: not function".to_string()))
+            _ => Err(NErr::TypeError(">>>: not function".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
-        name: "<-".to_string(),
+        name: "<<<".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), Precedence::zero())),
-            _ => Err(NErr::TypeError("<<: not function".to_string()))
+            _ => Err(NErr::TypeError("<<<: not function".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3618,6 +3632,20 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(acc))
         }
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "*$".to_string(),
+        can_refer: false,
+        body: |a, b| {
+            Ok(Obj::from(format!("{}", b).repeat(obj_clamp_to_usize_ok(&a)?)))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "$*".to_string(),
+        can_refer: false,
+        body: |a, b| {
+            Ok(Obj::from(format!("{}", a).repeat(obj_clamp_to_usize_ok(&b)?)))
+        }
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "upper".to_string(),
         can_refer: false,
@@ -3631,7 +3659,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_lowercase())),
-            _ => Err(NErr::TypeError("upper: expected string".to_string())),
+            _ => Err(NErr::TypeError("lower: expected string".to_string())),
         }
     });
     // unlike python these are true on empty string. hmm...
@@ -3835,6 +3863,20 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| Ok(Obj::from(vec![a, b]))
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "*.".to_string(),
+        can_refer: false,
+        body: |a, b| {
+            Ok(Obj::list(vec![b; obj_clamp_to_usize_ok(&a)?]))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: ".*".to_string(),
+        can_refer: false,
+        body: |a, b| {
+            Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?]))
+        }
+    });
     env.insert_builtin(CartesianProduct {});
     env.insert_builtin(OneArgBuiltin {
         name: "id".to_string(),
@@ -4029,6 +4071,20 @@ pub fn initialize(env: &mut Env) {
             }
         } else {
             Err(NErr::ArgumentError("input: unrecognized argument types".to_string()))
+        }
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "read".to_string(),
+        can_refer: false,
+        body: |args| if args.is_empty() {
+            let mut input = String::new();
+            // to EOF
+            match io::stdin().read_to_string(&mut input) {
+                Ok(_) => Ok(Obj::from(input)),
+                Err(msg) => Err(NErr::ValueError(format!("input failed: {}", msg))),
+            }
+        } else {
+            Err(NErr::ArgumentError("read: unrecognized argument types".to_string()))
         }
     });
 

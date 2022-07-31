@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::mem;
 use std::fmt;
 use num::Integer;
-use num::bigint::BigInt;
+use num::bigint::{BigInt, Sign};
 use num::bigint::ToBigInt;
 use num::complex::Complex64;
 use num::{Zero, One, Signed, ToPrimitive};
@@ -317,6 +317,18 @@ impl NNum {
             _ => None,
         }
     }
+
+    pub fn clamp_to_usize(&self) -> Option<usize> {
+        match self {
+            NNum::Int(n) => match n.sign() {
+                Sign::Minus => Some(0),
+                Sign::NoSign => Some(0),
+                Sign::Plus => n.to_usize(),
+            }
+            _ => None,
+        }
+    }
+
 
     pub fn iverson(b: bool) -> Self { NNum::from(if b { 1 } else { 0 }) }
 }
