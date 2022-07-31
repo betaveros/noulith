@@ -374,11 +374,29 @@ fn key_to_obj(key: ObjKey) -> Obj {
     }
 }
 
-impl Display for Obj {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+enum FmtBase { Decimal, Binary, Octal, LowerHex, UpperHex }
+
+struct MyFmtFlags {
+    base: FmtBase,
+}
+
+impl MyFmtFlags {
+    fn new() -> MyFmtFlags {
+        MyFmtFlags { base: FmtBase::Decimal }
+    }
+}
+
+impl Obj {
+    fn fmt_with(&self, formatter: &mut dyn fmt::Write, flags: &MyFmtFlags) -> fmt::Result {
         match self {
             Obj::Null => write!(formatter, "null"),
-            Obj::Num(n) => write!(formatter, "{}", n),
+            Obj::Num(n) => match flags.base {
+                FmtBase::Decimal => write!(formatter, "{}", n),
+                FmtBase::Binary => write!(formatter, "{:b}", n),
+                FmtBase::Octal => write!(formatter, "{:o}", n),
+                FmtBase::LowerHex => write!(formatter, "{:x}", n),
+                FmtBase::UpperHex => write!(formatter, "{:X}", n),
+            }
             Obj::Seq(Seq::String(s)) => write!(formatter, "{}", s),
             Obj::Seq(Seq::List(xs)) => {
                 write!(formatter, "[")?;
@@ -386,7 +404,7 @@ impl Display for Obj {
                 for x in xs.iter() {
                     if started { write!(formatter, ", ")?; }
                     started = true;
-                    write!(formatter, "{}", x)?;
+                    x.fmt_with(formatter, flags)?;
                 }
                 write!(formatter, "]")
             }
@@ -403,16 +421,25 @@ impl Display for Obj {
                 for (k, v) in xs.iter() {
                     if started { write!(formatter, ", ")?; }
                     started = true;
-                    write!(formatter, "{}", k)?;
+                    write!(formatter, "{}", k)?; // FIXME
                     match v {
                         Obj::Null => {}
-                        v => write!(formatter, ": {}", v)?
+                        v => {
+                            write!(formatter, ": ")?;
+                            v.fmt_with(formatter, flags)?;
+                        }
                     }
                 }
                 write!(formatter, "}}")
             }
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
         }
+    }
+}
+
+impl Display for Obj {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        self.fmt_with(formatter, &MyFmtFlags::new())
     }
 }
 
@@ -1315,6 +1342,7 @@ pub enum Token {
     IntLit(BigInt),
     // FloatLit(f64),
     StringLit(Rc<String>),
+    FormatString(Rc<String>),
     Ident(String),
     LeftParen,
     RightParen,
@@ -1362,6 +1390,7 @@ pub enum IndexOrSlice {
 pub enum Expr {
     IntLit(BigInt),
     StringLit(Rc<String>),
+    FormatString(Rc<String>),
     Ident(String),
     Backref(usize),
     Call(Box<Expr>, Vec<Box<Expr>>),
@@ -1465,9 +1494,22 @@ struct Lexer<'a> {
     // maintained at what chars.next() would give
     cur: CodeLoc,
     tokens: Vec<LocToken>,
+
+    // the lightest hole I could punch in the abstractions to support format strings...
+    last_comment: Option<String>,
 }
 
-impl Lexer<'_> {
+impl<'a> Lexer<'a> {
+    fn new(code: &'a str) -> Self {
+        Lexer {
+            chars: code.chars().peekable(),
+            start: CodeLoc { line: 1, col: 1 },
+            cur: CodeLoc { line: 1, col: 1 },
+            tokens: Vec::new(),
+            last_comment: None,
+        }
+    }
+
     fn peek(&mut self) -> Option<&char> {
         self.chars.peek()
     }
@@ -1485,6 +1527,26 @@ impl Lexer<'_> {
     fn emit(&mut self, token: Token) {
         self.tokens.push(LocToken { token, start: self.start, end: self.cur });
         self.start = self.cur;
+    }
+
+    fn lex_simple_string_after_start(&mut self, end: char) -> String {
+        let mut acc = String::new();
+        while self.peek() != Some(&end) {
+            match self.next() {
+                Some('\\') => match self.next() {
+                    Some('n') => acc.push('\n'),
+                    Some('r') => acc.push('\r'),
+                    Some('t') => acc.push('\t'),
+                    Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
+                    Some(c) => panic!("lexing: string literal: unknown escape {}", c),
+                    None => panic!("lexing: string literal: escape eof"),
+                }
+                Some(c) => acc.push(c),
+                None => panic!("lexing: string literal hit eof")
+            }
+        }
+        self.next();
+        acc
     }
 
     fn lex(&mut self) {
@@ -1515,28 +1577,18 @@ impl Lexer<'_> {
                 ' ' => (),
                 '\n' => (),
                 '#' => {
+                    let mut comment = String::new();
                     loop {
-                        if let None | Some('\n') = self.next() { break; }
-                    }
-                }
-                '\'' | '"' => {
-                    let mut acc = String::new();
-                    while self.peek() != Some(&c) {
                         match self.next() {
-                            Some('\\') => match self.next() {
-                                Some('n') => acc.push('\n'),
-                                Some('r') => acc.push('\r'),
-                                Some('t') => acc.push('\t'),
-                                Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
-                                Some(c) => panic!("lexing: string literal: unknown escape {}", c),
-                                None => panic!("lexing: string literal: escape eof"),
-                            }
-                            Some(c) => acc.push(c),
-                            None => panic!("lexing: string literal hit eof")
+                            None | Some('\n') => break,
+                            Some(c) => comment.push(c),
                         }
                     }
-                    self.next();
-                    self.emit(Token::StringLit(Rc::new(acc)))
+                    self.last_comment = Some(comment);
+                }
+                '\'' | '"' => {
+                    let s = self.lex_simple_string_after_start(c);
+                    self.emit(Token::StringLit(Rc::new(s)))
                 }
                 c => {
                     if c.is_digit(10) {
@@ -1554,7 +1606,17 @@ impl Lexer<'_> {
                             acc.push(*cc);
                             self.next();
                         }
-                        if acc == "R" {
+                        if acc == "F" {
+                            // wow
+                            // i guess we lex and parse at evaluation?? idk
+                            match self.next() {
+                                Some(delim @ ('\'' | '"')) => {
+                                    let s = self.lex_simple_string_after_start(delim);
+                                    self.emit(Token::FormatString(Rc::new(s)))
+                                }
+                                _ => panic!("lexing: format string: no quote")
+                            }
+                        } else if acc == "R" {
                             // wow
                             match self.next() {
                                 Some(delim @ ('\'' | '"')) => {
@@ -1623,12 +1685,7 @@ impl Lexer<'_> {
 }
 
 pub fn lex(code: &str) -> Vec<LocToken> {
-    let mut lexer = Lexer {
-        chars: code.chars().peekable(),
-        start: CodeLoc { line: 1, col: 1 },
-        cur: CodeLoc { line: 1, col: 1 },
-        tokens: Vec::new(),
-    };
+    let mut lexer = Lexer::new(code);
     lexer.lex();
     lexer.tokens
 }
@@ -1682,6 +1739,11 @@ impl Parser {
                     let s = s.clone();
                     self.advance();
                     Ok(Expr::StringLit(s))
+                }
+                Token::FormatString(s) => {
+                    let s = s.clone();
+                    self.advance();
+                    Ok(Expr::FormatString(s))
                 }
                 Token::Ident(s) => {
                     let s = s.clone();
@@ -2876,6 +2938,75 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
+        Expr::FormatString(s) => {
+            // TODO: split this up? honestly idk
+            let mut nesting_level = 0;
+            let mut ret = String::new();
+            let mut expr_acc = String::new(); // accumulate
+            let mut p = s.chars().peekable();
+            while let Some(c) = p.next() {
+                match (nesting_level, c) {
+                    (0, '{') => {
+                        if p.peek() == Some(&'{') {
+                            p.next();
+                            ret.push('{');
+                        } else {
+                            nesting_level += 1;
+                        }
+                    }
+                    (0, '}') => {
+                        if p.peek() == Some(&'}') {
+                            p.next();
+                            ret.push('}');
+                        } else {
+                            return Err(NErr::syntax_error("format string: unmatched right brace".to_string()))
+                        }
+                    }
+                    (0, c) => { ret.push(c); }
+                    (_, '{') => { nesting_level += 1; expr_acc.push('{'); }
+                    (1, '}') => {
+                        nesting_level -= 1;
+
+                        let mut lexer = Lexer::new(&expr_acc);
+                        lexer.lex();
+                        let mut flags = MyFmtFlags::new();
+                        if lexer.tokens.is_empty() {
+                            return Err(NErr::syntax_error("format string: empty format expr".to_string()))
+                        } else {
+                            for com in lexer.last_comment {
+                                for c in com.chars() {
+                                    match c {
+                                        'x' => { flags.base = FmtBase::LowerHex; }
+                                        'X' => { flags.base = FmtBase::UpperHex; }
+                                        'b' | 'B' => { flags.base = FmtBase::Binary; }
+                                        'o' | 'O' => { flags.base = FmtBase::Octal; }
+                                        // 'e' => { flags.base = FmtBase::LowerExp; }
+                                        // 'E' => { flags.base = FmtBase::UpperExp; }
+                                        'd' | 'D' => { flags.base = FmtBase::Decimal; }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            let mut p = Parser { tokens: lexer.tokens, i: 0 };
+                            let fex = p.expression().map_err(|e| NErr::syntax_error(format!("format string: failed to parse expr: {}", e)))?;
+                            if p.is_at_end() {
+                                // FIXME err?
+                                evaluate(env, &fex)?.fmt_with(&mut ret, &flags).unwrap();
+                            } else {
+                                return Err(NErr::syntax_error("format string: couldn't finish parsing format expr".to_string()))
+                            }
+                        }
+                        expr_acc.clear();
+                    }
+                    (_, '}') => { nesting_level -= 1; expr_acc.push('}'); }
+                    (_, c) => { expr_acc.push(c) }
+                }
+            }
+            if nesting_level != 0 {
+                return Err(NErr::syntax_error("format string: unmatched left brace".to_string()))
+            }
+            Ok(Obj::from(ret))
+        }
         Expr::Ident(s) => env.borrow_mut().get_var(s),
         Expr::Index(x, i) => {
             let xr = evaluate(env, x)?;

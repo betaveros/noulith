@@ -29,15 +29,27 @@ pub fn char_from_bigint(n: &BigInt) -> Option<char> {
     std::char::from_u32(n.to_u32()?)
 }
 
-impl fmt::Display for NNum {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            NNum::Int(n) => write!(formatter, "{}", n),
-            NNum::Float(f) => write!(formatter, "{}", f),
-            NNum::Complex(z) => write!(formatter, "{}", z),
+// silly
+macro_rules! forward_display {
+    ($impl:ident, $intimpl:ident, $floatimpl:ident) => {
+        impl fmt::$impl for NNum {
+            fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                match self {
+                    NNum::Int(n) => fmt::$intimpl::fmt(n, formatter),
+                    NNum::Float(f) => fmt::$floatimpl::fmt(f, formatter),
+                    NNum::Complex(z) => fmt::$floatimpl::fmt(z, formatter),
+                }
+            }
         }
-    }
+    };
 }
+forward_display!(Display, Display, Display);
+forward_display!(LowerHex, LowerHex, Display);
+forward_display!(UpperHex, UpperHex, Display);
+forward_display!(Binary, Binary, Display);
+forward_display!(Octal, Octal, Display);
+forward_display!(LowerExp, Display, LowerExp);
+forward_display!(UpperExp, Display, UpperExp);
 
 impl From<BigInt> for NNum {
     fn from(x: BigInt) -> Self { NNum::Int(x) }
