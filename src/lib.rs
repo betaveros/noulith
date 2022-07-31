@@ -171,17 +171,17 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             Obj::Num(n) => Ok(Obj::Num(n.trunc())),
             Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
                 Ok(x) => Ok(Obj::from(x)),
-                Err(s) => Err(NErr::ValueError(format!("int: can't parse: {}", s))),
+                Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
             },
-            _ => Err(NErr::TypeError("int: expected number or string".to_string())),
+            _ => Err(NErr::type_error("int: expected number or string".to_string())),
         }
         ObjType::Float => match arg {
             Obj::Num(n) => Ok(Obj::Num(n.trunc())),
             Obj::Seq(Seq::String(s)) => match s.parse::<f64>() {
                 Ok(x) => Ok(Obj::from(x)),
-                Err(s) => Err(NErr::ValueError(format!("float: can't parse: {}", s))),
+                Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
             },
-            _ => Err(NErr::TypeError("float: expected number or string".to_string())),
+            _ => Err(NErr::type_error("float: expected number or string".to_string())),
         }
         ObjType::List => match arg {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
@@ -200,14 +200,14 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                             // TODO not taking but blech
                             Obj::Seq(Seq::List(xs)) => match xs.as_slice() {
                                 [k, v] => Ok((to_key(k.clone())?, v.clone())),
-                                _ => Err(NErr::TypeError("dict conversion: not pair".to_string())),
+                                _ => Err(NErr::type_error("dict conversion: not pair".to_string())),
                             }
-                            _ => Err(NErr::TypeError("dict conversion: not list".to_string())),
+                            _ => Err(NErr::type_error("dict conversion: not list".to_string())),
                         }).collect::<NRes<HashMap<ObjKey, Obj>>>()?, None)),
         }
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
         // TODO: complex, number, list, dict
-        _ => Err(NErr::TypeError("that type can't be called (maybe not implemented)".to_string())),
+        _ => Err(NErr::type_error("that type can't be called (maybe not implemented)".to_string())),
     }
 }
 
@@ -218,7 +218,7 @@ fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
         Obj::Func(Func::Type(t), _) => Ok(t.clone()),
         // TODO: possibly intelligently convert some objects to types?
         // e.g. "heterogenous tuples"
-        a => Err(NErr::TypeError(format!("can't convert {} to type for {}", a, msg))),
+        a => Err(NErr::type_error(format!("can't convert {} to type for {}", a, msg))),
     }
 }
 
@@ -327,20 +327,20 @@ impl PartialOrd for Seq {
 
 /*
 fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
-    Ok(n.to_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))?.clone())
+    Ok(n.to_bigint().ok_or(NErr::value_error("bad number to int".to_string()))?.clone())
 }
 */
 fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
-    n.clamp_to_usize().ok_or(NErr::ValueError("bad number to usize".to_string()))
+    n.clamp_to_usize().ok_or(NErr::value_error("bad number to usize".to_string()))
 }
 fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
     match n {
         Obj::Num(n) => clamp_to_usize_ok(n),
-        _ => Err(NErr::TypeError("bad scalar".to_string())),
+        _ => Err(NErr::type_error("bad scalar".to_string())),
     }
 }
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
-    n.into_bigint().ok_or(NErr::ValueError("bad number to int".to_string()))
+    n.into_bigint().ok_or(NErr::value_error("bad number to int".to_string()))
 }
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
@@ -356,7 +356,7 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
             pairs.sort();
             Ok(ObjKey::Dict(Rc::new(pairs)))
         }
-        Obj::Func(..) => Err(NErr::TypeError("Using a function as a dictionary key isn't supported".to_string())),
+        Obj::Func(..) => Err(NErr::type_error("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
 
@@ -529,7 +529,7 @@ fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
 fn obj_to_cloning_iter(obj: &Obj) -> NRes<ObjToCloningIter<'_>> {
     match obj {
         Obj::Seq(s) => Ok(seq_to_cloning_iter(s)),
-        _ => Err(NErr::TypeError("cannot convert to cloning iter".to_string())),
+        _ => Err(NErr::type_error("cannot convert to cloning iter".to_string())),
     }
 }
 */
@@ -571,7 +571,7 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
 fn mut_obj_into_iter<'a,'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
-        _ => Err(NErr::TypeError(format!("{}: not iterable", purpose)))
+        _ => Err(NErr::type_error(format!("{}: not iterable", purpose)))
     }
 }
 
@@ -598,7 +598,7 @@ fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
 fn mut_obj_into_iter_pairs<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIterPairs<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter_pairs(s)),
-        _ => Err(NErr::TypeError(format!("{}: not iterable", purpose))),
+        _ => Err(NErr::type_error(format!("{}: not iterable", purpose))),
     }
 }
 
@@ -615,6 +615,14 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 }
 
 impl Seq {
+    fn len(self) -> usize {
+        match self {
+            Seq::List(d) => d.len(),
+            Seq::String(d) => d.len(),
+            Seq::Dict(d, _) => d.len(),
+        }
+    }
+
     fn reversed(self) -> NRes<Seq> {
         match self {
             Seq::List(mut v) => {
@@ -627,7 +635,7 @@ impl Seq {
                 r.reverse();
                 Ok(Seq::String(Rc::new(r.into_iter().collect())))
             }
-            Seq::Dict(..) => Err(NErr::TypeError("can't reverse dict".to_string())),
+            Seq::Dict(..) => Err(NErr::type_error("can't reverse dict".to_string())),
         }
     }
 }
@@ -647,27 +655,32 @@ fn to_mutated_list(seq: Seq, mutator: impl FnOnce(&mut Vec<Obj>) -> NRes<()>) ->
 }
 
 #[derive(Debug)]
-pub enum NErr {
-    ArgumentError(String),
-    IndexError(String),
-    KeyError(String),
-    NameError(String),
-    SyntaxError(String),
-    TypeError(String),
-    ValueError(String),
+pub struct NErr(String);
+
+impl NErr {
+    fn argument_error(s: String) -> NErr { NErr(format!("argument error: {}", s)) }
+    fn index_error   (s: String) -> NErr { NErr(format!("index error: {}"   , s)) }
+    fn key_error     (s: String) -> NErr { NErr(format!("key error: {}"     , s)) }
+    fn empty_error   (s: String) -> NErr { NErr(format!("empty error: {}"   , s)) }
+    fn name_error    (s: String) -> NErr { NErr(format!("name error: {}"    , s)) }
+    fn syntax_error  (s: String) -> NErr { NErr(format!("syntax error: {}"  , s)) }
+    fn type_error    (s: String) -> NErr { NErr(format!("type error: {}"    , s)) }
+    fn value_error   (s: String) -> NErr { NErr(format!("value error: {}"   , s)) }
+    fn io_error      (s: String) -> NErr { NErr(format!("io error: {}"      , s)) }
+
+    fn generic_argument_error() -> NErr { NErr("unrecognized argument types".to_string()) }
+}
+
+fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
+    match res {
+        Ok(x) => Ok(x),
+        Err(msg) => Err(NErr(format!("{}: {}", s, msg)))
+    }
 }
 
 impl fmt::Display for NErr {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            NErr::ArgumentError(s) => write!(formatter, "ArgumentError: {}", s),
-            NErr::IndexError(s) => write!(formatter, "IndexError: {}", s),
-            NErr::KeyError(s) => write!(formatter, "KeyError: {}", s),
-            NErr::NameError(s) => write!(formatter, "NameError: {}", s),
-            NErr::SyntaxError(s) => write!(formatter, "SyntaxError: {}", s),
-            NErr::TypeError(s) => write!(formatter, "TypeError: {}", s),
-            NErr::ValueError(s) => write!(formatter, "ValueError: {}", s),
-        }
+        write!(formatter, "{}", self.0)
     }
 }
 
@@ -695,22 +708,22 @@ impl Func {
             Func::Closure(c) => c.run(args),
             Func::PartialApp1(f, x) => match few(args) {
                 Few::One(arg) => f.run(vec![(**x).clone(), arg]),
-                _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
+                _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::PartialApp2(f, x) => match few(args) {
                 Few::One(arg) => f.run(vec![arg, (**x).clone()]),
-                _ => Err(NErr::ArgumentError("For now, partially applied functions can only be called with one more argument".to_string()))
+                _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::Composition(f, g) => f.run(vec![g.run(args)?]),
             Func::Flip(f) => match few2(args) {
                 // weird lol
                 Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
                 Few2::Two(a, b) => f.run(vec![b, a]),
-                _ => Err(NErr::ArgumentError("Flipped function can only be called on two arguments".to_string()))
+                _ => Err(NErr::argument_error("Flipped function can only be called on two arguments".to_string()))
             }
             Func::Type(t) => match few(args) {
                 Few::One(arg) => call_type(t, arg),
-                _ => Err(NErr::ArgumentError("Types can only take one argument".to_string()))
+                _ => Err(NErr::argument_error("Types can only take one argument".to_string()))
             }
         }
     }
@@ -788,10 +801,10 @@ impl ComparisonOperator {
 
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
-        (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare nums {:?} and {:?}", a, b))),
+        (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare nums {:?} and {:?}", a, b))),
         (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => Ok(a.cmp(b)),
-        (Obj::Seq(Seq::List(a)), Obj::Seq(Seq::List(b))) => a.partial_cmp(b).ok_or(NErr::TypeError(format!("Can't compare lists {:?} and {:?}", a, b))),
-        _ => Err(NErr::TypeError(format!("Can't compare {:?} and {:?}", aa, bb))),
+        (Obj::Seq(Seq::List(a)), Obj::Seq(Seq::List(b))) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare lists {:?} and {:?}", a, b))),
+        _ => Err(NErr::type_error(format!("Can't compare {:?} and {:?}", aa, bb))),
     }
 }
 
@@ -806,7 +819,7 @@ impl Builtin for ComparisonOperator {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             match few(args) {
-                Few::Zero => Err(NErr::ArgumentError(format!("Comparison operator {:?} needs 2+ args", self.name))),
+                Few::Zero => Err(NErr::argument_error(format!("Comparison operator {:?} needs 2+ args", self.name))),
                 Few::One(arg) => Ok(clone_and_part_app_2(self, arg)),
                 Few::Many(args) => {
                     for i in 0 .. args.len() - 1 {
@@ -830,7 +843,7 @@ impl Builtin for ComparisonOperator {
                 }
                 Ok(Obj::from(true))
             } else {
-                Err(NErr::ArgumentError(format!("Chained comparison operator got the wrong number of args")))
+                Err(NErr::argument_error(format!("Chained comparison operator got the wrong number of args")))
             }
         }
     }
@@ -876,7 +889,7 @@ impl Builtin for TilBuiltin {
                 // TODO: should be lazy
                 Ok(Obj::list(num::range_step(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect()))
             }
-            _ => Err(NErr::ArgumentError(format!("Bad args for til")))
+            _ => Err(NErr::argument_error(format!("Bad args for til")))
         }
     }
 
@@ -915,7 +928,7 @@ impl Builtin for ToBuiltin {
                 // TODO: should be lazy
                 Ok(Obj::list(num::range_step_inclusive(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect()))
             }
-            _ => Err(NErr::ArgumentError(format!("Bad args for to")))
+            _ => Err(NErr::argument_error(format!("Bad args for to")))
         }
     }
 
@@ -939,7 +952,7 @@ struct Zip {}
 impl Builtin for Zip {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::Zero => Err(NErr::ArgumentError("zip: no args".to_string())),
+            Few::Zero => Err(NErr::argument_error("zip: no args".to_string())),
             Few::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few::Many(mut args) => {
                 let mut func = None;
@@ -950,12 +963,12 @@ impl Builtin for Zip {
                         (Obj::Func(f, _), None) => {
                             func = Some(f.clone());
                         }
-                        (Obj::Func(..), Some(_)) => Err(NErr::ArgumentError("zip: more than one function".to_string()))?,
+                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error("zip: more than one function".to_string()))?,
                         (arg, _) => iterators.push(mut_obj_into_iter(arg, "zip")?),
                     }
                 }
                 if iterators.is_empty() {
-                    Err(NErr::ArgumentError("zip: zero iterables".to_string()))?
+                    Err(NErr::argument_error("zip: zero iterables".to_string()))?
                 }
                 let mut ret = Vec::new();
                 while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
@@ -1004,7 +1017,7 @@ fn cartesian_foreach(acc: &mut Vec<Obj>, seqs: &[Seq], f: &mut impl FnMut(&Vec<O
 impl Builtin for CartesianProduct {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::Zero => Err(NErr::ArgumentError("**: no args".to_string())),
+            Few::Zero => Err(NErr::argument_error("**: no args".to_string())),
             Few::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few::Many(args) => {
                 // Bit overgeneral, also are we interested in accepting a function?
@@ -1015,9 +1028,9 @@ impl Builtin for CartesianProduct {
                         Obj::Seq(s) => seqs.push(s),
                         Obj::Num(n) => match scalar {
                             None => scalar = Some(into_bigint_ok(n)?),
-                            Some(_) => Err(NErr::ArgumentError("cartesian product: more than one integer".to_string()))?,
+                            Some(_) => Err(NErr::argument_error("cartesian product: more than one integer".to_string()))?,
                         }
-                        _ => Err(NErr::ArgumentError("cartesian product: non-sequence non-integer".to_string()))?,
+                        _ => Err(NErr::argument_error("cartesian product: non-sequence non-integer".to_string()))?,
                     }
                 }
 
@@ -1041,7 +1054,7 @@ impl Builtin for CartesianProduct {
                         cartesian_foreach(&mut acc, seqs.as_slice(), &mut f)?;
                         Ok(Obj::list(ret))
                     }
-                    _ => Err(NErr::ArgumentError("cartesian product: bad combo of scalars and sequences".to_string()))?,
+                    _ => Err(NErr::argument_error("cartesian product: bad combo of scalars and sequences".to_string()))?,
                 }
             }
         }
@@ -1068,7 +1081,7 @@ impl Builtin for Fold {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         // TODO partial app
         match few3(args) {
-            Few3::Zero => Err(NErr::ArgumentError("fold: no args".to_string())),
+            Few3::Zero => Err(NErr::argument_error("fold: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few3::Two(mut s, f) => {
                 let mut it = mut_obj_into_iter(&mut s, "fold")?;
@@ -1081,9 +1094,9 @@ impl Builtin for Fold {
                             }
                             Ok(cur)
                         }
-                        None => Err(NErr::ValueError("fold: empty seq".to_string())),
+                        None => Err(NErr::empty_error("fold: empty seq".to_string())),
                     }
-                    _ => Err(NErr::TypeError("fold: not callable".to_string()))
+                    _ => Err(NErr::type_error("fold: not callable".to_string()))
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
@@ -1096,10 +1109,10 @@ impl Builtin for Fold {
                         }
                         Ok(cur)
                     }
-                    _ => Err(NErr::TypeError("fold: not callable".to_string()))
+                    _ => Err(NErr::type_error("fold: not callable".to_string()))
                 }
             }
-            Few3::Many(_) => Err(NErr::ArgumentError("fold: too many args".to_string())),
+            Few3::Many(_) => Err(NErr::argument_error("fold: too many args".to_string())),
         }
     }
 
@@ -1125,10 +1138,10 @@ impl Builtin for Replace {
         match few3(args) {
             Few3::Three(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b)), Obj::Seq(Seq::String(c))) => {
                 // rust's replacement syntax is $n or ${n} for nth group
-                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("replace: invalid regex: {}", e)))?;
                 Ok(Obj::from(r.replace(&a, &*c).into_owned()))
             }
-            _ => Err(NErr::TypeError("replace: must get three strings".to_string()))
+            _ => Err(NErr::type_error("replace: must get three strings".to_string()))
         }
     }
 
@@ -1146,6 +1159,18 @@ impl Builtin for Replace {
 }
 
 #[derive(Debug, Clone)]
+pub struct Preposition(String);
+
+impl Builtin for Preposition {
+    fn run(&self, _: Vec<Obj>) -> NRes<Obj> {
+        Err(NErr::type_error(format!("{}: cannot call", self.0)))
+    }
+
+    fn builtin_name(&self) -> &str { &self.0 }
+    fn can_refer(&self) -> bool { false }
+}
+
+#[derive(Debug, Clone)]
 pub struct BasicBuiltin {
     name: String,
     can_refer: bool,
@@ -1154,7 +1179,7 @@ pub struct BasicBuiltin {
 
 impl Builtin for BasicBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        (self.body)(args)
+        err_add_name((self.body)(args), &self.name)
     }
 
     fn builtin_name(&self) -> &str { &self.name }
@@ -1172,7 +1197,7 @@ impl Builtin for OneArgBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(arg) => (self.body)(arg),
-            f => Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, f.len()))),
+            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
         }
     }
 
@@ -1192,8 +1217,8 @@ impl Builtin for TwoArgBuiltin {
         match few2(args) {
             // partial application, spicy
             Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
-            Few2::Two(a, b) => (self.body)(a, b),
-            f => Err(NErr::ArgumentError(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
+            Few2::Two(a, b) => err_add_name((self.body)(a, b), &self.name),
+            f => Err(NErr::argument_error(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
         }
     }
 
@@ -1210,9 +1235,9 @@ pub struct OneNumBuiltin {
 impl Builtin for OneNumBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(Obj::Num(n)) => (self.body)(n),
-            Few::One(x) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
-            f => Err(NErr::ArgumentError(format!("{} only accepts one argument, got {}", self.name, f.len())))
+            Few::One(Obj::Num(n)) => err_add_name((self.body)(n), &self.name),
+            Few::One(x) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?}", self.name, x))),
+            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len())))
         }
     }
 
@@ -1228,10 +1253,10 @@ pub struct NumsBuiltin {
 
 impl Builtin for NumsBuiltin {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        (self.body)(args.into_iter().map(|x| match x {
+        err_add_name((self.body)(args.into_iter().map(|x| match x {
             Obj::Num(n) => Ok(n),
-            _ => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, x))),
-        }).collect::<NRes<Vec<NNum>>>()?)
+            _ => Err(NErr::argument_error(format!("only accepts numbers, got {:?}", x))),
+        }).collect::<NRes<Vec<NNum>>>()?), &self.name)
     }
 
     fn builtin_name(&self) -> &str { &self.name }
@@ -1250,10 +1275,10 @@ impl Builtin for TwoNumsBuiltin {
         match few2(args) {
             // partial application, spicy
             Few2::One(arg @ Obj::Num(_)) => Ok(clone_and_part_app_2(self, arg)),
-            Few2::One(a) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?}", self.name, a))),
-            Few2::Two(Obj::Num(a), Obj::Num(b)) => (self.body)(a, b),
-            Few2::Two(a, b) => Err(NErr::ArgumentError(format!("{} only accepts numbers, got {:?} {:?}", self.name, a, b))),
-            f => Err(NErr::ArgumentError(format!("{} only accepts two numbers, got {}", self.name, f.len()))),
+            Few2::One(a) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?}", self.name, a))),
+            Few2::Two(Obj::Num(a), Obj::Num(b)) => err_add_name((self.body)(a, b), &self.name),
+            Few2::Two(a, b) => Err(NErr::argument_error(format!("{} only accepts numbers, got {:?} {:?}", self.name, a, b))),
+            f => Err(NErr::argument_error(format!("{} only accepts two numbers, got {}", self.name, f.len()))),
         }
     }
 
@@ -2088,7 +2113,7 @@ impl Env {
             Some(v) => Ok(v.1.clone()),
             None => match &self.parent {
                 Ok(p) => p.borrow().get_var(s),
-                Err(_) => Err(NErr::NameError(format!("No such variable: {}", s))),
+                Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
             }
         }
     }
@@ -2126,7 +2151,7 @@ fn assign_all_basic(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&Obj
         }
         Ok(())
     } else {
-        Err(NErr::ValueError(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
+        Err(NErr::value_error(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
     }
 }
 
@@ -2135,7 +2160,7 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
             EvaluatedLvalue::Splat(inner) => match splat {
-                Some(_) => return Err(NErr::SyntaxError(format!("Can't have two splats in assign lhs"))),
+                Some(_) => return Err(NErr::syntax_error(format!("Can't have two splats in same sequence on left-hand side of assignment"))),
                 None => {
                     splat = Some((i, inner));
                 }
@@ -2194,14 +2219,14 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                         Ok(r) => { *mut_s = r; Ok(()) }
                         Err(err) => {
                             *mut_s = String::from_utf8_lossy(err.as_bytes()).into_owned();
-                            Err(NErr::ValueError(format!("assigning to string result not utf-8 (string corrupted)")))
+                            Err(NErr::value_error(format!("assigning to string result not utf-8 (string corrupted)")))
                         }
                     }
                 } else {
-                    Err(NErr::ValueError(format!("assigning to string index, not a byte")))
+                    Err(NErr::value_error(format!("assigning to string index, not a byte")))
                 }
             }
-            _ => Err(NErr::ValueError(format!("assigning to string index, not a string")))
+            _ => Err(NErr::value_error(format!("assigning to string index, not a string")))
         }
         (Obj::Seq(Seq::Dict(v, _)), [EvaluatedIndexOrSlice::Index(kk), rest @ ..]) => {
             let k = to_key(kk.clone())?;
@@ -2213,7 +2238,7 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
             } else {
                 set_index(match mut_d.get_mut(&k) {
                     Some(vvv) => vvv,
-                    None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                    None => Err(NErr::type_error(format!("setting dictionary: nothing at key {:?} {:?}", mut_d, k)))?,
                 }, rest, value, every)
             }
         }
@@ -2225,20 +2250,20 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                 }
                 Ok(())
             } else {
-                Err(NErr::TypeError(format!("can't slice dictionaries except with every")))
+                Err(NErr::type_error(format!("can't slice dictionaries except with every")))
             }
         }
         (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))]) => match &***r {
             "precedence" => match value {
                 Obj::Num(f) => match f.to_f64() {
                     Some(f) => { *p = f; Ok(()) }
-                    None => Err(NErr::TypeError(format!("precedence must be convertible to float: {}", f))),
+                    None => Err(NErr::value_error(format!("precedence must be convertible to float: {}", f))),
                 }
-                f => Err(NErr::TypeError(format!("precedence must be number, got {}", f))),
+                f => Err(NErr::type_error(format!("precedence must be number, got {}", f))),
             }
-            k => Err(NErr::TypeError(format!("function key must be 'precedence', got {}", k))),
+            k => Err(NErr::key_error(format!("function key must be 'precedence', got {}", k))),
         }
-        (lhs, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs, ii))),
+        (lhs, ii) => Err(NErr::index_error(format!("can't index {:?} {:?}", lhs, ii))),
     }
 }
 
@@ -2259,16 +2284,16 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: im
                     if !mut_d.contains_key(&k) {
                         match def {
                             Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
-                            None => return Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k))),
+                            None => return Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k))),
                         }
                     }
                     modify_existing_index(match mut_d.get_mut(&k) {
                         Some(vvv) => vvv,
                         // shouldn't happen:
-                        None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                        None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
                     }, rest, f)
                 }
-                (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
+                (lhs2, ii) => Err(NErr::type_error(format!("can't index {:?} {:?}", lhs2, ii))),
             }
         }
     }
@@ -2297,16 +2322,16 @@ fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice],
                     if !mut_d.contains_key(&k) {
                         match def {
                             Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
-                            None => return Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k))),
+                            None => return Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k))),
                         }
                     }
                     modify_every_existing_index(match mut_d.get_mut(&k) {
                         Some(vvv) => vvv,
                         // shouldn't happen:
-                        None => Err(NErr::TypeError(format!("nothing at key {:?} {:?}", mut_d, k)))?,
+                        None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
                     }, rest, f)
                 }
-                (lhs2, ii) => Err(NErr::TypeError(format!("can't index {:?} {:?}", lhs2, ii))),
+                (lhs2, ii) => Err(NErr::type_error(format!("can't index {:?} {:?}", lhs2, ii))),
             }
         }
     }
@@ -2314,7 +2339,7 @@ fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice],
 
 fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     if env.insert(s.to_string(), ty, rhs).is_some() {
-        Err(NErr::NameError(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
+        Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
     } else {
         Ok(())
     }
@@ -2325,17 +2350,17 @@ fn assign_respecting_type(env: &mut Env, s: &str, ixs: &[EvaluatedIndexOrSlice],
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
         if ixs.is_empty() && !is_type(ty, rhs) {
-            Err(NErr::NameError(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
+            Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
         }
         set_index(v, ixs, rhs.clone(), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
         if !ixs.is_empty() && !is_type(ty, &v) {
-            Err(NErr::NameError(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, rhs, ty.name())))
+            Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, rhs, ty.name())))
         } else {
             Ok(())
         }
-    }).ok_or(NErr::NameError(if ixs.is_empty() {
+    }).ok_or(NErr::name_error(if ixs.is_empty() {
          format!("Variable {:?} not found (use := to declare)", s)
     } else {
          format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)
@@ -2350,7 +2375,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
                 if ixs.is_empty() {
                     insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::NameError(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
+                    return Err(NErr::name_error(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
                 }
             }
             None => assign_respecting_type(env, s, ixs, rhs, false),
@@ -2358,7 +2383,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
         EvaluatedLvalue::CommaSeq(ss) => {
             match rhs {
                 Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls),
-                _ => Err(NErr::TypeError(format!("Can't unpack non-list {:?}", rhs))),
+                _ => Err(NErr::type_error(format!("Can't unpack non-list {:?}", rhs))),
             }
         }
         EvaluatedLvalue::Annotation(s, ann) => match ann {
@@ -2368,7 +2393,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
         EvaluatedLvalue::Unannotation(s) => {
             assign(env, s, None, rhs)
         }
-        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
 
@@ -2380,7 +2405,7 @@ fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs:
                 if ixs.is_empty() {
                     insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::NameError(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
+                    return Err(NErr::name_error(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
                 }
             }
             None => assign_respecting_type(env, s, ixs, rhs, true),
@@ -2398,7 +2423,7 @@ fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs:
         EvaluatedLvalue::Unannotation(s) => {
             assign_every(env, s, None, rhs)
         }
-        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
 
@@ -2416,9 +2441,9 @@ fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl Fn
                     if is_type(ty, &new) {
                         *old = new.clone(); Ok(())
                     } else {
-                        Err(NErr::NameError(format!("Modify every: assignment to {} type check failed: {} not {}", s, new, ty.name())))
+                        Err(NErr::name_error(format!("Modify every: assignment to {} type check failed: {} not {}", s, new, ty.name())))
                     }
-                }).ok_or(NErr::NameError(format!("Variable {:?} not found in modify every", s)))?
+                }).ok_or(NErr::name_error(format!("Variable {:?} not found in modify every", s)))?
             } else {
                 modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
                     // TODO take??
@@ -2432,9 +2457,9 @@ fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl Fn
             }
             Ok(())
         }
-        EvaluatedLvalue::Annotation(..) => Err(NErr::TypeError(format!("No annotations in modify every: {:?}", lhs))),
+        EvaluatedLvalue::Annotation(..) => Err(NErr::type_error(format!("No annotations in modify every: {:?}", lhs))),
         EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
-        EvaluatedLvalue::Splat(_) => Err(NErr::TypeError(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
     }
 }
 
@@ -2529,7 +2554,7 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
                 match res {
                     // FIXME
                     Obj::Seq(Seq::List(mut xx)) => acc.append(Rc::make_mut(&mut xx)),
-                    _ => Err(NErr::TypeError(format!("Can't splat non-list {:?}", res)))?
+                    _ => Err(NErr::type_error(format!("Can't splat non-list {:?}", res)))?
                 }
             }
             _ => acc.push(evaluate(env, x)?)
@@ -2573,16 +2598,16 @@ fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
     let i2 = (n + (xs.len() as isize)) as usize;
     if i2 < xs.len() { return Ok(i2) }
 
-    Err(NErr::IndexError(format!("Index out of bounds: {:?}", n)))
+    Err(NErr::index_error(format!("Index out of bounds: {:?}", n)))
 }
 
 fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
             Some(n) => pythonic_index_isize(xs, n),
-            _ => Err(NErr::IndexError(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
+            _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
         }
-        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) index: {:?}", i))),
+        _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", i))),
     }
 }
 
@@ -2600,9 +2625,9 @@ fn clamped_pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
                 let i2 = n + (xs.len() as isize);
                 if i2 < 0 { Ok(0) } else { Ok(i2 as usize) }
             }
-            _ => Err(NErr::IndexError(format!("Slice index out of bounds of isize or non-integer: {:?}", ii)))
+            _ => Err(NErr::index_error(format!("Slice index out of bounds of isize or non-integer: {:?}", ii)))
         }
-        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) slice index: {:?}", i))),
+        _ => Err(NErr::index_error(format!("Invalid (non-numeric) slice index: {:?}", i))),
     }
 }
 
@@ -2617,13 +2642,13 @@ fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
             Some(n) => if xs.len() == 0 {
-                Err(NErr::IndexError("Empty, can't cyclic index".to_string()))
+                Err(NErr::index_error("Empty, can't cyclic index".to_string()))
             } else {
                 Ok(n.rem_euclid(xs.len() as isize) as usize)
             }
-            _ => Err(NErr::IndexError(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
+            _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
         }
-        _ => Err(NErr::IndexError(format!("Invalid (non-numeric) index: {:?}", i))),
+        _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", i))),
     }
 }
 
@@ -2637,7 +2662,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
             // TODO copypasta
             Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
         }
-        Seq::Dict(..) => Err(NErr::TypeError("dict is not a linear sequence".to_string())),
+        Seq::Dict(..) => Err(NErr::type_error("dict is not a linear sequence".to_string())),
     }
 }
 
@@ -2656,15 +2681,15 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 Some(e) => Ok(e.clone()),
                 None => match def {
                     Some(d) => Ok((&**d).clone()),
-                    None => Err(NErr::KeyError(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
+                    None => Err(NErr::key_error(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
                 }
             }
         }
         (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
             "precedence" => Ok(Obj::from(*p)),
-            _ => Err(NErr::TypeError(format!("can't index into func {:?}", k))),
+            _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         }
-        (xr, ir) => Err(NErr::TypeError(format!("can't index {:?} {:?}", xr, ir))),
+        (xr, ir) => Err(NErr::type_error(format!("can't index {:?} {:?}", xr, ir))),
     }
 }
 
@@ -2678,7 +2703,7 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
             // TODO this was the path of least resistance; idk what good semantics actually are
             Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
         }
-        (xr, ir) => Err(NErr::TypeError(format!("can't cyclically index {:?} {:?}", xr, ir))),
+        (xr, ir) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ir))),
     }
 }
 
@@ -2694,7 +2719,7 @@ fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
             // TODO this was the path of least resistance; idk what good semantics actually are
             Ok(Obj::from(String::from_utf8_lossy(&bs[lo..hi]).into_owned()))
         }
-        (xr, lo, hi) => Err(NErr::TypeError(format!("can't slice {:?} {:?} {:?}", xr, lo, hi))),
+        (xr, lo, hi) => Err(NErr::type_error(format!("can't slice {:?} {:?} {:?}", xr, lo, hi))),
     }
 }
 
@@ -2734,7 +2759,7 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
         }
-        _ => Err(NErr::TypeError(format!("Can't safe index {:?} {:?}", xr, ir))),
+        _ => Err(NErr::type_error(format!("Can't safe index {:?} {:?}", xr, ir))),
     }
 }
 
@@ -2743,8 +2768,8 @@ fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
         Obj::Func(ff, _) => ff.run(args),
         f => match few(args) {
             Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), Precedence::zero())),
-            Few::One(f2) => Err(NErr::TypeError(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
-            _ => Err(NErr::TypeError(format!("Can't call non-function {:?} (and more than one argument)", f))),
+            Few::One(f2) => Err(NErr::type_error(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
+            _ => Err(NErr::type_error(format!("Can't call non-function {:?} (and more than one argument)", f))),
         }
     }
 }
@@ -2764,7 +2789,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         )),
         // maybe if commaseq eagerly looks for splats...
-        Lvalue::Splat(_) => Err(NErr::SyntaxError("Can't evaluate splat on LHS of assignment??".to_string())),
+        Lvalue::Splat(_) => Err(NErr::syntax_error("Can't evaluate splat on LHS of assignment??".to_string())),
     }
 }
 
@@ -2786,7 +2811,7 @@ fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
         // maybe if commaseq eagerly looks for splats...
-        Lvalue::Splat(_) => Err(NErr::SyntaxError("Can't evaluate splat on LHS of assignment??".to_string())),
+        Lvalue::Splat(_) => Err(NErr::syntax_error("Can't evaluate splat on LHS of assignment??".to_string())),
     }
 }
 */
@@ -2796,7 +2821,7 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
         (a, Obj::Seq(Seq::List(mut v))) => Ok(mut_rc_vec_into_iter(&mut v).any(|x| x == a)),
         (a, Obj::Seq(Seq::Dict(v, _))) => Ok(v.contains_key(&to_key(a)?)),
         (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(v))) => Ok((*v).contains(&*s)),
-        _ => Err(NErr::TypeError("in: not compatible".to_string())),
+        _ => Err(NErr::type_error("in: not compatible".to_string())),
     }
 }
 
@@ -2866,7 +2891,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let oprd = evaluate(env, opd)?;
                     ev.give(b, prec, oprd)?;
                 } else {
-                    return Err(NErr::TypeError(format!("Chain cannot use nonblock in operand position: {:?}", oprr)))
+                    return Err(NErr::type_error(format!("Chain cannot use nonblock in operand position: {:?}", oprr)))
                 }
             }
             ev.finish()
@@ -2907,19 +2932,19 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
                         modify_existing_index(vv, &ixs, |x| match x {
                             Obj::Seq(Seq::List(xs)) => {
-                                Rc::make_mut(xs).pop().ok_or(NErr::NameError("can't pop empty".to_string()))
+                                Rc::make_mut(xs).pop().ok_or(NErr::name_error("can't pop empty".to_string()))
                             }
-                            _ => Err(NErr::TypeError("can't pop".to_string())),
+                            _ => Err(NErr::type_error("can't pop".to_string())),
                         })
-                    }).ok_or(NErr::TypeError("failed to pop??".to_string()))?
+                    }).ok_or(NErr::type_error("failed to pop??".to_string()))?
                 }
-                _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
+                _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
             }
         }
         Expr::Remove(pat) => {
             match eval_lvalue(env, pat)? {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
-                    [] => Err(NErr::ValueError("can't remove flat identifier".to_string())),
+                    [] => Err(NErr::value_error("can't remove flat identifier".to_string())),
                     [rest @ .., last_i] => {
                         env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
                             modify_existing_index(vv, &rest, |x| match (x, last_i) {
@@ -2932,15 +2957,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                                     Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
                                 }
                                 (Obj::Seq(Seq::Dict(xs, _)), EvaluatedIndexOrSlice::Index(i)) => {
-                                    Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::KeyError("key not found in dict".to_string()))
+                                    Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::key_error("key not found in dict".to_string()))
                                 }
                                 // TODO: remove parts of strings...
-                                _ => Err(NErr::TypeError("can't remove".to_string())),
+                                _ => Err(NErr::type_error("can't remove".to_string())),
                             })
-                        }).ok_or(NErr::NameError("var not found to remove".to_string()))?
+                        }).ok_or(NErr::name_error("var not found to remove".to_string()))?
                     }
                 }
-                _ => Err(NErr::TypeError("can't pop, weird pattern".to_string())),
+                _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
             }
         }
         Expr::Swap(a, b) => {
@@ -2964,7 +2989,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         modify_every(env, &p, &mut |x| { ff.run(vec![x, res.clone()]) })?;
                         Ok(Obj::Null)
                     }
-                    opv => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
+                    opv => Err(NErr::type_error(format!("Operator assignment: operator is not function {:?}", opv))),
                 }
             } else {
                 let pv = eval_lvalue_as_obj(env, pat)?;
@@ -2983,7 +3008,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         assign(&mut env.borrow_mut(), &p, None, &fres)?;
                         Ok(Obj::Null)
                     }
-                    opv => Err(NErr::TypeError(format!("Operator assignment: operator is not function {:?}", opv))),
+                    opv => Err(NErr::type_error(format!("Operator assignment: operator is not function {:?}", opv))),
                 }
             }
         }
@@ -2992,8 +3017,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             let a = eval_seq(env, args)?;
             call(fr, a)
         }
-        Expr::CommaSeq(_) => Err(NErr::SyntaxError("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
-        Expr::Splat(_) => Err(NErr::SyntaxError("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
+        Expr::CommaSeq(_) => Err(NErr::syntax_error("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
+        Expr::Splat(_) => Err(NErr::syntax_error("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
         Expr::List(xs) => {
             Ok(Obj::from(eval_seq(env, xs)?))
         }
@@ -3013,7 +3038,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         }
                     }
                     (Expr::Splat(_), Some(_)) => {
-                        Err(NErr::TypeError(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve)))?
+                        Err(NErr::type_error(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve)))?
                     }
                     _ => {
                         let k = evaluate(env, ke)?;
@@ -3067,10 +3092,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             match evaluate(env, expr)? {
                 Obj::Seq(Seq::String(r)) => match parse(&r) {
                     Ok(Some(code)) => evaluate(env, &code),
-                    Ok(None) => Err(NErr::ValueError("eval: empty expression".to_string())),
-                    Err(s) => Err(NErr::ValueError(s)),
+                    Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
+                    Err(s) => Err(NErr::value_error(s)),
                 }
-                s => Err(NErr::ValueError(format!("can't eval {}", s))),
+                s => Err(NErr::value_error(format!("can't eval {}", s))),
             }
         }
         Expr::EvalToken => Ok(Obj::Func(Func::Closure(Closure {
@@ -3081,7 +3106,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
             match if *i == 0 { top.backrefs.last() } else { top.backrefs.get(i - 1) } {
                 Some(x) => Ok(x.clone()),
-                None => Err(NErr::IndexError("no such backref".to_string())),
+                None => Err(NErr::index_error("no such backref".to_string())),
             }
         }),
         Expr::Paren(p) => evaluate(env, &*p),
@@ -3120,7 +3145,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(NumsBuiltin {
         name: "-".to_string(),
         body: |args| match few(args) {
-            Few::Zero => Err(NErr::ArgumentError("-: received 0 args".to_string())),
+            Few::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few::One(s) => Ok(Obj::Num(-s)),
             Few::Many(mut ss) => {
                 let mut s = ss.remove(0);
@@ -3148,7 +3173,7 @@ pub fn initialize(env: &mut Env) {
             for x in mut_obj_into_iter(&mut arg, "sum")? {
                 match x {
                     Obj::Num(n) => { acc += &n }
-                    _ => Err(NErr::ArgumentError("sum: non-number".to_string()))?,
+                    _ => Err(NErr::argument_error("non-number".to_string()))?,
                 }
             }
             Ok(Obj::Num(acc))
@@ -3162,7 +3187,7 @@ pub fn initialize(env: &mut Env) {
             for x in mut_obj_into_iter(&mut arg, "product")? {
                 match x {
                     Obj::Num(n) => { acc = acc * &n }
-                    _ => Err(NErr::ArgumentError("product: non-number".to_string()))?,
+                    _ => Err(NErr::argument_error("non-number".to_string()))?,
                 }
             }
             Ok(Obj::Num(acc))
@@ -3246,30 +3271,28 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => {
                 if s.len() != 1 {
-                    Err(NErr::ValueError("ord of string with length != 1".to_string()))
+                    Err(NErr::value_error("arg string length != 1".to_string()))
                 } else {
                     Ok(Obj::from(s.chars().next().unwrap() as usize))
                 }
             }
-            _ => Err(NErr::TypeError("ord of non-string".to_string())),
+            _ => Err(NErr::type_error("arg non-string".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
         name: "chr".to_string(),
         can_refer: false,
         body: |arg| match arg {
-            Obj::Num(n) => Ok(Obj::from(nnum::char_from_bigint(&into_bigint_ok(n)?).ok_or(NErr::ValueError("chr of int oob".to_string()))?.to_string())),
-            _ => Err(NErr::TypeError("chr of non-num".to_string())),
+            Obj::Num(n) => Ok(Obj::from(nnum::char_from_bigint(&into_bigint_ok(n)?).ok_or(NErr::value_error("chr of int oob".to_string()))?.to_string())),
+            _ => Err(NErr::type_error("not number".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
         name: "len".to_string(),
         can_refer: false,
         body: |arg| match arg {
-            Obj::Seq(Seq::List(a)) => Ok(Obj::Num(NNum::from(a.len()))),
-            Obj::Seq(Seq::Dict(a, _)) => Ok(Obj::Num(NNum::from(a.len()))),
-            Obj::Seq(Seq::String(a)) => Ok(Obj::Num(NNum::from(a.len()))),
-            _ => Err(NErr::TypeError("len: list or dict only".to_string()))
+            Obj::Seq(s) => Ok(Obj::Num(NNum::from(s.len()))),
+            _ => Err(NErr::type_error("sequence only".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3287,26 +3310,10 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a, mut b| call(a, mut_obj_into_iter(&mut b, "of")?.collect()),
     });
-    env.insert_builtin(BasicBuiltin {
-        name: "by".to_string(),
-        can_refer: false,
-        body: |_| Err(NErr::TypeError("by: cannot call".to_string())),
-    });
-    env.insert_builtin(BasicBuiltin {
-        name: "with".to_string(),
-        can_refer: false,
-        body: |_| Err(NErr::TypeError("with: cannot call".to_string())),
-    });
-    env.insert_builtin(BasicBuiltin {
-        name: "from".to_string(),
-        can_refer: false,
-        body: |_| Err(NErr::TypeError("from: cannot call".to_string())),
-    });
-    env.insert_builtin(BasicBuiltin {
-        name: "default".to_string(),
-        can_refer: false,
-        body: |_| Err(NErr::TypeError("default: cannot call".to_string())),
-    });
+    env.insert_builtin(Preposition("by".to_string()));
+    env.insert_builtin(Preposition("with".to_string()));
+    env.insert_builtin(Preposition("from".to_string()));
+    env.insert_builtin(Preposition("default".to_string()));
     env.insert_builtin(TwoArgBuiltin {
         name: "in".to_string(),
         can_refer: false,
@@ -3342,7 +3349,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), Precedence::zero())),
-            _ => Err(NErr::TypeError(">>>: not function".to_string()))
+            _ => Err(NErr::type_error("not function".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3350,7 +3357,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), Precedence::zero())),
-            _ => Err(NErr::TypeError("<<<: not function".to_string()))
+            _ => Err(NErr::type_error("not function".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3365,7 +3372,7 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::Null)
                 }
-                _ => Err(NErr::TypeError("map: not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string()))
             }
         }
     });
@@ -3378,7 +3385,7 @@ pub fn initialize(env: &mut Env) {
                 Obj::Func(b, _) => Ok(Obj::from(
                     it.map(|e| b.run(vec![e])).collect::<NRes<Vec<Obj>>>()?
                 )),
-                _ => Err(NErr::TypeError("map: not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string()))
             }
         }
     });
@@ -3390,7 +3397,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::dict(
                     Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((to_key(b.run(vec![key_to_obj(k)])?)?, v))).collect::<NRes<HashMap<ObjKey, Obj>>>()?, def.map(|x| *x)))
             }
-            _ => Err(NErr::TypeError("map_keys: not dict or callable".to_string()))
+            _ => Err(NErr::type_error("not dict or callable".to_string()))
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3406,7 +3413,7 @@ pub fn initialize(env: &mut Env) {
                     }
                 ))
             }
-            _ => Err(NErr::TypeError("map_keys: not dict or callable".to_string()))
+            _ => Err(NErr::type_error("not dict or callable".to_string()))
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3438,7 +3445,7 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::TypeError("flat_map: not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string()))
             }
         }
     });
@@ -3458,7 +3465,7 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::TypeError("filter: list and func only".to_string()))
+                _ => Err(NErr::type_error("list and func only".to_string()))
             }
         }
     });
@@ -3477,7 +3484,7 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::TypeError("reject: list and func only".to_string()))
+                _ => Err(NErr::type_error("seq and func only".to_string()))
             }
         }
     });
@@ -3485,7 +3492,7 @@ pub fn initialize(env: &mut Env) {
         name: "any".to_string(),
         can_refer: true,
         body: |args| match few2(args) {
-            Few2::Zero => Err(NErr::TypeError("any: zero args".to_string())),
+            Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "any")? {
@@ -3495,14 +3502,14 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::from(false))
             }
-            _ => Err(NErr::TypeError("any: too many args".to_string())),
+            _ => Err(NErr::argument_error("too many args".to_string())),
         }
     });
     env.insert_builtin(BasicBuiltin {
         name: "all".to_string(),
         can_refer: true,
         body: |args| match few2(args) {
-            Few2::Zero => Err(NErr::TypeError("all: zero args".to_string())),
+            Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "all")? {
@@ -3512,8 +3519,8 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::from(true))
             }
-            Few2::Two(_, b) => Err(NErr::TypeError(format!("all: second arg not func: {}", b))),
-            ff => Err(NErr::TypeError(format!("all: too many args: {:?}", ff))),
+            Few2::Two(_, b) => Err(NErr::type_error(format!("second arg not func: {}", b))),
+            ff => Err(NErr::argument_error(format!("too many args: {:?}", ff))),
         }
     });
     env.insert_builtin(Fold {});
@@ -3525,14 +3532,14 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).push(b.clone());
                 Ok(Obj::Seq(Seq::List(a)))
             }
-            _ => Err(NErr::TypeError("append: 2 args only".to_string()))
+            _ => Err(NErr::argument_error("2 args only".to_string()))
         }
     });
     env.insert_builtin(BasicBuiltin {
         name: "max".to_string(),
         can_refer: false,
         body: |args| match few(args) {
-            Few::Zero => Err(NErr::TypeError("max: at least 1 arg".to_string())),
+            Few::Zero => Err(NErr::argument_error("max: at least 1 arg".to_string())),
             Few::One(mut s) => {
                 let mut ret: Option<Obj> = None;
                 for b in mut_obj_into_iter(&mut s, "max")? {
@@ -3541,7 +3548,7 @@ pub fn initialize(env: &mut Env) {
                         Some(r) => ncmp(&b, r)? == Ordering::Greater,
                     } { ret = Some(b) }
                 }
-                Ok(ret.ok_or(NErr::TypeError("max: empty".to_string()))?.clone())
+                Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
             }
             Few::Many(t) => {
                 let mut ret: Option<Obj> = None;
@@ -3551,7 +3558,7 @@ pub fn initialize(env: &mut Env) {
                         Some(r) => ncmp(&b, r)? == Ordering::Greater,
                     } { ret = Some(b) }
                 }
-                Ok(ret.ok_or(NErr::TypeError("max: empty".to_string()))?.clone())
+                Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
             }
         }
     });
@@ -3559,7 +3566,7 @@ pub fn initialize(env: &mut Env) {
         name: "min".to_string(),
         can_refer: false,
         body: |args| match few(args) {
-            Few::Zero => Err(NErr::TypeError("min: at least 1 arg".to_string())),
+            Few::Zero => Err(NErr::type_error("min: at least 1 arg".to_string())),
             Few::One(mut s) => {
                 let mut ret: Option<Obj> = None;
                 for b in mut_obj_into_iter(&mut s, "min")? {
@@ -3568,7 +3575,7 @@ pub fn initialize(env: &mut Env) {
                         Some(r) => ncmp(&b, r)? == Ordering::Less,
                     } { ret = Some(b) }
                 }
-                Ok(ret.ok_or(NErr::TypeError("min: empty".to_string()))?.clone())
+                Ok(ret.ok_or(NErr::empty_error("min: empty".to_string()))?.clone())
             }
             Few::Many(t) => {
                 let mut ret: Option<Obj> = None;
@@ -3578,7 +3585,7 @@ pub fn initialize(env: &mut Env) {
                         Some(r) => ncmp(&b, r)? == Ordering::Less,
                     } { ret = Some(b) }
                 }
-                Ok(ret.ok_or(NErr::TypeError("min: empty".to_string()))?.clone())
+                Ok(ret.ok_or(NErr::empty_error("min: empty".to_string()))?.clone())
             }
         }
     });
@@ -3651,7 +3658,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_uppercase())),
-            _ => Err(NErr::TypeError("upper: expected string".to_string())),
+            _ => Err(NErr::type_error("expected string".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3659,7 +3666,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_lowercase())),
-            _ => Err(NErr::TypeError("lower: expected string".to_string())),
+            _ => Err(NErr::type_error("expected string".to_string())),
         }
     });
     // unlike python these are true on empty string. hmm...
@@ -3668,7 +3675,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_uppercase))),
-            _ => Err(NErr::TypeError("is_upper: expected string".to_string())),
+            _ => Err(NErr::type_error("expected string".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3676,7 +3683,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_lowercase))),
-            _ => Err(NErr::TypeError("is_upper: expected string".to_string())),
+            _ => Err(NErr::type_error("expected string".to_string())),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3691,7 +3698,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(s.split(&*t).map(|w| Obj::from(w.to_string())).collect())),
-            _ => Err(NErr::ArgumentError("split :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3699,7 +3706,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.starts_with(&*t))),
-            _ => Err(NErr::ArgumentError("starts_with :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3707,7 +3714,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.ends_with(&*t))),
-            _ => Err(NErr::ArgumentError("ends_with :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3715,7 +3722,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
-            _ => Err(NErr::ArgumentError("strip :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3723,7 +3730,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
-            _ => Err(NErr::ArgumentError("trim :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3731,7 +3738,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::list(s.split_whitespace().map(|w| Obj::from(w)).collect())),
-            _ => Err(NErr::ArgumentError("words :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3739,7 +3746,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::list(s.split_terminator('\n').map(|w| Obj::from(w.to_string())).collect())),
-            _ => Err(NErr::ArgumentError("lines :(".to_string())),
+            _ => Err(NErr::argument_error(":(".to_string())),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3762,7 +3769,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
-                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
                 if r.capture_locations().len() == 1 {
                     match r.find(&a) {
                         None => Ok(Obj::Null),
@@ -3778,7 +3785,7 @@ pub fn initialize(env: &mut Env) {
                     }
                 }
             }
-            _ => Err(NErr::ArgumentError("search: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3786,7 +3793,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
-                let r = Regex::new(&b).map_err(|e| NErr::ValueError(format!("invalid regex: {}", e)))?;
+                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
                 if r.capture_locations().len() == 1 {
                     Ok(Obj::list(r.find_iter(&a).map(|c| Obj::from(c.as_str())).collect()))
                 } else {
@@ -3798,7 +3805,7 @@ pub fn initialize(env: &mut Env) {
                     ).collect()))
                 }
             }
-            _ => Err(NErr::ArgumentError("search: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
 
@@ -3828,7 +3835,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
                 Ok(Obj::Seq(Seq::List(a)))
             }
-            _ => Err(NErr::ArgumentError("++: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3839,7 +3846,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut b).insert(0, a);
                 Ok(Obj::Seq(Seq::List(b)))
             }
-            _ => Err(NErr::ArgumentError(".+: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3850,7 +3857,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).push(b);
                 Ok(Obj::Seq(Seq::List(a)))
             }
-            _ => Err(NErr::ArgumentError("+.: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3893,7 +3900,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a| match a {
             Obj::Func(f, _) => Ok(Obj::Func(Func::Flip(Box::new(f)), Precedence::zero())),
-            _ => Err(NErr::TypeError("flip: not function".to_string()))
+            _ => Err(NErr::type_error("not function".to_string()))
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3901,7 +3908,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 0),
-            _ => Err(NErr::ArgumentError("first: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3909,7 +3916,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 1),
-            _ => Err(NErr::ArgumentError("second: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3917,7 +3924,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 2),
-            _ => Err(NErr::ArgumentError("second: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3925,7 +3932,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, -1),
-            _ => Err(NErr::ArgumentError("last: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3937,7 +3944,7 @@ pub fn initialize(env: &mut Env) {
                 v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                 Ok(())
             })?)),
-            _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -3945,7 +3952,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(s.reversed()?)),
-            _ => Err(NErr::ArgumentError("sort: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
 
@@ -3958,7 +3965,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).extend(Rc::make_mut(&mut b).drain());
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::ArgumentError("||: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3969,7 +3976,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).insert(to_key(b)?, Obj::Null);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::ArgumentError("|.: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3980,7 +3987,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::ArgumentError("discard: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3991,7 +3998,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::ArgumentError("-.: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error()),
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -4005,9 +4012,9 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
                     Ok(Obj::Seq(Seq::Dict(a, d)))
                 }
-                _ => Err(NErr::ArgumentError("insert: RHS must be pair".to_string()))
+                _ => Err(NErr::argument_error("RHS must be pair".to_string()))
             }
-            _ => Err(NErr::ArgumentError("insert: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error())
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -4020,9 +4027,9 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
                     Ok(Obj::Seq(Seq::Dict(a, d)))
                 }
-                _ => Err(NErr::ArgumentError("|..: RHS must be pair".to_string()))
+                _ => Err(NErr::argument_error("RHS must be pair".to_string()))
             }
-            _ => Err(NErr::ArgumentError("|..: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error())
         }
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -4033,7 +4040,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::ArgumentError("&&: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error())
         }
     });
     env.insert_builtin(OneArgBuiltin {
@@ -4067,10 +4074,10 @@ pub fn initialize(env: &mut Env) {
             let mut input = String::new();
             match io::stdin().read_line(&mut input) {
                 Ok(_) => Ok(Obj::from(input)),
-                Err(msg) => Err(NErr::ValueError(format!("input failed: {}", msg))),
+                Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
             }
         } else {
-            Err(NErr::ArgumentError("input: unrecognized argument types".to_string()))
+            Err(NErr::generic_argument_error())
         }
     });
     env.insert_builtin(BasicBuiltin {
@@ -4081,10 +4088,10 @@ pub fn initialize(env: &mut Env) {
             // to EOF
             match io::stdin().read_to_string(&mut input) {
                 Ok(_) => Ok(Obj::from(input)),
-                Err(msg) => Err(NErr::ValueError(format!("input failed: {}", msg))),
+                Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
             }
         } else {
-            Err(NErr::ArgumentError("read: unrecognized argument types".to_string()))
+            Err(NErr::generic_argument_error())
         }
     });
 
@@ -4095,10 +4102,9 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::read_to_string(&*s) {
                 Ok(c) => Ok(Obj::from(c)),
-                // TODO fix error type
-                Err(e) => Err(NErr::ValueError(format!("read_file error: {}", e))),
+                Err(e) => Err(NErr::io_error(format!("{}", e))),
             }
-            _ => Err(NErr::ArgumentError("read_file: unrecognized argument types".to_string()))
+            _ => Err(NErr::generic_argument_error())
         }
     });
 }
