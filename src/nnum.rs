@@ -459,11 +459,22 @@ impl NNum {
 #[derive(Debug, Clone)]
 pub struct NTotalNum(pub NNum);
 
-impl fmt::Display for NTotalNum {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{}", self.0)
-    }
+macro_rules! forward_total_display {
+    ($impl:ident) => {
+        impl fmt::$impl for NTotalNum {
+            fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                fmt::$impl::fmt(&self.0, formatter)
+            }
+        }
+    };
 }
+forward_total_display!(Display);
+forward_total_display!(UpperHex);
+forward_total_display!(LowerHex);
+forward_total_display!(Octal);
+forward_total_display!(Binary);
+forward_total_display!(LowerExp);
+forward_total_display!(UpperExp);
 
 impl Deref for NTotalNum {
     type Target = NNum;

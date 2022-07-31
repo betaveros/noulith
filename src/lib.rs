@@ -451,18 +451,28 @@ impl Obj {
             }
             Obj::Seq(Seq::Dict(xs, def)) => {
                 write!(formatter, "{{")?;
+                let old_repr = flags.repr;
+                flags.repr = true;
                 let mut started = false;
                 match def {
                     Some(v) => {
                         started = true;
-                        write!(formatter, "(default: {})", v)?;
+                        write!(formatter, "(default: ")?;
+                        v.fmt_with_mut(formatter, flags)?;
+                        write!(formatter, ")")?;
                     }
                     None => {}
                 }
                 for (k, v) in xs.iter() {
-                    if started { write!(formatter, ", ")?; }
+                    if started {
+                        write!(formatter, ", ")?;
+                        if flags.budget == 0 {
+                            write!(formatter, "...")?;
+                            break
+                        }
+                    }
                     started = true;
-                    write!(formatter, "{}", k)?; // FIXME
+                    k.fmt_with_mut(formatter, flags)?;
                     match v {
                         Obj::Null => {}
                         v => {
@@ -470,12 +480,8 @@ impl Obj {
                             v.fmt_with_mut(formatter, flags)?;
                         }
                     }
-
-                    if flags.budget == 0 {
-                        write!(formatter, "...")?;
-                        break
-                    }
                 }
+                flags.repr = old_repr;
                 write!(formatter, "}}")
             }
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
@@ -528,6 +534,90 @@ impl Display for ObjKey {
                 write!(formatter, "}}")
             }
         }
+    }
+}
+
+// FIXME massive copypasta
+impl ObjKey {
+    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+        flags.deduct(1);
+        match self {
+            ObjKey::Null => write!(formatter, "null"),
+            ObjKey::Num(n) => match flags.base {
+                FmtBase::Decimal => write!(formatter, "{}", n),
+                FmtBase::Binary => write!(formatter, "{:b}", n),
+                FmtBase::Octal => write!(formatter, "{:o}", n),
+                FmtBase::LowerHex => write!(formatter, "{:x}", n),
+                FmtBase::UpperHex => write!(formatter, "{:X}", n),
+            }
+            ObjKey::String(s) => {
+                flags.deduct(s.len() / 2);
+                if flags.repr {
+                    // FIXME??
+                    write!(formatter, "{:?}", s)
+                } else {
+                    write!(formatter, "{}", s)
+                }
+            }
+            ObjKey::List(xs) => {
+                write!(formatter, "[")?;
+                let old_repr = flags.repr;
+                flags.repr = true;
+                // Regardless of budget, always fmt first and last
+                match xs.as_slice() {
+                    [] => {},
+                    [only] => only.fmt_with_mut(formatter, flags)?,
+                    [first, rest @ .., last] => {
+                        first.fmt_with_mut(formatter, flags)?;
+                        write!(formatter, ", ")?;
+                        for x in rest {
+                            if flags.budget == 0 {
+                                // TODO this has the "sometimes longer than what's omitted"
+                                // property
+                                write!(formatter, "..., ")?;
+                                break
+                            }
+                            x.fmt_with_mut(formatter, flags)?;
+                            write!(formatter, ", ")?;
+                        }
+                        last.fmt_with_mut(formatter, flags)?;
+                    }
+                }
+
+                flags.repr = old_repr;
+                write!(formatter, "]")
+            }
+            ObjKey::Dict(xs) => {
+                write!(formatter, "{{")?;
+                let old_repr = flags.repr;
+                flags.repr = true;
+                let mut started = false;
+                for (k, v) in xs.iter() {
+                    if started {
+                        write!(formatter, ", ")?;
+                        if flags.budget == 0 {
+                            write!(formatter, "...")?;
+                            break
+                        }
+                    }
+                    started = true;
+                    k.fmt_with_mut(formatter, flags)?;
+                    match v {
+                        ObjKey::Null => {}
+                        v => {
+                            write!(formatter, ": ")?;
+                            v.fmt_with_mut(formatter, flags)?;
+                        }
+                    }
+                }
+                flags.repr = old_repr;
+                write!(formatter, "}}")
+            }
+        }
+    }
+
+    pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
+        self.fmt_with_mut(formatter, &mut flags)
     }
 }
 
@@ -2886,6 +2976,13 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
 fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
         Obj::Func(ff, _) => ff.run(args),
+        _ => Err(NErr::type_error(format!("Can't call non-function {:?}", f))),
+    }
+}
+
+fn call_or_part_apply(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
+    match f {
+        Obj::Func(ff, _) => ff.run(args),
         f => match few(args) {
             Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), Precedence::zero())),
             Few::One(f2) => Err(NErr::type_error(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
@@ -3204,7 +3301,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
             let a = eval_seq(env, args)?;
-            call(fr, a)
+            call_or_part_apply(fr, a)
         }
         Expr::CommaSeq(_) => Err(NErr::syntax_error("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
         Expr::Splat(_) => Err(NErr::syntax_error("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
@@ -3487,7 +3584,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "then".to_string(),
         can_refer: true,
-        body: |a, b| call(a, vec![b]),
+        body: |a, b| call(b, vec![a]),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "apply".to_string(),

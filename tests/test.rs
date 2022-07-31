@@ -150,3 +150,8 @@ fn for_loops() {
     assert_eq!(simple_eval("sum (for (i, x :: 1 to 5) yield i * x)"), Obj::from(40));
     assert_eq!(simple_eval("x := 0; for (y := 5) x += y + 1; x"), Obj::from(6));
 }
+
+#[test]
+fn function_stuff() {
+    assert_eq!(simple_eval("1 to 3 map (*3) >>> 2.subtract >>> (%5) >>> (+1) join '' then ($*2)"), Obj::from("253253"));
+}
