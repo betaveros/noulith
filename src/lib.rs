@@ -374,20 +374,35 @@ fn key_to_obj(key: ObjKey) -> Obj {
     }
 }
 
-enum FmtBase { Decimal, Binary, Octal, LowerHex, UpperHex }
+#[derive(Clone)]
+pub enum FmtBase { Decimal, Binary, Octal, LowerHex, UpperHex }
 
-struct MyFmtFlags {
+#[derive(Clone)]
+pub struct MyFmtFlags {
     base: FmtBase,
+    repr: bool,
+    budget: usize,
 }
 
 impl MyFmtFlags {
-    fn new() -> MyFmtFlags {
-        MyFmtFlags { base: FmtBase::Decimal }
+    pub fn new() -> MyFmtFlags {
+        MyFmtFlags::budgeted(usize::MAX)
+    }
+    pub fn budgeted(budget: usize) -> MyFmtFlags {
+        MyFmtFlags { base: FmtBase::Decimal, repr: false, budget }
+    }
+    fn deduct(&mut self, amt: usize) {
+        if self.budget >= amt {
+            self.budget -= amt
+        } else {
+            self.budget = 0
+        }
     }
 }
 
 impl Obj {
-    fn fmt_with(&self, formatter: &mut dyn fmt::Write, flags: &MyFmtFlags) -> fmt::Result {
+    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+        flags.deduct(1);
         match self {
             Obj::Null => write!(formatter, "null"),
             Obj::Num(n) => match flags.base {
@@ -397,15 +412,41 @@ impl Obj {
                 FmtBase::LowerHex => write!(formatter, "{:x}", n),
                 FmtBase::UpperHex => write!(formatter, "{:X}", n),
             }
-            Obj::Seq(Seq::String(s)) => write!(formatter, "{}", s),
+            Obj::Seq(Seq::String(s)) => {
+                flags.deduct(s.len() / 2);
+                if flags.repr {
+                    // FIXME??
+                    write!(formatter, "{:?}", s)
+                } else {
+                    write!(formatter, "{}", s)
+                }
+            }
             Obj::Seq(Seq::List(xs)) => {
                 write!(formatter, "[")?;
-                let mut started = false;
-                for x in xs.iter() {
-                    if started { write!(formatter, ", ")?; }
-                    started = true;
-                    x.fmt_with(formatter, flags)?;
+                let old_repr = flags.repr;
+                flags.repr = true;
+                // Regardless of budget, always fmt first and last
+                match xs.as_slice() {
+                    [] => {},
+                    [only] => only.fmt_with_mut(formatter, flags)?,
+                    [first, rest @ .., last] => {
+                        first.fmt_with_mut(formatter, flags)?;
+                        write!(formatter, ", ")?;
+                        for x in rest {
+                            if flags.budget == 0 {
+                                // TODO this has the "sometimes longer than what's omitted"
+                                // property
+                                write!(formatter, "..., ")?;
+                                break
+                            }
+                            x.fmt_with_mut(formatter, flags)?;
+                            write!(formatter, ", ")?;
+                        }
+                        last.fmt_with_mut(formatter, flags)?;
+                    }
                 }
+
+                flags.repr = old_repr;
                 write!(formatter, "]")
             }
             Obj::Seq(Seq::Dict(xs, def)) => {
@@ -426,8 +467,13 @@ impl Obj {
                         Obj::Null => {}
                         v => {
                             write!(formatter, ": ")?;
-                            v.fmt_with(formatter, flags)?;
+                            v.fmt_with_mut(formatter, flags)?;
                         }
+                    }
+
+                    if flags.budget == 0 {
+                        write!(formatter, "...")?;
+                        break
                     }
                 }
                 write!(formatter, "}}")
@@ -435,11 +481,23 @@ impl Obj {
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
         }
     }
+
+    pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
+        self.fmt_with_mut(formatter, &mut flags)
+    }
+}
+
+// ????
+pub struct FlaggedObj(pub Obj, pub MyFmtFlags);
+impl Display for FlaggedObj {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt_with(formatter, self.1.clone())
+    }
 }
 
 impl Display for Obj {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        self.fmt_with(formatter, &MyFmtFlags::new())
+        self.fmt_with(formatter, MyFmtFlags::new())
     }
 }
 
@@ -2991,7 +3049,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             let fex = p.expression().map_err(|e| NErr::syntax_error(format!("format string: failed to parse expr: {}", e)))?;
                             if p.is_at_end() {
                                 // FIXME err?
-                                evaluate(env, &fex)?.fmt_with(&mut ret, &flags).unwrap();
+                                evaluate(env, &fex)?.fmt_with(&mut ret, flags).unwrap();
                             } else {
                                 return Err(NErr::syntax_error("format string: couldn't finish parsing format expr".to_string()))
                             }

@@ -32,7 +32,9 @@ fn repl() {
                         v.backrefs.push(x.clone());
                         v.backrefs.len()
                     });
-                    println!("\\{}: {}", refs_len, x);
+                    println!("\\{}: {}",
+                             refs_len,
+                             noulith::FlaggedObj(x, noulith::MyFmtFlags::budgeted(64)));
                 }
                 Err(e) => { println!("ERROR: {}", e); }
             }
