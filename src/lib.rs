@@ -174,7 +174,7 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
 fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     match ty {
         ObjType::Int => match arg {
-            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
+            Obj::Num(n) => Ok(Obj::Num(n.trunc())), // FIXME wat
             Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
                 Ok(x) => Ok(Obj::from(x)),
                 Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
@@ -182,7 +182,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             _ => Err(NErr::type_error("int: expected number or string".to_string())),
         }
         ObjType::Float => match arg {
-            Obj::Num(n) => Ok(Obj::Num(n.trunc())),
+            Obj::Num(n) => Ok(Obj::from(to_f64_ok(&n)?)),
             Obj::Seq(Seq::String(s)) => match s.parse::<f64>() {
                 Ok(x) => Ok(Obj::from(x)),
                 Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
@@ -368,6 +368,9 @@ fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
 }
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
     n.into_bigint().ok_or(NErr::value_error("bad number to int".to_string()))
+}
+fn to_f64_ok(n: &NNum) -> NRes<f64> {
+    n.to_f64().ok_or(NErr::value_error("bad number to float".to_string()))
 }
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
@@ -1568,6 +1571,7 @@ impl Closure {
 pub enum Token {
     IntLit(BigInt),
     FloatLit(f64),
+    ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
     FormatString(Rc<String>),
     Ident(String),
@@ -1618,6 +1622,7 @@ pub enum IndexOrSlice {
 pub enum Expr {
     IntLit(BigInt),
     FloatLit(f64),
+    ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
     FormatString(Rc<String>),
     Ident(String),
@@ -1860,7 +1865,24 @@ impl<'a> Lexer<'a> {
                                 acc.push(*cc);
                                 self.next();
                             }
-                            self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                            match self.peek() {
+                                Some('i' | 'I' | 'j' | 'J') => {
+                                    self.next();
+                                    self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
+                                }
+                                Some('e' | 'E') => {
+                                    acc.push('e'); self.next();
+                                    if self.peek() == Some(&'-') {
+                                        acc.push('-'); self.next();
+                                    }
+                                    while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
+                                        acc.push(*cc);
+                                        self.next();
+                                    }
+                                    self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                                }
+                                _ => self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                            }
                         } else {
                             match (acc.as_str(), self.peek()) {
                                 ("0", Some('x' | 'X')) => { self.next(); self.lex_base_and_emit(16) }
@@ -1880,6 +1902,21 @@ impl<'a> Lexer<'a> {
                                         _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
                                     }
 
+                                }
+                                ( _ , Some('i' | 'I' | 'j' | 'J')) => {
+                                    self.next();
+                                    self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
+                                }
+                                ( _ , Some('e' | 'E')) => {
+                                    acc.push('e'); self.next();
+                                    if self.peek() == Some(&'-') {
+                                        acc.push('-'); self.next();
+                                    }
+                                    while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
+                                        acc.push(*cc);
+                                        self.next();
+                                    }
+                                    self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
                                 }
                                 _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
                             }
@@ -2032,6 +2069,11 @@ impl Parser {
                     self.advance();
                     Ok(Expr::FloatLit(n))
                 }
+                Token::ImaginaryFloatLit(n) => {
+                    let n = *n;
+                    self.advance();
+                    Ok(Expr::ImaginaryFloatLit(n))
+                }
                 Token::StringLit(s) => {
                     let s = s.clone();
                     self.advance();
@@ -2069,7 +2111,6 @@ impl Parser {
                     self.require(Token::RightParen, "normal parenthesized expr".to_string())?;
                     // Only add the paren if it looks important in lvalues.
                     match &e {
-                        // TODO: slice would go here ig
                         Expr::Ident(_) | Expr::Index(..) => Ok(Expr::Paren(Box::new(e))),
                         _ => Ok(e),
                     }
@@ -3309,6 +3350,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
+        Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
         Expr::FormatString(s) => {
             // TODO: split this up? honestly idk
@@ -3765,6 +3807,69 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneNumBuiltin {
         name: "odd".to_string(),
         body: |a| { Ok(Obj::Num(NNum::iverson(a.mod_floor(&NNum::from(2)) == NNum::from(1)))) }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "real_part".to_string(),
+        body: |a| match a.to_f64_or_inf_or_complex() {
+            Ok(f) => Ok(Obj::from(f)),
+            Err(c) => Ok(Obj::from(c.re)),
+        }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "imag_part".to_string(),
+        body: |a| match a.to_f64_or_inf_or_complex() {
+            Ok(_) => Ok(Obj::from(0.0)),
+            Err(c) => Ok(Obj::from(c.im)),
+        }
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "complex_parts".to_string(),
+        body: |a| match a.to_f64_or_inf_or_complex() {
+            Ok(f) => Ok(Obj::list(vec![Obj::from(f), Obj::from(0.0)])),
+            Err(c) => Ok(Obj::list(vec![Obj::from(c.re), Obj::from(c.im)])),
+        }
+    });
+
+    macro_rules! forward_f64 {
+        ($name:ident) => {
+            env.insert_builtin(OneNumBuiltin {
+                name: stringify!($name).to_string(),
+                body: |a| match a.to_f64_or_inf_or_complex() {
+                    Ok(f) => Ok(Obj::from(f.$name())),
+                    Err(c) => Ok(Obj::from(c.$name())),
+                }
+            });
+        }
+    }
+    forward_f64!(sin);
+    forward_f64!(sinh);
+    forward_f64!(cos);
+    forward_f64!(cosh);
+    forward_f64!(tan);
+    forward_f64!(tanh);
+    forward_f64!(asin);
+    forward_f64!(asinh);
+    forward_f64!(acos);
+    forward_f64!(acosh);
+    forward_f64!(atan);
+    forward_f64!(atanh);
+    // TODO: atan2
+    forward_f64!(sqrt);
+    forward_f64!(cbrt);
+    forward_f64!(exp);
+    forward_f64!(ln);
+    forward_f64!(log10);
+    forward_f64!(log2);
+    // forward_f64!(fract);
+    // forward_f64!(exp_m1);
+    // forward_f64!(ln_1p);
+
+    env.insert_builtin(OneNumBuiltin {
+        name: "factorize".to_string(),
+        body: |a| { Ok(Obj::list(
+                                nnum::lazy_factorize(into_bigint_ok(a)?).into_iter().map(
+                                    |(a, e)| Obj::list(vec![Obj::from(a), Obj::from(e)]))
+                                .collect())) }
     });
     env.insert_builtin(TilBuiltin {});
     env.insert_builtin(ToBuiltin {});

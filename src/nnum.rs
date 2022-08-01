@@ -805,25 +805,49 @@ fn lazy_is_prime(n: &BigInt) -> bool {
         let s = n.sqrt(); // truncates
         let mut f = BigInt::from(5);
         loop {
-            if f > s {
-                return true;
-            }
-            if (n % &f).is_zero() {
-                return false;
-            }
+            if f > s { return true; }
+            if (n % &f).is_zero() { return false; }
 
             let g = &f + BigInt::from(2);
-            if g > s {
-                return true;
-            }
-            if (n % &g).is_zero() {
-                return false;
-            }
+            if g > s { return true; }
+            if (n % &g).is_zero() { return false; }
 
             f += 6;
         }
     }
 }
+
+pub fn lazy_factorize(mut a: BigInt) -> Vec<(BigInt, usize)> {
+    let mut acc = Vec::new();
+    match a.sign() {
+        Sign::Minus => {
+            a = -a;
+            acc.push((BigInt::from(-1), 1));
+        }
+        Sign::NoSign => { return acc; }
+        Sign::Plus => {}
+    }
+    let mut test = |f: &BigInt| -> bool {
+        if f*f > a { return true; }
+        let mut mult = 0usize;
+        while (&a % f).is_zero() {
+            a /= f;
+            mult += 1;
+        }
+        if mult > 0 {
+            acc.push((f.clone(), mult));
+        }
+        false
+    };
+    if test(&BigInt::from(2)) { return acc; }
+    if test(&BigInt::from(3)) { return acc; }
+    let mut f6 = BigInt::from(5);
+    loop {
+        if test(&f6) { return acc; } f6 += 2;
+        if test(&f6) { return acc; } f6 += 4;
+    }
+}
+
 
 impl NNum {
     pub fn gcd(&self, other: &NNum) -> NNum {
