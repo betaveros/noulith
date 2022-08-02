@@ -885,33 +885,46 @@ fn to_mutated_list(seq: Seq, mutator: impl FnOnce(&mut Vec<Obj>) -> NRes<()>) ->
 }
 
 #[derive(Debug)]
-pub struct NErr(String);
+pub enum NErr {
+    Just(String),
+    Break(Obj),
+    Return(Obj),
+    Continue,
+}
 
 impl NErr {
-    fn argument_error(s: String) -> NErr { NErr(format!("argument error: {}", s)) }
-    fn index_error   (s: String) -> NErr { NErr(format!("index error: {}"   , s)) }
-    fn key_error     (s: String) -> NErr { NErr(format!("key error: {}"     , s)) }
-    fn empty_error   (s: String) -> NErr { NErr(format!("empty error: {}"   , s)) }
-    fn name_error    (s: String) -> NErr { NErr(format!("name error: {}"    , s)) }
-    fn syntax_error  (s: String) -> NErr { NErr(format!("syntax error: {}"  , s)) }
-    fn type_error    (s: String) -> NErr { NErr(format!("type error: {}"    , s)) }
-    fn value_error   (s: String) -> NErr { NErr(format!("value error: {}"   , s)) }
-    fn io_error      (s: String) -> NErr { NErr(format!("io error: {}"      , s)) }
-    fn assert_error  (s: String) -> NErr { NErr(format!("assert error: {}"  , s)) }
+    fn argument_error(s: String) -> NErr { NErr::Just(format!("argument error: {}", s)) }
+    fn index_error   (s: String) -> NErr { NErr::Just(format!("index error: {}"   , s)) }
+    fn key_error     (s: String) -> NErr { NErr::Just(format!("key error: {}"     , s)) }
+    fn empty_error   (s: String) -> NErr { NErr::Just(format!("empty error: {}"   , s)) }
+    fn name_error    (s: String) -> NErr { NErr::Just(format!("name error: {}"    , s)) }
+    fn syntax_error  (s: String) -> NErr { NErr::Just(format!("syntax error: {}"  , s)) }
+    fn type_error    (s: String) -> NErr { NErr::Just(format!("type error: {}"    , s)) }
+    fn value_error   (s: String) -> NErr { NErr::Just(format!("value error: {}"   , s)) }
+    fn io_error      (s: String) -> NErr { NErr::Just(format!("io error: {}"      , s)) }
+    fn assert_error  (s: String) -> NErr { NErr::Just(format!("assert error: {}"  , s)) }
 
-    fn generic_argument_error() -> NErr { NErr("unrecognized argument types".to_string()) }
+    fn generic_argument_error() -> NErr { NErr::Just("unrecognized argument types".to_string()) }
 }
 
 fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
     match res {
         Ok(x) => Ok(x),
-        Err(msg) => Err(NErr(format!("{}: {}", s, msg)))
+        Err(NErr::Just(msg)) => Err(NErr::Just(format!("{}: {}", s, msg))),
+        Err(NErr::Break(e)) => Err(NErr::Break(e)),
+        Err(NErr::Return(e)) => Err(NErr::Return(e)),
+        Err(NErr::Continue) => Err(NErr::Continue),
     }
 }
 
 impl fmt::Display for NErr {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "{}", self.0)
+        match self {
+            NErr::Just(s) => write!(formatter, "{}", s),
+            NErr::Break(e) => write!(formatter, "break {}", e),
+            NErr::Continue => write!(formatter, "continue"),
+            NErr::Return(e) => write!(formatter, "return {}", e),
+        }
     }
 }
 
@@ -1604,7 +1617,10 @@ impl Closure {
         let ee = Env::with_parent(&self.env);
         let p = self.params.iter().map(|e| Ok(Box::new(eval_lvalue(&ee, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
         assign_all(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &args)?;
-        evaluate(&ee, &self.body)
+        match evaluate(&ee, &self.body) {
+            Err(NErr::Return(k)) => Ok(k),
+            x => x
+        }
     }
 }
 
@@ -1625,10 +1641,14 @@ pub enum Token {
     RightBrace,
     And,
     Or,
+    While,
     For,
     Yield,
     If,
     Else,
+    Break,
+    Continue,
+    Return,
     Bang,
     Colon,
     DoubleColon,
@@ -1685,6 +1705,10 @@ pub enum Expr {
     OpAssign(bool, Box<Lvalue>, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     For(Vec<ForIteration>, bool /* yield */, Box<Expr>),
+    While(Box<Expr>, Box<Expr>),
+    Break(Option<Box<Expr>>),
+    Continue,
+    Return(Option<Box<Expr>>),
     Sequence(Vec<Box<Expr>>),
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<Expr>),
@@ -2004,10 +2028,14 @@ impl<'a> Lexer<'a> {
                             self.emit(match acc.as_str() {
                                 "if" => Token::If,
                                 "else" => Token::Else,
+                                "while" => Token::While,
                                 "for" => Token::For,
                                 "yield" => Token::Yield,
                                 "and" => Token::And,
                                 "or" => Token::Or,
+                                "break" => Token::Break,
+                                "continue" => Token::Continue,
+                                "return" => Token::Return,
                                 "pop" => Token::Pop,
                                 "remove" => Token::Remove,
                                 "swap" => Token::Swap,
@@ -2140,6 +2168,25 @@ impl Parser {
                     self.advance();
                     Ok(Expr::Remove(Box::new(to_lvalue(self.single()?)?)))
                 }
+                Token::Break => {
+                    self.advance();
+                    if self.peek_csc_stopper() {
+                        Ok(Expr::Break(None))
+                    } else {
+                        Ok(Expr::Break(Some(Box::new(self.single()?))))
+                    }
+                }
+                Token::Continue => {
+                    self.advance();
+                    Ok(Expr::Continue)
+                }
+                Token::Return => {
+                    if self.peek_csc_stopper() {
+                        Ok(Expr::Return(None))
+                    } else {
+                        Ok(Expr::Return(Some(Box::new(self.single()?))))
+                    }
+                }
                 Token::LeftParen => {
                     self.advance();
                     let e = self.expression()?;
@@ -2245,6 +2292,14 @@ impl Parser {
                     let do_yield = self.try_consume(&Token::Yield);
                     let body = self.assignment()?;
                     Ok(Expr::For(its, do_yield, Box::new(body)))
+                }
+                Token::While => {
+                    self.advance();
+                    self.require(Token::LeftParen, "while start".to_string())?;
+                    let cond = self.expression()?;
+                    self.require(Token::RightParen, "while end".to_string())?;
+                    let body = self.assignment()?;
+                    Ok(Expr::While(Box::new(cond), Box::new(body)))
                 }
                 _ => Err(format!("Unexpected {}", self.peek_err())),
             }
@@ -3366,7 +3421,12 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
 
 fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callback: &mut impl FnMut(Obj) -> ()) -> NRes<()> {
     match its {
-        [] => Ok(callback(evaluate(env, body)?)),
+        [] => match evaluate(env, body) {
+            Ok(k) => Ok(callback(k)),
+            // don't catch break, thonking
+            Err(NErr::Continue) => Ok(()),
+            Err(e) => Err(e),
+        },
         [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
             let mut itr = evaluate(env, expr)?;
             match ty {
@@ -3688,12 +3748,29 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             if *do_yield {
                 let mut acc = Vec::new();
                 let mut f = |e| acc.push(e);
-                evaluate_for(env, iteratees.as_slice(), body, &mut f)?;
-                Ok(Obj::from(acc))
+                match evaluate_for(env, iteratees.as_slice(), body, &mut f) {
+                    Ok(()) | Err(NErr::Break(Obj::Null))  => Ok(Obj::from(acc)),
+                    Err(NErr::Break(e)) => Ok(e), // ??????
+                    Err(e) => Err(e),
+                }
             } else {
-                evaluate_for(env, iteratees.as_slice(), body, &mut |_| ())?;
-                Ok(Obj::Null)
+                match evaluate_for(env, iteratees.as_slice(), body, &mut |_| ()) {
+                    Ok(()) => Ok(Obj::Null),
+                    Err(NErr::Break(e)) => Ok(e),
+                    Err(e) => Err(e),
+                }
             }
+        }
+        Expr::While(cond, body) => {
+            while evaluate(env, cond)?.truthy() {
+                match evaluate(env, body) {
+                    Ok(_) => (),
+                    Err(NErr::Break(e)) => return Ok(e),
+                    Err(NErr::Continue) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(Obj::Null)
         }
         Expr::Lambda(params, body) => {
             Ok(Obj::Func(Func::Closure(Closure {
@@ -3709,6 +3786,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
         }),
         Expr::Paren(p) => evaluate(env, &*p),
+        Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
+        Expr::Break(None) => Err(NErr::Break(Obj::Null)),
+        Expr::Continue => Err(NErr::Continue),
+        Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
+        Expr::Return(None) => Err(NErr::Return(Obj::Null)),
     }
 }
 
@@ -4875,7 +4957,7 @@ pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
             Err(err) => WasmOutputs {
                 output: e.borrow_mut().mut_top_env(|e|
                    String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()),
-                error: err.0,
+                error: format!("{}", err),
             },
             Ok(res) => WasmOutputs {
                 output: e.borrow_mut().mut_top_env(|e|
