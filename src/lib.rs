@@ -3,7 +3,7 @@
 // TODO: isolate
 use std::fs;
 use std::io;
-use std::io::{Read, BufRead, Write, BufReader};
+use std::io::{Read, BufRead, Write};
 
 use std::cmp::Ordering;
 use std::fmt;

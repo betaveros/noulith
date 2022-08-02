@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io;
-use std::io::{Read, Write};
+use std::io::{Read, Write, BufReader};
 use std::rc::Rc;
 use std::cell::RefCell;
 use noulith::{Obj, Env, TopEnv, initialize, parse, evaluate};
