@@ -897,6 +897,7 @@ impl NErr {
     fn type_error    (s: String) -> NErr { NErr(format!("type error: {}"    , s)) }
     fn value_error   (s: String) -> NErr { NErr(format!("value error: {}"   , s)) }
     fn io_error      (s: String) -> NErr { NErr(format!("io error: {}"      , s)) }
+    fn assert_error  (s: String) -> NErr { NErr(format!("assert error: {}"  , s)) }
 
     fn generic_argument_error() -> NErr { NErr("unrecognized argument types".to_string()) }
 }
@@ -1803,7 +1804,14 @@ impl<'a> Lexer<'a> {
                     Some('n') => acc.push('\n'),
                     Some('r') => acc.push('\r'),
                     Some('t') => acc.push('\t'),
+                    Some('0') => acc.push('\0'),
                     Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
+                    Some('x') => {
+                        let e = "lexing: string literal: bad hex escape";
+                        let d1 = self.next().expect(e).to_digit(16).expect(e);
+                        let d2 = self.next().expect(e).to_digit(16).expect(e);
+                        acc.push(char::from_u32(d1 * 16 + d2).unwrap())
+                    }
                     Some(c) => panic!("lexing: string literal: unknown escape {}", c),
                     None => panic!("lexing: string literal: escape eof"),
                 }
@@ -4795,6 +4803,40 @@ pub fn initialize(env: &mut Env) {
                 Err(e) => Err(NErr::io_error(format!("{}", e))),
             }
             _ => Err(NErr::generic_argument_error())
+        }
+    });
+
+    // this isn't a very good assert
+    env.insert_builtin(OneArgBuiltin {
+        name: "assert".to_string(),
+        can_refer: false,
+        body: |a| if a.truthy() {
+            Ok(Obj::Null)
+        } else {
+            Err(NErr::assert_error(format!("{}", a)))
+        }
+    });
+
+    // l m a o
+    env.insert_builtin(BasicBuiltin {
+        name: "import".to_string(),
+        can_refer: false,
+        body: |env, args| {
+            let mut ret = Obj::Null;
+            for arg in args {
+                ret = match arg {
+                    Obj::Seq(Seq::String(f)) => match fs::read_to_string(&*f) {
+                        Ok(c) => match parse(&c) {
+                            Ok(Some(code)) => evaluate(env, &code),
+                            Ok(None) => Err(NErr::value_error("empty file".to_string())),
+                            Err(s) => Err(NErr::value_error(format!("lex failed: {}", s))),
+                        }
+                        Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
+                    }
+                    a => Err(NErr::type_error(format!("can't import: {}", a))),
+                }?
+            }
+            Ok(ret)
         }
     });
 }
