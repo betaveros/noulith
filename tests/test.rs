@@ -153,5 +153,5 @@ fn for_loops() {
 
 #[test]
 fn function_stuff() {
-    assert_eq!(simple_eval("1 to 3 map (*3) >>> 2.subtract >>> (%5) >>> (+1) join '' then ($*2)"), Obj::from("253253"));
+    assert_eq!(simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"), Obj::from("253253"));
 }

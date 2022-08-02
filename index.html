@@ -1,0 +1,119 @@
+<html>
+<head>
+<meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+<style>
+body {
+	font-family: sans-serif;
+}
+textarea {
+	width: 100%;
+	font-family: monospace;
+}
+#output, #error {
+	background-color: #f8f8f8;
+	border: 1px solid #ddd;
+	padding: 0.5em;
+	font-family: monospace;
+	white-space: pre-wrap;
+}
+#error {
+	color: #c00;
+}
+#outer-output, #url {
+	display: none;
+}
+</style>
+</head>
+<body>
+<h1>noulith</h1>
+<p>
+Copypasta from my other language.
+</p>
+<p>Code:</p>
+<textarea id="code"></textarea>
+<p>Input:</p>
+<textarea id="input"></textarea>
+<button id="run" type="button" role="button" disabled>Loading...</button>
+<div id="outer-output">
+<p>Output:</p>
+<div id="output"></div>
+<p>Error:</p>
+<div id="error"></div>
+</div>
+<button id="gen-url" type="button" role="button">Generate URL</button>
+<textarea id="url"></textarea>
+<script src='pkg/paradoc.js'></script>
+<script type="module">
+// https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
+// wasm-pack build --target web
+// import init, { encapsulated_eval } from './pkg/paradoc.js';
+// wasm-pack build --target no-modules
+// const { encapsulated_eval } = wasm_bindgen;
+
+async function prepare(worker) {
+	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
+	const code = document.getElementById('code');
+	const input = document.getElementById('input');
+	const runner = document.getElementById('run');
+	function run() {
+		runner.disabled = true;
+		worker.postMessage([code.value, input.value]);
+	}
+	runner.addEventListener('click', run);
+	code.addEventListener('keydown', function(event) {
+		if (event.ctrlKey && event.key == "Enter") {
+			run();
+		}
+	});
+	runner.disabled = false;
+	runner.textContent = "Run!";
+}
+
+function b64encode(s) {
+	const carr = [];
+	new TextEncoder().encode(s).forEach(function(u8) {
+		carr.push(String.fromCharCode(u8));
+	});
+	return btoa(carr.join(""));
+}
+function b64decode(s) {
+	const bs = atob(s);
+	const uarr = new Uint8Array(bs.length);
+	for (let i = 0; i < bs.length; i++) {
+		uarr[i] = bs.charCodeAt(i);
+	}
+	return new TextDecoder().decode(uarr);
+}
+document.addEventListener('DOMContentLoaded', function() {
+	var base64 = location.hash.substr(1);
+	const code = document.getElementById('code');
+	const urlElem = document.getElementById('url');
+	if (base64.length) {
+		code.value = b64decode(base64);
+	}
+	document.getElementById('gen-url').addEventListener('click', function() {
+		urlElem.value = location.protocol + '//' + location.host + location.pathname + '#' + b64encode(code.value);
+		urlElem.style.display = 'block';
+	});
+
+	const outerOutput = document.getElementById('outer-output');
+	const output = document.getElementById('output');
+	const error = document.getElementById('error');
+	const runner = document.getElementById('run');
+	const myWorker = new Worker('worker.js');
+	myWorker.onmessage = function(e) {
+		if (e.data === "ready") {
+			prepare(myWorker);
+		} else {
+			runner.disabled = false;
+			outerOutput.style.display = 'block';
+			output.textContent = e.data[0];
+			error.textContent = e.data[1];
+		}
+	};
+});
+
+</script>
+</body>
+</html>
+

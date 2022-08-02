@@ -18,7 +18,7 @@ fn prompt(input: &mut String) -> bool {
 }
 
 fn repl() {
-    let mut env = Env::new(TopEnv { backrefs: Vec::new() });
+    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(BufReader::new(io::stdin())), output: Box::new(io::stdout()) });
     initialize(&mut env);
     let e = Rc::new(RefCell::new(env));
 
@@ -52,7 +52,7 @@ fn main() {
                 let mut code = String::new();
                 file.read_to_string(&mut code).expect("reading code file failed");
 
-                let mut env = Env::new(TopEnv { backrefs: Vec::new() });
+                let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(BufReader::new(io::stdin())), output: Box::new(io::stdout()) });
                 initialize(&mut env);
                 let e = Rc::new(RefCell::new(env));
 

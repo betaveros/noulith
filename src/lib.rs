@@ -3,7 +3,7 @@
 // TODO: isolate
 use std::fs;
 use std::io;
-use std::io::Read;
+use std::io::{Read, BufRead, Write, BufReader};
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -18,6 +18,9 @@ use regex::Regex;
 use num::complex::Complex64;
 use num::bigint::BigInt;
 use num::ToPrimitive;
+
+#[cfg(target_arch="wasm32")]
+use wasm_bindgen::prelude::*;
 
 mod nnum;
 mod gamma;
@@ -300,7 +303,7 @@ macro_rules! forward_from {
     }
 }
 forward_from!(BigInt);
-forward_from!(i32);
+// forward_from!(i32);
 forward_from!(f64);
 forward_from!(usize);
 forward_from!(Complex64);
@@ -928,24 +931,26 @@ pub enum Func {
     Type(ObjType),
 }
 
+type REnv = Rc<RefCell<Env>>;
+
 impl Func {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match self {
-            Func::Builtin(b) => b.run(args),
+            Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
             Func::PartialApp1(f, x) => match few(args) {
-                Few::One(arg) => f.run(vec![(**x).clone(), arg]),
+                Few::One(arg) => f.run(env, vec![(**x).clone(), arg]),
                 _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::PartialApp2(f, x) => match few(args) {
-                Few::One(arg) => f.run(vec![arg, (**x).clone()]),
+                Few::One(arg) => f.run(env, vec![arg, (**x).clone()]),
                 _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
             }
-            Func::Composition(f, g) => f.run(vec![g.run(args)?]),
+            Func::Composition(f, g) => f.run(env, vec![g.run(env, args)?]),
             Func::Flip(f) => match few2(args) {
                 // weird lol
                 Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
-                Few2::Two(a, b) => f.run(vec![b, a]),
+                Few2::Two(a, b) => f.run(env, vec![b, a]),
                 _ => Err(NErr::argument_error("Flipped function can only be called on two arguments".to_string()))
             }
             Func::Type(t) => match few(args) {
@@ -996,7 +1001,7 @@ impl Display for Func {
 }
 
 pub trait Builtin : Debug {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj>;
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
     // Used for builtins to identify each other, since comparing pointers is bad (?)
     // https://rust-lang.github.io/rust-clippy/master/#vtable_address_comparisons
@@ -1043,7 +1048,7 @@ fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj{
 }
 
 impl Builtin for ComparisonOperator {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             match few(args) {
                 Few::Zero => Err(NErr::argument_error(format!("Comparison operator {:?} needs 2+ args", self.name))),
@@ -1063,7 +1068,7 @@ impl Builtin for ComparisonOperator {
                     return Ok(Obj::from(false))
                 }
                 for i in 0 .. self.chained.len() {
-                    let res = self.chained[i].run(vec![args[i+1].clone(), args[i+2].clone()])?;
+                    let res = self.chained[i].run(env, vec![args[i+1].clone(), args[i+2].clone()])?;
                     if !res.truthy() {
                         return Ok(res)
                     }
@@ -1100,7 +1105,7 @@ impl Builtin for ComparisonOperator {
 struct TilBuiltin {}
 
 impl Builtin for TilBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
             Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
@@ -1138,7 +1143,7 @@ impl Builtin for TilBuiltin {
 struct ToBuiltin {}
 
 impl Builtin for ToBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
             Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
@@ -1177,7 +1182,7 @@ impl Builtin for ToBuiltin {
 struct Zip {}
 
 impl Builtin for Zip {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::Zero => Err(NErr::argument_error("zip: no args".to_string())),
             Few::One(a) => Ok(clone_and_part_app_2(self, a)),
@@ -1200,7 +1205,7 @@ impl Builtin for Zip {
                 let mut ret = Vec::new();
                 while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
                     ret.push(match &func {
-                        Some(f) => f.run(batch)?,
+                        Some(f) => f.run(env, batch)?,
                         None => Obj::list(batch),
                     })
                 }
@@ -1242,7 +1247,7 @@ fn cartesian_foreach(acc: &mut Vec<Obj>, seqs: &[Seq], f: &mut impl FnMut(&Vec<O
 }
 
 impl Builtin for CartesianProduct {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::Zero => Err(NErr::argument_error("**: no args".to_string())),
             Few::One(a) => Ok(clone_and_part_app_2(self, a)),
@@ -1305,7 +1310,7 @@ impl Builtin for CartesianProduct {
 struct Fold {}
 
 impl Builtin for Fold {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         // TODO partial app
         match few3(args) {
             Few3::Zero => Err(NErr::argument_error("fold: no args".to_string())),
@@ -1317,7 +1322,7 @@ impl Builtin for Fold {
                         Some(mut cur) => {
                             // not sure if any standard fallible rust methods work...
                             for e in it {
-                                cur = f.run(vec![cur, e])?;
+                                cur = f.run(env, vec![cur, e])?;
                             }
                             Ok(cur)
                         }
@@ -1332,7 +1337,7 @@ impl Builtin for Fold {
                     Obj::Func(f, _) => {
                         // not sure if any standard fallible rust methods work...
                         for e in it {
-                            cur = f.run(vec![cur, e])?;
+                            cur = f.run(env, vec![cur, e])?;
                         }
                         Ok(cur)
                     }
@@ -1361,7 +1366,7 @@ impl Builtin for Fold {
 struct Replace {}
 
 impl Builtin for Replace {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
             Few3::Three(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b)), Obj::Seq(Seq::String(c))) => {
                 // rust's replacement syntax is $n or ${n} for nth group
@@ -1389,7 +1394,7 @@ impl Builtin for Replace {
 pub struct Preposition(String);
 
 impl Builtin for Preposition {
-    fn run(&self, _: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, _: Vec<Obj>) -> NRes<Obj> {
         Err(NErr::type_error(format!("{}: cannot call", self.0)))
     }
 
@@ -1397,16 +1402,23 @@ impl Builtin for Preposition {
     fn can_refer(&self) -> bool { false }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BasicBuiltin {
     name: String,
     can_refer: bool,
-    body: fn(args: Vec<Obj>) -> NRes<Obj>,
+    body: fn(env: &REnv, args: Vec<Obj>) -> NRes<Obj>,
+}
+
+// https://github.com/rust-lang/rust/issues/45048
+impl Debug for BasicBuiltin {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "BasicBuiltin {{ name: {:?}, can_refer: {:?}, body: {:?} }}", self.name, self.can_refer, self.body as usize)
+    }
 }
 
 impl Builtin for BasicBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        err_add_name((self.body)(args), &self.name)
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        err_add_name((self.body)(env, args), &self.name)
     }
 
     fn builtin_name(&self) -> &str { &self.name }
@@ -1421,7 +1433,7 @@ pub struct OneArgBuiltin {
 }
 
 impl Builtin for OneArgBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(arg) => (self.body)(arg),
             f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
@@ -1440,7 +1452,7 @@ pub struct TwoArgBuiltin {
 }
 
 impl Builtin for TwoArgBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             // partial application, spicy
             Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
@@ -1459,6 +1471,34 @@ pub struct OneNumBuiltin {
     body: fn(a: NNum) -> NRes<Obj>,
 }
 
+#[derive(Clone)]
+pub struct EnvTwoArgBuiltin {
+    name: String,
+    can_refer: bool,
+    body: fn(env: &REnv, a: Obj, b: Obj) -> NRes<Obj>,
+}
+
+impl Debug for EnvTwoArgBuiltin {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "EnvTwoArgBuiltin {{ name: {:?}, can_refer: {:?}, body: {:?} }}", self.name, self.can_refer, self.body as usize)
+    }
+}
+
+impl Builtin for EnvTwoArgBuiltin {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
+            Few2::Two(a, b) => err_add_name((self.body)(env, a, b), &self.name),
+            f => Err(NErr::argument_error(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
+        }
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+    fn can_refer(&self) -> bool { self.can_refer }
+}
+
+
 fn to_obj_vector(iter: impl Iterator<Item=NRes<Obj>>) -> NRes<Obj> {
     Ok(Obj::Seq(Seq::Vector(Rc::new(iter.map(|e| match e? {
         Obj::Num(n) => Ok(n),
@@ -1475,7 +1515,7 @@ fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj>
 }
 
 impl Builtin for OneNumBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(x) => err_add_name(expect_nums_and_vectorize_1(self.body, x), &self.name),
             f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len())))
@@ -1493,7 +1533,7 @@ pub struct NumsBuiltin {
 }
 
 impl Builtin for NumsBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         err_add_name((self.body)(args.into_iter().map(|x| match x {
             Obj::Num(n) => Ok(n),
             _ => Err(NErr::argument_error(format!("only accepts numbers, got {:?}", x))),
@@ -1529,7 +1569,7 @@ fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj
 }
 
 impl Builtin for TwoNumsBuiltin {
-    fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             // partial application, spicy
             Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => Ok(clone_and_part_app_2(self, arg)),
@@ -1599,7 +1639,6 @@ pub enum Token {
     Remove,
     Swap,
     Every,
-    Eval,
     // Newline,
 }
 
@@ -1639,15 +1678,6 @@ pub enum Expr {
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
     Swap(Box<Lvalue>, Box<Lvalue>),
-    // Weird hack to support punching a hole in side effects while minimally affecting other stuff.
-    // Eval is a node that there's no syntax for; it evaluates its contents in the current
-    // environment. The token `eval` becomes Expr::EvalToken, which, when evaluated, turns into a
-    // closure that captures its environment and invokes the Eval node. IMO this is marginally
-    // better than specialized `eval` syntax in that you can use it like any other identifier, e.g.
-    // mapping over it, and a lot better than requiring us to pass the environment to every
-    // function call everywhere.
-    Eval(Box<Expr>),
-    EvalToken,
     // bool: Every
     Assign(bool, Box<Lvalue>, Box<Expr>),
     OpAssign(bool, Box<Lvalue>, Box<Expr>, Box<Expr>),
@@ -1973,7 +2003,6 @@ impl<'a> Lexer<'a> {
                                 "remove" => Token::Remove,
                                 "swap" => Token::Swap,
                                 "every" => Token::Every,
-                                "eval" => Token::Eval,
                                 _ => Token::Ident(acc),
                             })
                         }
@@ -2100,10 +2129,6 @@ impl Parser {
                 Token::Remove => {
                     self.advance();
                     Ok(Expr::Remove(Box::new(to_lvalue(self.single()?)?)))
-                }
-                Token::Eval => {
-                    self.advance();
-                    Ok(Expr::EvalToken)
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -2494,9 +2519,30 @@ pub fn parse(code: &str) -> Result<Option<Expr>, String> {
     }
 }
 
-#[derive(Debug)]
+pub trait WriteMaybeExtractable: Write {
+    fn extract(&self) -> Option<&[u8]>;
+}
+
+impl WriteMaybeExtractable for io::Sink {
+    fn extract(&self) -> Option<&[u8]> { None }
+}
+impl WriteMaybeExtractable for io::Stdout {
+    fn extract(&self) -> Option<&[u8]> { None }
+}
+impl WriteMaybeExtractable for Vec<u8> {
+    fn extract(&self) -> Option<&[u8]> { Some(self) }
+}
+
 pub struct TopEnv {
     pub backrefs: Vec<Obj>,
+    pub input: Box<dyn BufRead>,
+    pub output: Box<dyn WriteMaybeExtractable>,
+}
+
+impl Debug for TopEnv {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "TopEnv {{ backrefs: {:?}, input: {:p}, output: {:p} }}", self.backrefs, self.input, self.output)
+    }
 }
 
 #[derive(Debug)]
@@ -2941,20 +2987,20 @@ impl ChainEvaluator {
         ChainEvaluator { operands: vec![vec![operand]], operators: Vec::new() }
     }
 
-    fn run_top_popped(&mut self, op: Func) -> NRes<()> {
+    fn run_top_popped(&mut self, env: &REnv, op: Func) -> NRes<()> {
         let mut rhs = self.operands.pop().expect("sync");
         let mut lhs = self.operands.pop().expect("sync");
         lhs.append(&mut rhs); // concats and drains rhs of elements
-        self.operands.push(vec![op.run(lhs)?]);
+        self.operands.push(vec![op.run(env, lhs)?]);
         Ok(())
     }
 
-    fn run_top(&mut self) -> NRes<()> {
+    fn run_top(&mut self, env: &REnv) -> NRes<()> {
         let (op, _) = self.operators.pop().expect("sync");
-        self.run_top_popped(op)
+        self.run_top_popped(env, op)
     }
 
-    fn give(&mut self, operator: Func, precedence: Precedence, operand: Obj) -> NRes<()> {
+    fn give(&mut self, env: &REnv, operator: Func, precedence: Precedence, operand: Obj) -> NRes<()> {
         while self.operators.last().map_or(false, |t| t.1.0 >= precedence.0) {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
@@ -2963,7 +3009,7 @@ impl ChainEvaluator {
                     self.operands.last_mut().expect("sync").push(operand);
                     return Ok(())
                 }
-                None => { self.run_top_popped(top)?; }
+                None => { self.run_top_popped(env, top)?; }
             }
         }
 
@@ -2972,9 +3018,9 @@ impl ChainEvaluator {
         Ok(())
     }
 
-    fn finish(&mut self) -> NRes<Obj> {
+    fn finish(&mut self, env: &REnv) -> NRes<Obj> {
         while !self.operators.is_empty() {
-            self.run_top()?;
+            self.run_top(env)?;
         }
         if self.operands.len() == 1 {
             Ok(self.operands.remove(0).remove(0))
@@ -3230,16 +3276,16 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     }
 }
 
-fn call(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
+fn call(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
-        Obj::Func(ff, _) => ff.run(args),
+        Obj::Func(ff, _) => ff.run(env, args),
         _ => Err(NErr::type_error(format!("Can't call non-function {:?}", f))),
     }
 }
 
-fn call_or_part_apply(f: Obj, args: Vec<Obj>) -> NRes<Obj> {
+fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
-        Obj::Func(ff, _) => ff.run(args),
+        Obj::Func(ff, _) => ff.run(env, args),
         f => match few(args) {
             Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), Precedence::zero())),
             Few::One(f2) => Err(NErr::type_error(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
@@ -3434,12 +3480,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 let oprr = env.borrow_mut().get_var(oper)?;
                 if let Obj::Func(b, prec) = oprr {
                     let oprd = evaluate(env, opd)?;
-                    ev.give(b, prec, oprd)?;
+                    ev.give(env, b, prec, oprd)?;
                 } else {
                     return Err(NErr::type_error(format!("Chain cannot use nonblock in operand position: {:?}", oprr)))
                 }
             }
-            ev.finish()
+            ev.finish(env)
         }
         Expr::And(lhs, rhs) => {
             let lr = evaluate(env, lhs)?;
@@ -3532,7 +3578,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             Expr::CommaSeq(xs) => Ok(Obj::from(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        modify_every(env, &p, &mut |x| { ff.run(vec![x, res.clone()]) })?;
+                        modify_every(env, &p, &mut |x| { ff.run(env, vec![x, res.clone()]) })?;
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!("Operator assignment: operator is not function {:?}", opv))),
@@ -3550,7 +3596,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             // Drop the Rc from the lvalue so that pure functions can try to consume it
                             assign(&mut env.borrow_mut(), &p, None, &Obj::Null)?;
                         }
-                        let fres = ff.run(vec![pv, res])?;
+                        let fres = ff.run(env, vec![pv, res])?;
                         assign(&mut env.borrow_mut(), &p, None, &fres)?;
                         Ok(Obj::Null)
                     }
@@ -3561,7 +3607,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Call(f, args) => {
             let fr = evaluate(env, f)?;
             let a = eval_seq(env, args)?;
-            call_or_part_apply(fr, a)
+            call_or_part_apply(env, fr, a)
         }
         Expr::CommaSeq(_) => Err(NErr::syntax_error("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
         Expr::Splat(_) => Err(NErr::syntax_error("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
@@ -3637,21 +3683,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 env: Rc::clone(env),
             }), Precedence::zero()))
         }
-        Expr::Eval(expr) => {
-            match evaluate(env, expr)? {
-                Obj::Seq(Seq::String(r)) => match parse(&r) {
-                    Ok(Some(code)) => evaluate(env, &code),
-                    Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
-                    Err(s) => Err(NErr::value_error(s)),
-                }
-                s => Err(NErr::value_error(format!("can't eval {}", s))),
-            }
-        }
-        Expr::EvalToken => Ok(Obj::Func(Func::Closure(Closure {
-            params: Rc::new(vec![Box::new(Lvalue::IndexedIdent("arg".to_string(), Vec::new()))]),
-            body: Rc::new(Expr::Eval(Box::new(Expr::Ident("arg".to_string())))),
-            env: Env::with_parent(env),
-        }), Precedence::zero())),
         Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
             match if *i == 0 { top.backrefs.last() } else { top.backrefs.get(i - 1) } {
                 Some(x) => Ok(x.clone()),
@@ -3663,7 +3694,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
 }
 
 pub fn simple_eval(code: &str) -> Obj {
-    let mut env = Env::new(TopEnv { backrefs: Vec::new() });
+    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(io::empty()), output: Box::new(io::sink()) });
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
@@ -3694,7 +3725,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "-".to_string(),
         can_refer: false,
-        body: |args| match few2(args) {
+        body: |_env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
             Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a-b)), a, b),
@@ -3903,20 +3934,20 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("sequence only".to_string()))
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "then".to_string(),
         can_refer: true,
-        body: |a, b| call(b, vec![a]),
+        body: |env, a, b| call(env, b, vec![a]),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "apply".to_string(),
         can_refer: true,
-        body: |mut a, b| call(b, mut_obj_into_iter(&mut a, "apply")?.collect()),
+        body: |env, mut a, b| call(env, b, mut_obj_into_iter(&mut a, "apply")?.collect()),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "of".to_string(),
         can_refer: true,
-        body: |a, mut b| call(a, mut_obj_into_iter(&mut b, "of")?.collect()),
+        body: |env, a, mut b| call(env, a, mut_obj_into_iter(&mut b, "of")?.collect()),
     });
     env.insert_builtin(Preposition("by".to_string()));
     env.insert_builtin(Preposition("with".to_string()));
@@ -3937,20 +3968,20 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: ".".to_string(),
         can_refer: true,
-        body: |a, b| call(b, vec![a]),
+        body: |env, a, b| call(env, b, vec![a]),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: ".>".to_string(),
         can_refer: true,
-        body: |a, b| call(b, vec![a]),
+        body: |env, a, b| call(env, b, vec![a]),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "<.".to_string(),
         can_refer: true,
-        body: |a, b| call(a, vec![b]),
+        body: |env, a, b| call(env, a, vec![b]),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ">>>".to_string(),
@@ -3968,15 +3999,15 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("not function".to_string()))
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "each".to_string(),
         can_refer: true,
-        body: |mut a, b| {
+        body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "each")?;
             match b {
                 Obj::Func(b, _) => {
                     for e in it {
-                        b.run(vec![e])?;
+                        b.run(env, vec![e])?;
                     }
                     Ok(Obj::Null)
                 }
@@ -3984,39 +4015,39 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
         can_refer: true,
-        body: |mut a, b| {
+        body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "map")?;
             match b {
                 Obj::Func(b, _) => Ok(Obj::from(
-                    it.map(|e| b.run(vec![e])).collect::<NRes<Vec<Obj>>>()?
+                    it.map(|e| b.run(env, vec![e])).collect::<NRes<Vec<Obj>>>()?
                 )),
                 _ => Err(NErr::type_error("not callable".to_string()))
             }
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_keys".to_string(),
         can_refer: true,
-        body: |a, b| match (a, b) {
+        body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => {
                 Ok(Obj::dict(
-                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((to_key(b.run(vec![key_to_obj(k)])?)?, v))).collect::<NRes<HashMap<ObjKey, Obj>>>()?, def.map(|x| *x)))
+                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((to_key(b.run(env, vec![key_to_obj(k)])?)?, v))).collect::<NRes<HashMap<ObjKey, Obj>>>()?, def.map(|x| *x)))
             }
             _ => Err(NErr::type_error("not dict or callable".to_string()))
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_values".to_string(),
         can_refer: true,
-        body: |a, b| match (a, b) {
+        body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => {
                 Ok(Obj::dict(
-                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((k, b.run(vec![v])?))).collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((k, b.run(env, vec![v])?))).collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                     match def {
-                        Some(def) => Some(b.run(vec![*def])?),
+                        Some(def) => Some(b.run(env, vec![*def])?),
                         None => None
                     }
                 ))
@@ -4037,16 +4068,16 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(acc))
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
         can_refer: true,
-        body: |mut a, b| {
+        body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "flat_map (outer)")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
-                        let mut r = b.run(vec![e])?;
+                        let mut r = b.run(env, vec![e])?;
                         for k in mut_obj_into_iter(&mut r, "flat_map (inner)")? {
                             acc.push(k);
                         }
@@ -4058,16 +4089,16 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(Zip {});
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
         can_refer: true,
-        body: |mut a, b| {
+        body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "filter")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
-                        if b.run(vec![e.clone()])?.truthy() {
+                        if b.run(env, vec![e.clone()])?.truthy() {
                             acc.push(e)
                         }
                     }
@@ -4077,16 +4108,16 @@ pub fn initialize(env: &mut Env) {
             }
         }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "reject".to_string(),
         can_refer: true,
-        body: |mut a, b| {
+        body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "reject")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
-                        if !b.run(vec![e.clone()])?.truthy() {
+                        if !b.run(env, vec![e.clone()])?.truthy() {
                             acc.push(e)
                         }
                     }
@@ -4099,12 +4130,12 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "any".to_string(),
         can_refer: true,
-        body: |args| match few2(args) {
+        body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "any")? {
-                    if b.run(vec![e.clone()])?.truthy() {
+                    if b.run(env, vec![e.clone()])?.truthy() {
                         return Ok(Obj::from(true))
                     }
                 }
@@ -4116,12 +4147,12 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "all".to_string(),
         can_refer: true,
-        body: |args| match few2(args) {
+        body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "all")? {
-                    if !b.run(vec![e.clone()])?.truthy() {
+                    if !b.run(env, vec![e.clone()])?.truthy() {
                         return Ok(Obj::from(false))
                     }
                 }
@@ -4146,7 +4177,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "max".to_string(),
         can_refer: false,
-        body: |args| match few(args) {
+        body: |_env, args| match few(args) {
             Few::Zero => Err(NErr::argument_error("max: at least 1 arg".to_string())),
             Few::One(mut s) => {
                 let mut ret: Option<Obj> = None;
@@ -4173,7 +4204,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "min".to_string(),
         can_refer: false,
-        body: |args| match few(args) {
+        body: |_env, args| match few(args) {
             Few::Zero => Err(NErr::type_error("min: at least 1 arg".to_string())),
             Few::One(mut s) => {
                 let mut ret: Option<Obj> = None;
@@ -4200,24 +4231,48 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
         can_refer: false,
-        body: |args| {
-            println!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
+        body: |env, args| {
+            env.borrow_mut().mut_top_env(|t| {
+                let mut started = false;
+                for arg in args.iter() {
+                    if started { write!(t.output, " ")?; }
+                    started = true;
+                    write!(t.output, "{}", arg)?;
+                }
+                writeln!(t.output, "")
+            }).unwrap(); // TODO: propagate error
             Ok(Obj::Null)
         }
     });
     env.insert_builtin(BasicBuiltin {
         name: "echo".to_string(),
         can_refer: false,
-        body: |args| {
-            print!("{}", args.iter().map(|arg| format!("{}", arg)).collect::<Vec<String>>().join(" "));
+        body: |env, args| {
+            env.borrow_mut().mut_top_env(|t| {
+                let mut started = false;
+                for arg in args.iter() {
+                    if started { write!(t.output, " ")?; }
+                    started = true;
+                    write!(t.output, "{}", arg)?;
+                }
+                writeln!(t.output, "")
+            }).unwrap(); // TODO: propagate error
             Ok(Obj::Null)
         }
     });
     env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
         can_refer: false,
-        body: |args| {
-            println!("{}", args.iter().map(|arg| format!("{:?}", arg)).collect::<Vec<String>>().join(" "));
+        body: |env, args| {
+            env.borrow_mut().mut_top_env(|t| {
+                let mut started = false;
+                for arg in args.iter() {
+                    if started { write!(t.output, " ")?; }
+                    started = true;
+                    write!(t.output, "{:?}", arg)?;
+                }
+                writeln!(t.output, "")
+            }).unwrap(); // TODO: propagate error
             Ok(Obj::Null)
         }
     });
@@ -4241,7 +4296,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
         can_refer: false,
-        body: |args| {
+        body: |_env, args| {
             let mut acc = String::new();
             for arg in args {
                 acc += format!("{}", arg).as_str();
@@ -4676,13 +4731,27 @@ pub fn initialize(env: &mut Env) {
         }
     });
 
+    env.insert_builtin(BasicBuiltin {
+        name: "eval".to_string(),
+        can_refer: false,
+        body: |env, a| match few(a) {
+            Few::One(Obj::Seq(Seq::String(r))) => match parse(&r) {
+                Ok(Some(code)) => evaluate(env, &code),
+                Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
+                Err(s) => Err(NErr::value_error(s)),
+            }
+            Few::One(s) => Err(NErr::value_error(format!("can't eval {:?}", s))),
+            _ => Err(NErr::generic_argument_error()),
+        }
+    });
+
     // TODO safety, wasm version
     env.insert_builtin(BasicBuiltin {
         name: "input".to_string(),
         can_refer: false,
-        body: |args| if args.is_empty() {
+        body: |env, args| if args.is_empty() {
             let mut input = String::new();
-            match io::stdin().read_line(&mut input) {
+            match env.borrow_mut().mut_top_env(|t| t.input.read_line(&mut input)) {
                 Ok(_) => Ok(Obj::from(input)),
                 Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
             }
@@ -4693,10 +4762,10 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "read".to_string(),
         can_refer: false,
-        body: |args| if args.is_empty() {
+        body: |env, args| if args.is_empty() {
             let mut input = String::new();
             // to EOF
-            match io::stdin().read_to_string(&mut input) {
+            match env.borrow_mut().mut_top_env(|t| t.input.read_to_string(&mut input)) {
                 Ok(_) => Ok(Obj::from(input)),
                 Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
             }
@@ -4717,4 +4786,50 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::generic_argument_error())
         }
     });
+}
+
+// copypasta
+#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+pub struct WasmOutputs {
+    output: String,
+    error: String,
+}
+
+#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+impl WasmOutputs {
+    pub fn get_output(&self) -> String { self.output.to_string() }
+    pub fn get_error(&self) -> String { self.error.to_string() }
+}
+
+// stdout and error
+#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
+    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(io::Cursor::new(input.as_bytes().to_vec())), output: Box::new(Vec::new()) });
+    initialize(&mut env);
+
+    let e = Rc::new(RefCell::new(env));
+
+    match parse(code) {
+        Err(p) => WasmOutputs {
+            output: String::new(),
+            error: p,
+        },
+        Ok(None) => WasmOutputs {
+            output: String::new(),
+            error: String::new(),
+        },
+        Ok(Some(code)) => match evaluate(&e, &code) {
+            Err(err) => WasmOutputs {
+                output: e.borrow_mut().mut_top_env(|e|
+                   String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()),
+                error: err.0,
+            },
+            Ok(res) => WasmOutputs {
+                output: e.borrow_mut().mut_top_env(|e|
+                   String::from_utf8_lossy(e.output.extract().unwrap()).into_owned())
+                + &format!("{}", res),
+                error: String::new(),
+            },
+        },
+    }
 }

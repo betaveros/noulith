@@ -54,9 +54,11 @@ forward_display!(UpperExp, Display, UpperExp);
 impl From<BigInt> for NNum {
     fn from(x: BigInt) -> Self { NNum::Int(x) }
 }
+/*
 impl From<i32> for NNum {
     fn from(x: i32) -> Self { NNum::Int(BigInt::from(x)) }
 }
+*/
 impl From<f64> for NNum {
     fn from(x: f64) -> Self { NNum::Float(x) }
 }
@@ -190,7 +192,7 @@ impl NNum {
                 } else if *f > 0.0 {
                     NNum::from(1)
                 } else {
-                    NNum::from(-1)
+                    -NNum::from(1)
                 }
             }
             NNum::Complex(z) => {
