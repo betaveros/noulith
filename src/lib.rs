@@ -329,6 +329,8 @@ impl PartialEq for Seq {
             (Seq::List  (a), Seq::List  (b)) => a == b,
             (Seq::Dict(a,_), Seq::Dict(b,_)) => a == b,
             (Seq::String(a), Seq::String(b)) => a == b,
+            (Seq::Vector(a), Seq::Vector(b)) => a == b,
+            (Seq::Bytes (a), Seq::Bytes (b)) => a == b,
             _ => false,
         }
     }
@@ -350,6 +352,8 @@ impl PartialOrd for Seq {
         match (self, other) {
             (Seq::List  (a), Seq::List  (b)) => a.partial_cmp(b),
             (Seq::String(a), Seq::String(b)) => a.partial_cmp(b),
+            (Seq::Vector(a), Seq::Vector(b)) => a.partial_cmp(b),
+            (Seq::Bytes (a), Seq::Bytes (b)) => a.partial_cmp(b),
             _ => None,
         }
     }
@@ -785,7 +789,7 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
 fn mut_obj_into_iter<'a,'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
-        _ => Err(NErr::type_error(format!("{}: not iterable", purpose)))
+        e => Err(NErr::type_error(format!("{}: not iterable: {}", purpose, e)))
     }
 }
 
@@ -940,6 +944,8 @@ pub enum Func {
     PartialApp2(Box<Func>, Box<Obj>),
     // mathematical notation, first of second
     Composition(Box<Func>, Box<Func>),
+    // (f on g)(a1, a2, ...) = f(g(a1), g(a2), ...)
+    OnComposition(Box<Func>, Box<Func>),
     // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
     Flip(Box<Func>),
     Type(ObjType),
@@ -961,6 +967,13 @@ impl Func {
                 _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
             }
             Func::Composition(f, g) => f.run(env, vec![g.run(env, args)?]),
+            Func::OnComposition(f, g) => {
+                let mut mapped_args = Vec::new();
+                for e in args {
+                    mapped_args.push(g.run(env, vec![e])?);
+                }
+                f.run(env, mapped_args)
+            }
             Func::Flip(f) => match few2(args) {
                 // weird lol
                 Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
@@ -982,6 +995,7 @@ impl Func {
             Func::PartialApp1(f, _) => f.can_refer(),
             Func::PartialApp2(f, _) => f.can_refer(),
             Func::Composition(f, g) => f.can_refer() || g.can_refer(),
+            Func::OnComposition(f, g) => f.can_refer() || g.can_refer(),
             Func::Flip(f) => f.can_refer(),
             Func::Type(_) => false,
         }
@@ -994,6 +1008,7 @@ impl Func {
             Func::PartialApp1(..) => None,
             Func::PartialApp2(..) => None,
             Func::Composition(..) => None,
+            Func::OnComposition(..) => None,
             Func::Flip(..) => None,
             Func::Type(_) => None,
         }
@@ -1008,6 +1023,7 @@ impl Display for Func {
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
+            Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             Func::Type(t) => write!(formatter, "{}", t.name()),
         }
@@ -1048,8 +1064,7 @@ impl ComparisonOperator {
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
         (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare nums {:?} and {:?}", a, b))),
-        (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => Ok(a.cmp(b)),
-        (Obj::Seq(Seq::List(a)), Obj::Seq(Seq::List(b))) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare lists {:?} and {:?}", a, b))),
+        (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare seqs {:?} and {:?}", a, b))),
         _ => Err(NErr::type_error(format!("Can't compare {:?} and {:?}", aa, bb))),
     }
 }
@@ -1424,11 +1439,16 @@ pub struct BasicBuiltin {
 }
 
 // https://github.com/rust-lang/rust/issues/45048
-impl Debug for BasicBuiltin {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "BasicBuiltin {{ name: {:?}, can_refer: {:?}, body: {:?} }}", self.name, self.can_refer, self.body as usize)
+macro_rules! standard_three_part_debug {
+    ($name:ident) => {
+        impl Debug for $name {
+            fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+                write!(fmt, concat!(stringify!($name), " {{ name: {:?}, can_refer: {:?}, body: {:?} }}"), self.name, self.can_refer, self.body as usize)
+            }
+        }
     }
 }
+standard_three_part_debug!(BasicBuiltin);
 
 impl Builtin for BasicBuiltin {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -1449,7 +1469,7 @@ pub struct OneArgBuiltin {
 impl Builtin for OneArgBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(arg) => (self.body)(arg),
+            Few::One(arg) => err_add_name((self.body)(arg), &self.name),
             f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
         }
     }
@@ -1486,17 +1506,32 @@ pub struct OneNumBuiltin {
 }
 
 #[derive(Clone)]
+pub struct EnvOneArgBuiltin {
+    name: String,
+    can_refer: bool,
+    body: fn(env: &REnv, a: Obj) -> NRes<Obj>,
+}
+standard_three_part_debug!(EnvOneArgBuiltin);
+
+impl Builtin for EnvOneArgBuiltin {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(arg) => err_add_name((self.body)(env, arg), &self.name),
+            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str { &self.name }
+    fn can_refer(&self) -> bool { self.can_refer }
+}
+
+#[derive(Clone)]
 pub struct EnvTwoArgBuiltin {
     name: String,
     can_refer: bool,
     body: fn(env: &REnv, a: Obj, b: Obj) -> NRes<Obj>,
 }
-
-impl Debug for EnvTwoArgBuiltin {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "EnvTwoArgBuiltin {{ name: {:?}, can_refer: {:?}, body: {:?} }}", self.name, self.can_refer, self.body as usize)
-    }
-}
+standard_three_part_debug!(EnvTwoArgBuiltin);
 
 impl Builtin for EnvTwoArgBuiltin {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -1641,11 +1676,14 @@ pub enum Token {
     RightBrace,
     And,
     Or,
+    Coalesce,
     While,
     For,
     Yield,
     If,
     Else,
+    Switch,
+    Case,
     Break,
     Continue,
     Return,
@@ -1696,6 +1734,7 @@ pub enum Expr {
     Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
+    Coalesce(Box<Expr>, Box<Expr>),
     Annotation(Box<Expr>, Option<Box<Expr>>),
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
@@ -1706,6 +1745,7 @@ pub enum Expr {
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     For(Vec<ForIteration>, bool /* yield */, Box<Expr>),
     While(Box<Expr>, Box<Expr>),
+    Switch(Box<Expr>, Vec<(Box<Lvalue>, Box<Expr>)>),
     Break(Option<Box<Expr>>),
     Continue,
     Return(Option<Box<Expr>>),
@@ -1722,6 +1762,7 @@ pub enum Expr {
 
 #[derive(Debug)]
 pub enum Lvalue {
+    Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Box<Expr>>),
     Unannotation(Box<Lvalue>),
@@ -1742,6 +1783,7 @@ enum EvaluatedLvalue {
     Unannotation(Box<EvaluatedLvalue>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
+    Literal(Obj),
 }
 
 fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
@@ -1757,11 +1799,14 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
             }
         }
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
-        Expr::CommaSeq(es) => Ok(Lvalue::CommaSeq(
+        Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
             es.into_iter().map(|e| Ok(Box::new(to_lvalue(*e)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
         Expr::Paren(p) => Ok(Lvalue::Unannotation(Box::new(to_lvalue(*p)?))),
+        Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
+        Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
+        // TODO: special case for negative literals????
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
 }
@@ -2031,8 +2076,11 @@ impl<'a> Lexer<'a> {
                                 "while" => Token::While,
                                 "for" => Token::For,
                                 "yield" => Token::Yield,
+                                "switch" => Token::Switch,
+                                "case" => Token::Case,
                                 "and" => Token::And,
                                 "or" => Token::Or,
+                                "coalesce" => Token::Coalesce,
                                 "break" => Token::Break,
                                 "continue" => Token::Continue,
                                 "return" => Token::Return,
@@ -2089,6 +2137,13 @@ pub fn lex(code: &str) -> Vec<LocToken> {
 struct Parser {
     tokens: Vec<LocToken>,
     i: usize,
+}
+
+fn err_add_context(a: Result<Expr, String>, ctx: &str) -> Result<Expr, String> {
+    match a {
+        Ok(t) => Ok(t),
+        Err(s) => Err(s + " at " + ctx),
+    }
 }
 
 impl Parser {
@@ -2158,22 +2213,22 @@ impl Parser {
                 }
                 Token::Ellipsis => {
                     self.advance();
-                    Ok(Expr::Splat(Box::new(self.single()?)))
+                    Ok(Expr::Splat(Box::new(self.single("ellipsis")?)))
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(Expr::Pop(Box::new(to_lvalue(self.single()?)?)))
+                    Ok(Expr::Pop(Box::new(to_lvalue(self.single("pop")?)?)))
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(Expr::Remove(Box::new(to_lvalue(self.single()?)?)))
+                    Ok(Expr::Remove(Box::new(to_lvalue(self.single("remove")?)?)))
                 }
                 Token::Break => {
                     self.advance();
                     if self.peek_csc_stopper() {
                         Ok(Expr::Break(None))
                     } else {
-                        Ok(Expr::Break(Some(Box::new(self.single()?))))
+                        Ok(Expr::Break(Some(Box::new(self.single("break")?))))
                     }
                 }
                 Token::Continue => {
@@ -2184,7 +2239,7 @@ impl Parser {
                     if self.peek_csc_stopper() {
                         Ok(Expr::Return(None))
                     } else {
-                        Ok(Expr::Return(Some(Box::new(self.single()?))))
+                        Ok(Expr::Return(Some(Box::new(self.single("return")?))))
                     }
                 }
                 Token::LeftParen => {
@@ -2223,16 +2278,16 @@ impl Parser {
                     let mut xs = Vec::new();
                     let mut def = None;
                     if self.try_consume(&Token::Colon) {
-                        def = Some(Box::new(self.single()?));
+                        def = Some(Box::new(self.single("default of dict literal")?));
                         if !self.peek_csc_stopper() {
                             self.require(Token::Comma, "dict expr".to_string())?;
                         }
                     }
 
                     while !self.peek_csc_stopper() {
-                        let c1 = Box::new(self.single()?);
+                        let c1 = Box::new(self.single("key of dict literal")?);
                         let c2 = if self.try_consume(&Token::Colon) {
-                            Some(Box::new(self.single()?))
+                            Some(Box::new(self.single("value of dict literal")?))
                         } else {
                             None
                         };
@@ -2245,7 +2300,7 @@ impl Parser {
                     self.require(Token::RightBrace, "dict expr end".to_string())?;
                     Ok(Expr::Dict(def, xs))
                 }
-                Token::RightParen => Err(format!("Unexpected {}", self.peek_err())),
+                Token::RightParen => Err(format!("atom: Unexpected {}", self.peek_err())),
                 Token::Lambda => {
                     self.advance();
                     if let Some(Token::IntLit(x)) = self.peek().cloned() {
@@ -2260,7 +2315,7 @@ impl Parser {
                             self.require(Token::Colon, "lambda start".to_string())?;
                             ps
                         };
-                        let body = self.single()?;
+                        let body = self.single("body of lambda")?;
                         Ok(Expr::Lambda(Rc::new(params), Rc::new(body)))
                     }
                 }
@@ -2301,7 +2356,21 @@ impl Parser {
                     let body = self.assignment()?;
                     Ok(Expr::While(Box::new(cond), Box::new(body)))
                 }
-                _ => Err(format!("Unexpected {}", self.peek_err())),
+                Token::Switch => {
+                    self.advance();
+                    self.require(Token::LeftParen, "switch start".to_string())?;
+                    let scrutinee = self.expression()?;
+                    self.require(Token::RightParen, "switch end".to_string())?;
+                    let mut v = Vec::new();
+                    while self.try_consume(&Token::Case) {
+                        let pat = to_lvalue(self.single("switch pat")?)?;
+                        self.require(Token::Colon, "case mid".to_string())?;
+                        let res = self.single("switch body")?;
+                        v.push((Box::new(pat), Box::new(res)));
+                    }
+                    Ok(Expr::Switch(Box::new(scrutinee), v))
+                }
+                _ => Err(format!("atom: Unexpected {}", self.peek_err())),
             }
         } else {
             Err("atom: ran out of stuff to parse".to_string())
@@ -2310,7 +2379,7 @@ impl Parser {
 
     fn for_iteration(&mut self) -> Result<ForIteration, String> {
         if self.try_consume(&Token::If) {
-            Ok(ForIteration::Guard(Box::new(self.single()?)))
+            Ok(ForIteration::Guard(Box::new(self.single("for iteration guard")?)))
         } else {
             let pat0 = self.pattern()?;
             let pat = to_lvalue(pat0)?;
@@ -2355,17 +2424,17 @@ impl Parser {
                         if self.try_consume(&Token::RightBracket) {
                             cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, None));
                         } else {
-                            let c = self.single()?;
+                            let c = self.single("slice end")?;
                             self.require(Token::RightBracket, "index expr".to_string())?;
                             cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, Some(Box::new(c))));
                         }
                     } else {
-                        let c = self.single()?;
+                        let c = self.single("index/slice start")?;
                         if self.try_consume(&Token::Colon) {
                             if self.try_consume(&Token::RightBracket) {
                                 cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), None));
                             } else {
-                                let cc = self.single()?;
+                                let cc = self.single("slice end")?;
                                 self.require(Token::RightBracket, "index expr".to_string())?;
                                 cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), Some(Box::new(cc))));
                             }
@@ -2399,6 +2468,7 @@ impl Parser {
             Some(Token::DoubleColon) => true,
             Some(Token::Semicolon) => true,
             Some(Token::Else) => true,
+            Some(Token::Case) => true,
             None => true,
             _ => false,
         }
@@ -2409,6 +2479,7 @@ impl Parser {
             Some(Token::Comma) => true,
             Some(Token::And) => true,
             Some(Token::Or) => true,
+            Some(Token::Coalesce) => true,
             _ => false,
         }
     }
@@ -2458,26 +2529,35 @@ impl Parser {
         Ok(op1)
     }
 
-    fn single(&mut self) -> Result<Expr, String> {
-        let mut op1 = self.logic_and()?;
-        while self.try_consume(&Token::Or) {
-            op1 = Expr::Or(Box::new(op1), Box::new(self.logic_and()?));
+    fn single(&mut self, ctx: &str) -> Result<Expr, String> {
+        let mut op1 = err_add_context(self.logic_and(), ctx)?;
+        loop {
+            match self.peek() {
+                Some(Token::Or) => {
+                    self.advance();
+                    op1 = Expr::Or(Box::new(op1), Box::new(err_add_context(self.logic_and(), ctx)?));
+                }
+                Some(Token::Coalesce) => {
+                    self.advance();
+                    op1 = Expr::Coalesce(Box::new(op1), Box::new(err_add_context(self.logic_and(), ctx)?));
+                }
+                _ => return Ok(op1)
+            }
         }
-        Ok(op1)
     }
 
     // Nonempty (caller should check empty condition); no semicolons allowed. List literals;
     // function declarations; LHSes of assignments. Not for function calls, I think? f(x; y) might
     // actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
     fn comma_separated(&mut self) -> Result<(Vec<Box<Expr>>, bool), String> {
-        let mut xs = vec![Box::new(self.single()?)];
+        let mut xs = vec![Box::new(self.single("comma-separated starter")?)];
         let mut comma = false;
         while self.try_consume(&Token::Comma) {
             comma = true;
             if self.peek_csc_stopper() {
                 return Ok((xs, comma))
             }
-            xs.push(Box::new(self.single()?));
+            xs.push(Box::new(self.single("comma-separated next")?));
         }
         return Ok((xs, comma))
     }
@@ -2500,7 +2580,7 @@ impl Parser {
             if self.peek_csc_stopper() {
                 Ok(Expr::Annotation(Box::new(pat), None))
             } else {
-                Ok(Expr::Annotation(Box::new(pat), Some(Box::new(self.single()?))))
+                Ok(Expr::Annotation(Box::new(pat), Some(Box::new(self.single("annotation")?))))
             }
         } else {
             Ok(pat)
@@ -2510,9 +2590,9 @@ impl Parser {
     fn assignment(&mut self) -> Result<Expr, String> {
         let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
-            let a = to_lvalue(self.single()?)?;
+            let a = to_lvalue(self.single("swap target 1")?)?;
             self.require(Token::Comma, format!("swap between lvalues at {}", ag_start_err))?;
-            let b = to_lvalue(self.single()?)?;
+            let b = to_lvalue(self.single("swap target 2")?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
             let every = self.try_consume(&Token::Every);
@@ -2954,6 +3034,11 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
             assign(env, s, None, rhs)
         }
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Literal(obj) => if obj == rhs {
+            Ok(())
+        } else {
+            Err(NErr::type_error(format!("Literal pattern didn't match: {} {}", obj, rhs)))
+        }
     }
 }
 
@@ -2984,6 +3069,11 @@ fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs:
             assign_every(env, s, None, rhs)
         }
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Literal(obj) => if obj == rhs {
+            Ok(())
+        } else {
+            Err(NErr::type_error(format!("Literal pattern didn't match: {} {}", obj, rhs)))
+        }
     }
 }
 
@@ -3020,6 +3110,7 @@ fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl Fn
         EvaluatedLvalue::Annotation(..) => Err(NErr::type_error(format!("No annotations in modify every: {:?}", lhs))),
         EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
+        EvaluatedLvalue::Literal(_) => Err(NErr::type_error(format!("Can't modify literal {:?}", lhs))),
     }
 }
 
@@ -3149,6 +3240,7 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
             v.iter().map(|e| Ok(Box::new(eval_lvalue(env, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
+        Lvalue::Literal(obj) => Ok(EvaluatedLvalue::Literal(obj.clone())),
     }
 }
 
@@ -3384,6 +3476,8 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         )),
         // maybe if commaseq eagerly looks for splats...
         Lvalue::Splat(_) => Err(NErr::syntax_error("Can't evaluate splat on LHS of assignment??".to_string())),
+        // seems questionable
+        Lvalue::Literal(x) => Ok(x.clone()),
     }
 }
 
@@ -3582,6 +3676,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 evaluate(env, rhs)
             }
         }
+        Expr::Coalesce(lhs, rhs) => {
+            let lr = evaluate(env, lhs)?;
+            if lr != Obj::Null {
+                Ok(lr)
+            } else {
+                evaluate(env, rhs)
+            }
+        }
         Expr::Assign(every, pat, rhs) => {
             let p = eval_lvalue(env, pat)?;
             let res = match &**rhs {
@@ -3772,6 +3874,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
             Ok(Obj::Null)
         }
+        Expr::Switch(scrutinee, arms) => {
+            let s = evaluate(env, scrutinee)?;
+            for (pat, body) in arms {
+                let ee = Env::with_parent(env);
+                // questionable sooooo questionable
+                // this can assign to random live variables lol
+                let p = eval_lvalue(&ee, pat)?;
+                // drop asap
+                let ret = assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &s);
+                match ret {
+                    Ok(()) => return evaluate(&ee, body),
+                    Err(_) => continue,
+                };
+            }
+            // error??
+            Ok(Obj::Null)
+        }
         Expr::Lambda(params, body) => {
             Ok(Obj::Func(Func::Closure(Closure {
                 params: Rc::clone(params),
@@ -3818,6 +3937,11 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
 
 pub fn initialize(env: &mut Env) {
     env.insert("null".to_string(), ObjType::Null, Obj::Null);
+    env.insert_builtin(OneArgBuiltin {
+        name: "not".to_string(),
+        can_refer: false,
+        body: |arg| Ok(Obj::from(!arg.truthy())),
+    });
 
     env.insert_builtin(TwoNumsBuiltin {
         name: "+".to_string(),
@@ -4032,7 +4156,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |arg| match arg {
             Obj::Seq(s) => Ok(Obj::Num(NNum::from(s.len()))),
-            _ => Err(NErr::type_error("sequence only".to_string()))
+            e => Err(NErr::type_error(format!("sequence only, got {}", e)))
         }
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -4097,6 +4221,14 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), Precedence::zero())),
+            _ => Err(NErr::type_error("not function".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "on".to_string(),
+        can_refer: true,
+        body: |a, b| match (a, b) {
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::OnComposition(Box::new(f), Box::new(g)), Precedence::zero())),
             _ => Err(NErr::type_error("not function".to_string()))
         }
     });
@@ -4169,6 +4301,29 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(acc))
         }
     });
+    // haxx
+    env.insert_builtin(OneArgBuiltin {
+        name: "keys".to_string(),
+        can_refer: false,
+        body: |mut a| {
+            let mut acc = Vec::new();
+            for (k, _) in mut_obj_into_iter_pairs(&mut a, "keys")? {
+                acc.push(key_to_obj(k));
+            }
+            Ok(Obj::from(acc))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "values".to_string(),
+        can_refer: false,
+        body: |mut a| {
+            let mut acc = Vec::new();
+            for (_, v) in mut_obj_into_iter_pairs(&mut a, "values")? {
+                acc.push(v);
+            }
+            Ok(Obj::from(acc))
+        }
+    });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
         can_refer: true,
@@ -4236,7 +4391,7 @@ pub fn initialize(env: &mut Env) {
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "any")? {
-                    if b.run(env, vec![e.clone()])?.truthy() {
+                    if b.run(env, vec![e])?.truthy() {
                         return Ok(Obj::from(true))
                     }
                 }
@@ -4253,7 +4408,7 @@ pub fn initialize(env: &mut Env) {
             Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()))),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "all")? {
-                    if !b.run(env, vec![e.clone()])?.truthy() {
+                    if !b.run(env, vec![e])?.truthy() {
                         return Ok(Obj::from(false))
                     }
                 }
@@ -4261,6 +4416,39 @@ pub fn initialize(env: &mut Env) {
             }
             Few2::Two(_, b) => Err(NErr::type_error(format!("second arg not func: {}", b))),
             ff => Err(NErr::argument_error(format!("too many args: {:?}", ff))),
+        }
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "count".to_string(),
+        can_refer: true,
+        body: |env, mut a, b| {
+            let it = mut_obj_into_iter(&mut a, "count")?;
+            let mut c = 0usize;
+            match b {
+                Obj::Func(b, _) => {
+                    for e in it {
+                        if b.run(env, vec![e])?.truthy() { c += 1; }
+                    }
+                }
+                b => {
+                    for e in it {
+                        if e == b { c += 1; }
+                    }
+                }
+            }
+            Ok(Obj::from(c))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "frequencies".to_string(),
+        can_refer: true,
+        body: |mut a| {
+            let it = mut_obj_into_iter(&mut a, "frequencies")?;
+            let mut c = HashMap::<ObjKey, usize>::new();
+            for e in it {
+                *c.entry(to_key(e)?).or_insert(0) += 1;
+            }
+            Ok(Obj::Seq(Seq::Dict(Rc::new(c.into_iter().map(|(k, v)| (k, Obj::from(v))).collect()), Some(Box::new(Obj::from(0))))))
         }
     });
     env.insert_builtin(Fold {});
@@ -4273,6 +4461,16 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::List(a)))
             }
             _ => Err(NErr::argument_error("2 args only".to_string()))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "<=>".to_string(),
+        can_refer: false,
+        body: |a, b| match ncmp(&a, &b) {
+            Ok(Ordering::Less)    => Ok(Obj::Num(-NNum::from(1))),
+            Ok(Ordering::Equal)   => Ok(Obj::Num( NNum::from(0))),
+            Ok(Ordering::Greater) => Ok(Obj::Num( NNum::from(1))),
+            Err(e) => Err(e),
         }
     });
     env.insert_builtin(BasicBuiltin {
@@ -4356,7 +4554,7 @@ pub fn initialize(env: &mut Env) {
                     started = true;
                     write!(t.output, "{}", arg)?;
                 }
-                writeln!(t.output, "")
+                write!(t.output, "") // FIXME >.<
             }).unwrap(); // TODO: propagate error
             Ok(Obj::Null)
         }
@@ -4394,6 +4592,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_type(ObjType::Bytes);
     env.insert_type(ObjType::Func);
     env.insert_type(ObjType::Type);
+    env.insert_type(ObjType::Any);
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
         can_refer: false,
@@ -4707,8 +4906,40 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(to_mutated_list(s, |v| {
                 // ????
-                v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                Ok(())
+                let mut ret = Ok(());
+                v.sort_by(|a, b| {
+                    if ret.is_err() { return Ordering::Equal }
+                    match a.partial_cmp(b) {
+                        Some(k) => k,
+                        None => {
+                            ret = Err(NErr::value_error("not comparable".to_string())); 
+                            Ordering::Equal
+                        }
+                    }
+                });
+                ret
+            })?)),
+            _ => Err(NErr::generic_argument_error()),
+        }
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "sort_by".to_string(),
+        can_refer: false,
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::Seq(to_mutated_list(s, |v| {
+                // ????
+                let mut ret = Ok(());
+                v.sort_by(|a, b| {
+                    if ret.is_err() { return Ordering::Equal }
+                    match f.run(env, vec![a.clone(), b.clone()]) {
+                        Ok(k) => match ncmp(&k, &Obj::from(0)) {
+                            Ok(ord) => ord,
+                            Err(e) => { ret = Err(e); Ordering::Equal }
+                        }
+                        Err(e) => { ret = Err(e); Ordering::Equal }
+                    }
+                });
+                ret
             })?)),
             _ => Err(NErr::generic_argument_error()),
         }
@@ -4832,17 +5063,16 @@ pub fn initialize(env: &mut Env) {
         }
     });
 
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
         can_refer: false,
-        body: |env, a| match few(a) {
-            Few::One(Obj::Seq(Seq::String(r))) => match parse(&r) {
+        body: |env, a| match a {
+            Obj::Seq(Seq::String(r)) => match parse(&r) {
                 Ok(Some(code)) => evaluate(env, &code),
                 Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
                 Err(s) => Err(NErr::value_error(s)),
             }
-            Few::One(s) => Err(NErr::value_error(format!("can't eval {:?}", s))),
-            _ => Err(NErr::generic_argument_error()),
+            s => Err(NErr::value_error(format!("can't eval {:?}", s))),
         }
     });
 
