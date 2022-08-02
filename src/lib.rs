@@ -1770,6 +1770,19 @@ pub enum Lvalue {
     Splat(Box<Lvalue>),
 }
 
+impl Lvalue {
+    fn any_literals(&self) -> bool {
+        match self {
+            Lvalue::Literal(_) => true,
+            Lvalue::IndexedIdent(..) => false,
+            Lvalue::Annotation(x, _) => x.any_literals(),
+            Lvalue::Unannotation(x) => x.any_literals(),
+            Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
+            Lvalue::Splat(x) => x.any_literals(),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum EvaluatedIndexOrSlice {
     Index(Obj),
@@ -1808,6 +1821,15 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         // TODO: special case for negative literals????
         _ => Err(format!("can't to_lvalue {:?}", expr)),
+    }
+}
+
+fn to_value_no_literals(expr: Expr) -> Result<Lvalue, String> {
+    let lvalue = to_lvalue(expr)?;
+    if lvalue.any_literals() {
+        Err(format!("lvalue can't have any literals: {:?}", lvalue))
+    } else {
+        Ok(lvalue)
     }
 }
 
@@ -2217,11 +2239,11 @@ impl Parser {
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(Expr::Pop(Box::new(to_lvalue(self.single("pop")?)?)))
+                    Ok(Expr::Pop(Box::new(to_value_no_literals(self.single("pop")?)?)))
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(Expr::Remove(Box::new(to_lvalue(self.single("remove")?)?)))
+                    Ok(Expr::Remove(Box::new(to_value_no_literals(self.single("remove")?)?)))
                 }
                 Token::Break => {
                     self.advance();
@@ -2311,7 +2333,7 @@ impl Parser {
                             Vec::new()
                         } else {
                             let (params0, _) = self.comma_separated()?;
-                            let ps = params0.into_iter().map(|p| Ok(Box::new(to_lvalue(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
+                            let ps = params0.into_iter().map(|p| Ok(Box::new(to_value_no_literals(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
                             self.require(Token::Colon, "lambda start".to_string())?;
                             ps
                         };
@@ -2382,7 +2404,7 @@ impl Parser {
             Ok(ForIteration::Guard(Box::new(self.single("for iteration guard")?)))
         } else {
             let pat0 = self.pattern()?;
-            let pat = to_lvalue(pat0)?;
+            let pat = to_value_no_literals(pat0)?;
             let ty = match self.peek() {
                 Some(Token::Colon) => {
                     self.advance();
@@ -2590,9 +2612,9 @@ impl Parser {
     fn assignment(&mut self) -> Result<Expr, String> {
         let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
-            let a = to_lvalue(self.single("swap target 1")?)?;
+            let a = to_value_no_literals(self.single("swap target 1")?)?;
             self.require(Token::Comma, format!("swap between lvalues at {}", ag_start_err))?;
-            let b = to_lvalue(self.single("swap target 2")?)?;
+            let b = to_value_no_literals(self.single("swap target 2")?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
             let every = self.try_consume(&Token::Every);
@@ -2606,14 +2628,14 @@ impl Parser {
                         Expr::Call(lhs, op) => match few(op) {
                             Few::One(op) => Ok(Expr::OpAssign(
                                 every,
-                                Box::new(to_lvalue(*lhs)?),
+                                Box::new(to_value_no_literals(*lhs)?),
                                 Box::new(*op),
                                 Box::new(self.pattern()?),
                             )),
                             _ => Err(format!("call w not 1 arg is not assignop, at {}", ag_start_err)),
                         }
                         _ => {
-                            Ok(Expr::Assign(every, Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
+                            Ok(Expr::Assign(every, Box::new(to_value_no_literals(pat)?), Box::new(self.pattern()?)))
                         }
                     }
                 }
@@ -4912,7 +4934,7 @@ pub fn initialize(env: &mut Env) {
                     match a.partial_cmp(b) {
                         Some(k) => k,
                         None => {
-                            ret = Err(NErr::value_error("not comparable".to_string())); 
+                            ret = Err(NErr::value_error("not comparable".to_string()));
                             Ordering::Equal
                         }
                     }
