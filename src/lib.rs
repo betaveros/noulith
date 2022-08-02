@@ -1628,6 +1628,7 @@ pub enum Token {
     Yield,
     If,
     Else,
+    Bang,
     Colon,
     DoubleColon,
     Semicolon,
@@ -2030,6 +2031,7 @@ impl<'a> Lexer<'a> {
                             (_, _) => {
                                 acc.push(last);
                                 self.emit(match acc.as_str() {
+                                    "!" => Token::Bang,
                                     "..." => Token::Ellipsis,
                                     _ => Token::Ident(acc)
                                 })
@@ -2308,6 +2310,15 @@ impl Parser {
                             self.require(Token::RightBracket, "index expr".to_string())?;
                             cur = Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c)));
                         }
+                    }
+                }
+                Some(Token::Bang) => {
+                    self.advance();
+                    if self.peek_csc_stopper() {
+                        cur = Expr::Call(Box::new(cur), Vec::new());
+                    } else {
+                        let (cs, _) = self.comma_separated()?;
+                        cur = Expr::Call(Box::new(cur), cs);
                     }
                 }
                 _ => break Ok(cur)
