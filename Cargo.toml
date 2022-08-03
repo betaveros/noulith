@@ -10,6 +10,8 @@ lazy_static = "1.4.0"
 num = "0.4.0"
 rand = "0.8.5"
 regex = "1"
+rustyline = "10.0.0"
+rustyline-derive = "0.7.0"
 
 [target.'cfg(target_arch="wasm32")'.dependencies]
 wasm-bindgen = "0.2.74"

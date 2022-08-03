@@ -1,11 +1,14 @@
 extern crate noulith;
 // use std::rc::Rc;
-use noulith::Obj;
 use noulith::simple_eval;
+use noulith::Obj;
 
 #[test]
 fn demos() {
-    assert_eq!(simple_eval("fact := \\n: if (n == 0) 1 else n * fact(n - 1); fact 10"), Obj::from(3628800));
+    assert_eq!(
+        simple_eval("fact := \\n: if (n == 0) 1 else n * fact(n - 1); fact 10"),
+        Obj::from(3628800)
+    );
     assert_eq!(simple_eval("(for (x : 1 to 15) yield (o := ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"), Obj::from("1;2;Fizz;4;Buzz;Fizz;7;8;Fizz;Buzz;11;Fizz;13;14;FizzBuzz"));
 }
 
@@ -27,7 +30,10 @@ fn modifications() {
 #[test]
 fn weird_assignments() {
     assert_eq!(simple_eval("every x, y := 2; x + y"), Obj::from(4));
-    assert_eq!(simple_eval("x := 1 to 10; every x[2:4] = -1; sum x"), Obj::from(46));
+    assert_eq!(
+        simple_eval("x := 1 to 10; every x[2:4] = -1; sum x"),
+        Obj::from(46)
+    );
 }
 
 #[test]
@@ -42,7 +48,12 @@ fn ranges() {
 fn evil_operators() {
     assert_eq!(simple_eval("2 + 5 * 3"), Obj::from(17));
     assert_eq!(simple_eval("+, * = *, +; 2 + 5 * 3"), Obj::from(13));
-    assert_eq!(simple_eval("+['precedence'], *['precedence'] = *['precedence'], +['precedence']; 2 + 5 * 3"), Obj::from(21));
+    assert_eq!(
+        simple_eval(
+            "+['precedence'], *['precedence'] = *['precedence'], +['precedence']; 2 + 5 * 3"
+        ),
+        Obj::from(21)
+    );
     assert_eq!(simple_eval("+, * = *, +; +['precedence'], *['precedence'] = *['precedence'], +['precedence']; 2 + 5 * 3"), Obj::from(16));
 }
 
@@ -86,7 +97,10 @@ fn indexing() {
     assert_eq!(simple_eval("(1 to 10)[-2]"), Obj::from(9));
     assert_eq!(simple_eval("(1 to 10)[2:4] join ''"), Obj::from("34"));
     assert_eq!(simple_eval("x := 1 to 10; x[2] = 4; x[2]"), Obj::from(4));
-    assert_eq!(simple_eval("x := [[0] ** 10] ** 10; x[1][2] = 3; x[2][2] = 4; x[1][2] $ x[2][2]"), Obj::from("34"));
+    assert_eq!(
+        simple_eval("x := [[0] ** 10] ** 10; x[1][2] = 3; x[2][2] = 4; x[1][2] $ x[2][2]"),
+        Obj::from("34")
+    );
 }
 
 #[test]
@@ -104,7 +118,12 @@ fn dicts() {
 
 #[test]
 fn fast_append_pop() {
-    assert_eq!(simple_eval("x := []; for (i : 1 to 10000) x append= i; y := 0; for (i : 1 to 10000) y += pop x; y"), Obj::from(50005000));
+    assert_eq!(
+        simple_eval(
+            "x := []; for (i : 1 to 10000) x append= i; y := 0; for (i : 1 to 10000) y += pop x; y"
+        ),
+        Obj::from(50005000)
+    );
 }
 
 #[test]
@@ -144,14 +163,32 @@ fn opassigns() {
 
 #[test]
 fn for_loops() {
-    assert_eq!(simple_eval("x := 0; for (y : 1 to 5) x += y + 1; x"), Obj::from(20));
-    assert_eq!(simple_eval("sum (for (y : 1 to 5) yield y + 1)"), Obj::from(20));
-    assert_eq!(simple_eval("x := 0; for (i, y :: 1 to 5) x += i * y; x"), Obj::from(40));
-    assert_eq!(simple_eval("sum (for (i, x :: 1 to 5) yield i * x)"), Obj::from(40));
-    assert_eq!(simple_eval("x := 0; for (y := 5) x += y + 1; x"), Obj::from(6));
+    assert_eq!(
+        simple_eval("x := 0; for (y : 1 to 5) x += y + 1; x"),
+        Obj::from(20)
+    );
+    assert_eq!(
+        simple_eval("sum (for (y : 1 to 5) yield y + 1)"),
+        Obj::from(20)
+    );
+    assert_eq!(
+        simple_eval("x := 0; for (i, y :: 1 to 5) x += i * y; x"),
+        Obj::from(40)
+    );
+    assert_eq!(
+        simple_eval("sum (for (i, x :: 1 to 5) yield i * x)"),
+        Obj::from(40)
+    );
+    assert_eq!(
+        simple_eval("x := 0; for (y := 5) x += y + 1; x"),
+        Obj::from(6)
+    );
 }
 
 #[test]
 fn function_stuff() {
-    assert_eq!(simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"), Obj::from("253253"));
+    assert_eq!(
+        simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"),
+        Obj::from("253253")
+    );
 }

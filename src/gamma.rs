@@ -53,4 +53,3 @@ pub fn gamma(x: f64) -> f64 {
         s * TWO_SQRT_E_OVER_PI * ((x - 0.5 + GAMMA_R) / f64::consts::E).powf(x - 0.5)
     }
 }
-

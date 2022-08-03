@@ -1,44 +1,54 @@
-#[macro_use] extern crate lazy_static;
+#[macro_use]
+extern crate lazy_static;
 
 // TODO: isolate
 use std::fs;
 use std::io;
-use std::io::{Read, BufRead, Write};
+use std::io::{BufRead, Read, Write};
 
-use std::cmp::Ordering;
-use std::fmt;
-use std::fmt::Display;
-use std::fmt::Debug;
-use std::rc::Rc;
-use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::fmt::Debug;
+use std::fmt::Display;
+use std::rc::Rc;
 
 use regex::Regex;
 
-use num::complex::Complex64;
 use num::bigint::{BigInt, Sign};
-use num::ToPrimitive;
+use num::complex::Complex64;
 use num::Signed;
+use num::ToPrimitive;
 
-#[cfg(target_arch="wasm32")]
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-mod nnum;
 mod gamma;
+mod nnum;
 
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
 
 #[derive(Debug, Clone, Copy)]
-pub enum Assoc { Left, Right }
+pub enum Assoc {
+    Left,
+    Right,
+}
 #[derive(Debug, Clone, Copy)]
 pub struct Precedence(f64, Assoc);
 impl Precedence {
-    fn zero() -> Self { Precedence(0.0, Assoc::Left) }
+    fn zero() -> Self {
+        Precedence(0.0, Assoc::Left)
+    }
 }
 
 #[derive(Debug)]
-enum Few<T> { Zero, One(T), Many(Vec<T>), }
+enum Few<T> {
+    Zero,
+    One(T),
+    Many(Vec<T>),
+}
 fn few<T>(mut xs: Vec<T>) -> Few<T> {
     match xs.len() {
         0 => Few::Zero,
@@ -56,7 +66,12 @@ impl<T> Few<T> {
     }
 }
 #[derive(Debug)]
-enum Few2<T> { Zero, One(T), Two(T, T), Many(Vec<T>), }
+enum Few2<T> {
+    Zero,
+    One(T),
+    Two(T, T),
+    Many(Vec<T>),
+}
 fn few2<T>(mut xs: Vec<T>) -> Few2<T> {
     match xs.len() {
         0 => Few2::Zero,
@@ -77,7 +92,13 @@ impl<T> Few2<T> {
 }
 
 #[derive(Debug)]
-enum Few3<T> { Zero, One(T), Two(T, T), Three(T, T, T), Many(Vec<T>), }
+enum Few3<T> {
+    Zero,
+    One(T),
+    Two(T, T),
+    Three(T, T, T),
+    Many(Vec<T>),
+}
 fn few3<T>(mut xs: Vec<T>) -> Few3<T> {
     match xs.len() {
         0 => Few3::Zero,
@@ -113,7 +134,7 @@ pub enum Obj {
 // https://doc.rust-lang.org/reference/items/traits.html#object-safety
 //
 // more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
-pub trait Stream: Iterator<Item=Obj> + Display + Debug {
+pub trait Stream: Iterator<Item = Obj> + Display + Debug {
     fn clone_box(&self) -> Box<dyn Stream>;
     // for now this means length or infinity, not sure yet
     fn len(&self) -> Option<usize> {
@@ -131,14 +152,20 @@ pub trait Stream: Iterator<Item=Obj> + Display + Debug {
         if i >= 0 {
             let mut it = self.clone_box();
             while let Some(e) = it.next() {
-                if i == 0 { return Some(e) }
+                if i == 0 {
+                    return Some(e);
+                }
                 i -= 1;
             }
             None
         } else {
             let mut v = self.force()?;
             let i2 = (i + (v.len() as isize)) as usize;
-            if i2 < v.len() { Some(v.swap_remove(i2)) } else { None }
+            if i2 < v.len() {
+                Some(v.swap_remove(i2))
+            } else {
+                None
+            }
         }
     }
     fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
@@ -148,7 +175,7 @@ pub trait Stream: Iterator<Item=Obj> + Display + Debug {
                 let mut it = self.clone_box();
                 for _ in 0..lo {
                     if it.next().is_none() {
-                        return Some(Seq::Stream(Rc::from(it)))
+                        return Some(Seq::Stream(Rc::from(it)));
                     }
                 }
                 Some(Seq::Stream(Rc::from(it)))
@@ -159,13 +186,13 @@ pub trait Stream: Iterator<Item=Obj> + Display + Debug {
                 for _ in 0..lo {
                     match it.next() {
                         Some(_) => {}
-                        None => break
+                        None => break,
                     }
                 }
                 for _ in lo..hi {
                     match it.next() {
                         Some(x) => v.push(x),
-                        None => break
+                        None => break,
                     }
                 }
                 Some(Seq::List(Rc::new(v)))
@@ -187,7 +214,9 @@ pub trait Stream: Iterator<Item=Obj> + Display + Debug {
 struct Repeat(Obj);
 impl Iterator for Repeat {
     type Item = Obj;
-    fn next(&mut self) -> Option<Obj> { Some(self.0.clone()) }
+    fn next(&mut self) -> Option<Obj> {
+        Some(self.0.clone())
+    }
 }
 impl Display for Repeat {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -195,24 +224,50 @@ impl Display for Repeat {
     }
 }
 impl Stream for Repeat {
-    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
-    fn len(&self) -> Option<usize> { None }
-    fn force(&self) -> Option<Vec<Obj>> { None }
-    fn pythonic_index_isize(&self, _: isize) -> Option<Obj> { Some(self.0.clone()) }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+    fn len(&self) -> Option<usize> {
+        None
+    }
+    fn force(&self) -> Option<Vec<Obj>> {
+        None
+    }
+    fn pythonic_index_isize(&self, _: isize) -> Option<Obj> {
+        Some(self.0.clone())
+    }
     fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
         let lo = match lo {
-            Some(x) => if x < 0 { x - 1 } else { x }, None => 0
+            Some(x) => {
+                if x < 0 {
+                    x - 1
+                } else {
+                    x
+                }
+            }
+            None => 0,
         };
         let hi = match hi {
-            Some(x) => if x < 0 { x - 1 } else { x }, None => -1
+            Some(x) => {
+                if x < 0 {
+                    x - 1
+                } else {
+                    x
+                }
+            }
+            None => -1,
         };
         Some(match (lo < 0, hi < 0) {
-            (true, true) | (false, false) => Seq::List(Rc::new(vec![self.0.clone(); (hi - lo).max(0) as usize])),
+            (true, true) | (false, false) => {
+                Seq::List(Rc::new(vec![self.0.clone(); (hi - lo).max(0) as usize]))
+            }
             (true, false) => Seq::List(Rc::new(Vec::new())),
             (false, true) => Seq::Stream(Rc::new(self.clone())),
         })
     }
-    fn reversed(&self) -> Option<Seq> { Some(Seq::Stream(Rc::new(self.clone()))) }
+    fn reversed(&self) -> Option<Seq> {
+        Some(Seq::Stream(Rc::new(self.clone())))
+    }
 }
 #[derive(Debug, Clone)]
 // just gonna say this has to be nonempty
@@ -231,9 +286,15 @@ impl Display for Cycle {
     }
 }
 impl Stream for Cycle {
-    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
-    fn len(&self) -> Option<usize> { None }
-    fn force(&self) -> Option<Vec<Obj>> { None }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+    fn len(&self) -> Option<usize> {
+        None
+    }
+    fn force(&self) -> Option<Vec<Obj>> {
+        None
+    }
     fn pythonic_index_isize(&self, i: isize) -> Option<Obj> {
         Some(self.0[(self.1 as isize + i).rem_euclid(self.0.len() as isize) as usize].clone())
     }
@@ -273,19 +334,25 @@ impl Display for Range {
     }
 }
 impl Stream for Range {
-    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
     fn len(&self) -> Option<usize> {
         let Range(start, end, step) = self;
         let end = end.as_ref()?;
         match step.sign() {
             // weird
-            Sign::NoSign => if start < end { None } else { Some(0) },
+            Sign::NoSign => {
+                if start < end {
+                    None
+                } else {
+                    Some(0)
+                }
+            }
             Sign::Minus => {
                 ((end - start - step + 1usize).max(BigInt::from(0)) / (-step)).to_usize()
             }
-            Sign::Plus => {
-                ((end - start + step - 1usize).max(BigInt::from(0)) / step).to_usize()
-            }
+            Sign::Plus => ((end - start + step - 1usize).max(BigInt::from(0)) / step).to_usize(),
         }
     }
 }
@@ -302,11 +369,15 @@ impl Iterator for Permutations {
         // last increase, and the largest index of something larger than it
         let mut up = None;
         for i in 0..(v.len() - 1) {
-            if v[i] < v[i+1] {
-                up = Some((i, i+1));
+            if v[i] < v[i + 1] {
+                up = Some((i, i + 1));
             } else {
                 match &mut up {
-                    Some((inc, linc)) => if v[i+1] > v[*inc] { *linc = i+1; }
+                    Some((inc, linc)) => {
+                        if v[i + 1] > v[*inc] {
+                            *linc = i + 1;
+                        }
+                    }
                     None => {}
                 }
             }
@@ -314,9 +385,11 @@ impl Iterator for Permutations {
         match up {
             Some((inc, linc)) => {
                 v.swap(inc, linc);
-                v[inc+1..].reverse();
+                v[inc + 1..].reverse();
             }
-            None => { self.1 = None; }
+            None => {
+                self.1 = None;
+            }
         }
         Some(ret)
     }
@@ -327,7 +400,9 @@ impl Display for Permutations {
     }
 }
 impl Stream for Permutations {
-    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -343,10 +418,10 @@ impl Iterator for Combinations {
             if v[i] + 1 < last {
                 // found the next
                 v[i] += 1;
-                for j in i+1..v.len() {
-                    v[j] = v[j-1] + 1;
+                for j in i + 1..v.len() {
+                    v[j] = v[j - 1] + 1;
                 }
-                return Some(ret)
+                return Some(ret);
             }
             last -= 1;
         }
@@ -360,7 +435,9 @@ impl Display for Combinations {
     }
 }
 impl Stream for Combinations {
-    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -375,10 +452,25 @@ pub enum Seq {
 
 // more like an arbitrary predicate. want to add subscripted types to this later
 #[derive(Debug, Clone)]
-pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Vector, Bytes, Stream, Func, Type, Any }
+pub enum ObjType {
+    Null,
+    Int,
+    Float,
+    Complex,
+    Number,
+    String,
+    List,
+    Dict,
+    Vector,
+    Bytes,
+    Stream,
+    Func,
+    Type,
+    Any,
+}
 
 impl ObjType {
-    fn name(&self) -> String {
+    pub fn name(&self) -> String {
         match self {
             ObjType::Null => "nulltype",
             ObjType::Int => "int",
@@ -394,11 +486,12 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
-        }.to_string()
+        }
+        .to_string()
     }
 }
 
-fn type_of(obj: &Obj) -> ObjType {
+pub fn type_of(obj: &Obj) -> ObjType {
     match obj {
         Obj::Null => ObjType::Null,
         Obj::Num(NNum::Int(_)) => ObjType::Int,
@@ -440,37 +533,45 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 Ok(x) => Ok(Obj::from(x)),
                 Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
             },
-            _ => Err(NErr::type_error("int: expected number or string".to_string())),
-        }
+            _ => Err(NErr::type_error(
+                "int: expected number or string".to_string(),
+            )),
+        },
         ObjType::Float => match arg {
             Obj::Num(n) => Ok(Obj::from(to_f64_ok(&n)?)),
             Obj::Seq(Seq::String(s)) => match s.parse::<f64>() {
                 Ok(x) => Ok(Obj::from(x)),
                 Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
             },
-            _ => Err(NErr::type_error("float: expected number or string".to_string())),
-        }
+            _ => Err(NErr::type_error(
+                "float: expected number or string".to_string(),
+            )),
+        },
         ObjType::List => match arg {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
-            mut arg => Ok(Obj::list(mut_obj_into_iter(&mut arg, "list conversion")?.collect())),
-        }
+            mut arg => Ok(Obj::list(
+                mut_obj_into_iter(&mut arg, "list conversion")?.collect(),
+            )),
+        },
         ObjType::String => Ok(Obj::from(format!("{}", arg))),
         ObjType::Bytes => match arg {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
                 mut_obj_into_iter(&mut arg, "bytes conversion")?
-                .map(|e| match e {
-                    Obj::Num(n) => n.to_u8().ok_or(NErr::value_error(format!("can't to byte: {}", n))),
-                    x => Err(NErr::value_error(format!("can't to byte: {}", x))),
-                })
-                .collect::<NRes<Vec<u8>>>()?
+                    .map(|e| match e {
+                        Obj::Num(n) => n
+                            .to_u8()
+                            .ok_or(NErr::value_error(format!("can't to byte: {}", n))),
+                        x => Err(NErr::value_error(format!("can't to byte: {}", x))),
+                    })
+                    .collect::<NRes<Vec<u8>>>()?,
             )))),
-        }
+        },
         ObjType::Vector => match arg {
             Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
             mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?.map(Ok)),
-        }
+        },
         ObjType::Dict => match arg {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
             // nonsensical but maybe this is something some day
@@ -479,19 +580,24 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                     Rc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
                     */
             mut arg => Ok(Obj::dict(
-                        mut_obj_into_iter(&mut arg, "dict conversion")?
-                        .map(|p| match p {
-                            // TODO not taking but blech
-                            Obj::Seq(Seq::List(xs)) => match xs.as_slice() {
-                                [k, v] => Ok((to_key(k.clone())?, v.clone())),
-                                _ => Err(NErr::type_error("dict conversion: not pair".to_string())),
-                            }
-                            _ => Err(NErr::type_error("dict conversion: not list".to_string())),
-                        }).collect::<NRes<HashMap<ObjKey, Obj>>>()?, None)),
-        }
+                mut_obj_into_iter(&mut arg, "dict conversion")?
+                    .map(|p| match p {
+                        // TODO not taking but blech
+                        Obj::Seq(Seq::List(xs)) => match xs.as_slice() {
+                            [k, v] => Ok((to_key(k.clone())?, v.clone())),
+                            _ => Err(NErr::type_error("dict conversion: not pair".to_string())),
+                        },
+                        _ => Err(NErr::type_error("dict conversion: not list".to_string())),
+                    })
+                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                None,
+            )),
+        },
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
         // TODO: complex, number, vector, bytes
-        _ => Err(NErr::type_error("that type can't be called (maybe not implemented)".to_string())),
+        _ => Err(NErr::type_error(
+            "that type can't be called (maybe not implemented)".to_string(),
+        )),
     }
 }
 
@@ -502,7 +608,10 @@ fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
         Obj::Func(Func::Type(t), _) => Ok(t.clone()),
         // TODO: possibly intelligently convert some objects to types?
         // e.g. "heterogenous tuples"
-        a => Err(NErr::type_error(format!("can't convert {} to type for {}", a, msg))),
+        a => Err(NErr::type_error(format!(
+            "can't convert {} to type for {}",
+            a, msg
+        ))),
     }
 }
 
@@ -532,34 +641,48 @@ impl Obj {
         }
     }
 
-    fn list(n: Vec<Obj>) -> Self { Obj::Seq(Seq::List(Rc::new(n))) }
+    fn list(n: Vec<Obj>) -> Self {
+        Obj::Seq(Seq::List(Rc::new(n)))
+    }
     fn dict(m: HashMap<ObjKey, Obj>, def: Option<Obj>) -> Self {
         Obj::Seq(Seq::Dict(Rc::new(m), def.map(Box::new)))
     }
 }
 
 impl From<bool> for Obj {
-    fn from(n: bool) -> Self { Obj::Num(NNum::iverson(n)) }
+    fn from(n: bool) -> Self {
+        Obj::Num(NNum::iverson(n))
+    }
 }
 impl From<char> for Obj {
-    fn from(n: char) -> Self { Obj::Seq(Seq::String(Rc::new(n.to_string()))) }
+    fn from(n: char) -> Self {
+        Obj::Seq(Seq::String(Rc::new(n.to_string())))
+    }
 }
 impl From<&str> for Obj {
-    fn from(n: &str) -> Self { Obj::Seq(Seq::String(Rc::new(n.to_string()))) }
+    fn from(n: &str) -> Self {
+        Obj::Seq(Seq::String(Rc::new(n.to_string())))
+    }
 }
 impl From<String> for Obj {
-    fn from(n: String) -> Self { Obj::Seq(Seq::String(Rc::new(n))) }
+    fn from(n: String) -> Self {
+        Obj::Seq(Seq::String(Rc::new(n)))
+    }
 }
 impl From<Vec<Obj>> for Obj {
-    fn from(n: Vec<Obj>) -> Self { Obj::Seq(Seq::List(Rc::new(n))) }
+    fn from(n: Vec<Obj>) -> Self {
+        Obj::Seq(Seq::List(Rc::new(n)))
+    }
 }
 
 macro_rules! forward_from {
     ($ty:ident) => {
         impl From<$ty> for Obj {
-            fn from(n: $ty) -> Self { Obj::Num(NNum::from(n)) }
+            fn from(n: $ty) -> Self {
+                Obj::Num(NNum::from(n))
+            }
         }
-    }
+    };
 }
 forward_from!(BigInt);
 // forward_from!(i32);
@@ -568,15 +691,17 @@ forward_from!(usize);
 forward_from!(Complex64);
 
 impl From<usize> for ObjKey {
-    fn from(n: usize) -> Self { ObjKey::Num(NTotalNum(NNum::from(n))) }
+    fn from(n: usize) -> Self {
+        ObjKey::Num(NTotalNum(NNum::from(n)))
+    }
 }
 
 impl PartialEq for Obj {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Obj::Null     , Obj::Null     ) => true,
-            (Obj::Num   (a), Obj::Num   (b)) => a == b,
-            (Obj::Seq   (a), Obj::Seq   (b)) => a == b,
+            (Obj::Null, Obj::Null) => true,
+            (Obj::Num(a), Obj::Num(b)) => a == b,
+            (Obj::Seq(a), Obj::Seq(b)) => a == b,
             _ => false,
         }
     }
@@ -585,11 +710,11 @@ impl PartialEq for Obj {
 impl PartialEq for Seq {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Seq::List  (a), Seq::List  (b)) => a == b,
-            (Seq::Dict(a,_), Seq::Dict(b,_)) => a == b,
+            (Seq::List(a), Seq::List(b)) => a == b,
+            (Seq::Dict(a, _), Seq::Dict(b, _)) => a == b,
             (Seq::String(a), Seq::String(b)) => a == b,
             (Seq::Vector(a), Seq::Vector(b)) => a == b,
-            (Seq::Bytes (a), Seq::Bytes (b)) => a == b,
+            (Seq::Bytes(a), Seq::Bytes(b)) => a == b,
             _ => false,
         }
     }
@@ -598,9 +723,9 @@ impl PartialEq for Seq {
 impl PartialOrd for Obj {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (Obj::Null     , Obj::Null     ) => Some(Ordering::Equal),
-            (Obj::Num   (a), Obj::Num   (b)) => a.partial_cmp(b),
-            (Obj::Seq   (a), Obj::Seq   (b)) => a.partial_cmp(b),
+            (Obj::Null, Obj::Null) => Some(Ordering::Equal),
+            (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b),
+            (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b),
             _ => None,
         }
     }
@@ -609,10 +734,10 @@ impl PartialOrd for Obj {
 impl PartialOrd for Seq {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (Seq::List  (a), Seq::List  (b)) => a.partial_cmp(b),
+            (Seq::List(a), Seq::List(b)) => a.partial_cmp(b),
             (Seq::String(a), Seq::String(b)) => a.partial_cmp(b),
             (Seq::Vector(a), Seq::Vector(b)) => a.partial_cmp(b),
-            (Seq::Bytes (a), Seq::Bytes (b)) => a.partial_cmp(b),
+            (Seq::Bytes(a), Seq::Bytes(b)) => a.partial_cmp(b),
             _ => None,
         }
     }
@@ -624,7 +749,8 @@ fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
 }
 */
 fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
-    n.clamp_to_usize().ok_or(NErr::value_error("bad number to usize".to_string()))
+    n.clamp_to_usize()
+        .ok_or(NErr::value_error("bad number to usize".to_string()))
 }
 fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
     match n {
@@ -633,10 +759,12 @@ fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
     }
 }
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
-    n.into_bigint().ok_or(NErr::value_error("bad number to int".to_string()))
+    n.into_bigint()
+        .ok_or(NErr::value_error("bad number to int".to_string()))
 }
 fn to_f64_ok(n: &NNum) -> NRes<f64> {
-    n.to_f64().ok_or(NErr::value_error("bad number to float".to_string()))
+    n.to_f64()
+        .ok_or(NErr::value_error("bad number to float".to_string()))
 }
 
 fn to_key(obj: Obj) -> NRes<ObjKey> {
@@ -645,20 +773,31 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(x))),
         Obj::Seq(Seq::String(x)) => Ok(ObjKey::String(x)),
         Obj::Seq(Seq::List(mut xs)) => Ok(ObjKey::List(Rc::new(
-                    mut_rc_vec_into_iter(&mut xs).map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
+            mut_rc_vec_into_iter(&mut xs)
+                .map(|e| to_key(e))
+                .collect::<NRes<Vec<ObjKey>>>()?,
+        ))),
         Obj::Seq(Seq::Dict(mut d, _)) => {
-            let mut pairs = mut_rc_hash_map_into_iter(&mut d).map(
-                |(k,v)| Ok((k,to_key(v)?))).collect::<NRes<Vec<(ObjKey,ObjKey)>>>()?;
+            let mut pairs = mut_rc_hash_map_into_iter(&mut d)
+                .map(|(k, v)| Ok((k, to_key(v)?)))
+                .collect::<NRes<Vec<(ObjKey, ObjKey)>>>()?;
             pairs.sort();
             Ok(ObjKey::Dict(Rc::new(pairs)))
         }
-        Obj::Seq(Seq::Vector(x)) => Ok(ObjKey::Vector(Rc::new(x.iter().map(|e| NTotalNum(e.clone())).collect()))),
+        Obj::Seq(Seq::Vector(x)) => Ok(ObjKey::Vector(Rc::new(
+            x.iter().map(|e| NTotalNum(e.clone())).collect(),
+        ))),
         Obj::Seq(Seq::Bytes(x)) => Ok(ObjKey::Bytes(x)),
-        Obj::Seq(Seq::Stream(s)) =>
-            Ok(ObjKey::List(Rc::new(
-                    s.force().ok_or(NErr::type_error("infinite stream as key".to_string()))?
-                    .into_iter().map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
-        Obj::Func(..) => Err(NErr::type_error("Using a function as a dictionary key isn't supported".to_string())),
+        Obj::Seq(Seq::Stream(s)) => Ok(ObjKey::List(Rc::new(
+            s.force()
+                .ok_or(NErr::type_error("infinite stream as key".to_string()))?
+                .into_iter()
+                .map(|e| to_key(e))
+                .collect::<NRes<Vec<ObjKey>>>()?,
+        ))),
+        Obj::Func(..) => Err(NErr::type_error(
+            "Using a function as a dictionary key isn't supported".to_string(),
+        )),
     }
 }
 
@@ -668,18 +807,31 @@ fn key_to_obj(key: ObjKey) -> Obj {
         ObjKey::Num(NTotalNum(x)) => Obj::Num(x),
         ObjKey::String(x) => Obj::Seq(Seq::String(x)),
         ObjKey::List(mut xs) => Obj::list(
-                mut_rc_vec_into_iter(&mut xs).map(
-                    |e| key_to_obj(e.clone())).collect::<Vec<Obj>>()),
+            mut_rc_vec_into_iter(&mut xs)
+                .map(|e| key_to_obj(e.clone()))
+                .collect::<Vec<Obj>>(),
+        ),
         ObjKey::Dict(mut d) => Obj::dict(
-                mut_rc_vec_into_iter(&mut d).map(
-                    |(k, v)| (k, key_to_obj(v))).collect::<HashMap<ObjKey,Obj>>(), None),
-        ObjKey::Vector(v) => Obj::Seq(Seq::Vector(Rc::new(v.iter().map(|x| x.0.clone()).collect()))),
+            mut_rc_vec_into_iter(&mut d)
+                .map(|(k, v)| (k, key_to_obj(v)))
+                .collect::<HashMap<ObjKey, Obj>>(),
+            None,
+        ),
+        ObjKey::Vector(v) => Obj::Seq(Seq::Vector(Rc::new(
+            v.iter().map(|x| x.0.clone()).collect(),
+        ))),
         ObjKey::Bytes(v) => Obj::Seq(Seq::Bytes(v)),
     }
 }
 
 #[derive(Clone)]
-pub enum FmtBase { Decimal, Binary, Octal, LowerHex, UpperHex }
+pub enum FmtBase {
+    Decimal,
+    Binary,
+    Octal,
+    LowerHex,
+    UpperHex,
+}
 
 #[derive(Clone)]
 pub struct MyFmtFlags {
@@ -690,10 +842,18 @@ pub struct MyFmtFlags {
 
 impl MyFmtFlags {
     pub fn new() -> MyFmtFlags {
-        MyFmtFlags { base: FmtBase::Decimal, repr: false, budget: usize::MAX }
+        MyFmtFlags {
+            base: FmtBase::Decimal,
+            repr: false,
+            budget: usize::MAX,
+        }
     }
     pub fn budgeted_repr(budget: usize) -> MyFmtFlags {
-        MyFmtFlags { base: FmtBase::Decimal, repr: true, budget }
+        MyFmtFlags {
+            base: FmtBase::Decimal,
+            repr: true,
+            budget,
+        }
     }
     fn deduct(&mut self, amt: usize) {
         if self.budget >= amt {
@@ -705,7 +865,9 @@ impl MyFmtFlags {
 }
 
 impl MyDisplay for NNum {
-    fn is_null(&self) -> bool { false }
+    fn is_null(&self) -> bool {
+        false
+    }
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         match flags.base {
             FmtBase::Decimal => write!(formatter, "{}", self),
@@ -717,7 +879,9 @@ impl MyDisplay for NNum {
     }
 }
 impl MyDisplay for NTotalNum {
-    fn is_null(&self) -> bool { false }
+    fn is_null(&self) -> bool {
+        false
+    }
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         self.0.fmt_with_mut(formatter, flags)
     }
@@ -732,12 +896,16 @@ fn write_string(s: &str, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags)
         write!(formatter, "{}", s)
     }
 }
-fn write_slice(v: &[impl MyDisplay], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+fn write_slice(
+    v: &[impl MyDisplay],
+    formatter: &mut dyn fmt::Write,
+    flags: &mut MyFmtFlags,
+) -> fmt::Result {
     let old_repr = flags.repr;
     flags.repr = true;
     // Regardless of budget, always fmt first and last
     match v {
-        [] => {},
+        [] => {}
         [only] => only.fmt_with_mut(formatter, flags)?,
         [first, rest @ .., last] => {
             first.fmt_with_mut(formatter, flags)?;
@@ -747,7 +915,7 @@ fn write_slice(v: &[impl MyDisplay], formatter: &mut dyn fmt::Write, flags: &mut
                     // TODO this has the "sometimes longer than what's omitted"
                     // property
                     write!(formatter, "..., ")?;
-                    break
+                    break;
                 }
                 x.fmt_with_mut(formatter, flags)?;
                 write!(formatter, ", ")?;
@@ -759,7 +927,11 @@ fn write_slice(v: &[impl MyDisplay], formatter: &mut dyn fmt::Write, flags: &mut
     Ok(())
 }
 
-fn write_pairs<'a,'b>(it: impl Iterator<Item=(&'a (impl MyDisplay + 'a), &'b (impl MyDisplay + 'b))>, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
+fn write_pairs<'a, 'b>(
+    it: impl Iterator<Item = (&'a (impl MyDisplay + 'a), &'b (impl MyDisplay + 'b))>,
+    formatter: &mut dyn fmt::Write,
+    flags: &mut MyFmtFlags,
+) -> fmt::Result {
     let old_repr = flags.repr;
     flags.repr = true;
     let mut started = false;
@@ -768,7 +940,7 @@ fn write_pairs<'a,'b>(it: impl Iterator<Item=(&'a (impl MyDisplay + 'a), &'b (im
             write!(formatter, ", ")?;
             if flags.budget == 0 {
                 write!(formatter, "...")?;
-                break
+                break;
             }
         }
         started = true;
@@ -786,8 +958,10 @@ fn write_bytes(s: &[u8], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags)
     flags.deduct(s.len());
     write!(formatter, "B[")?;
     match s {
-        [] => {},
-        [only] => { write!(formatter, "{}", only)?; }
+        [] => {}
+        [only] => {
+            write!(formatter, "{}", only)?;
+        }
         [first, rest @ .., last] => {
             write!(formatter, "{},", first)?;
             for x in rest {
@@ -795,7 +969,7 @@ fn write_bytes(s: &[u8], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags)
                     // TODO this has the "sometimes longer than what's omitted"
                     // property
                     write!(formatter, "..., ")?;
-                    break
+                    break;
                 }
                 write!(formatter, "{},", x)?;
             }
@@ -811,7 +985,9 @@ trait MyDisplay {
 }
 
 impl MyDisplay for Obj {
-    fn is_null(&self) -> bool { self == &Obj::Null } // thonk
+    fn is_null(&self) -> bool {
+        self == &Obj::Null
+    } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         flags.deduct(1);
         match self {
@@ -849,9 +1025,7 @@ impl MyDisplay for Obj {
                 // FIXME
                 write!(formatter, "Stream({})", x)
             }
-            Obj::Seq(Seq::Bytes(xs)) => {
-                write_bytes(xs.as_slice(), formatter, flags)
-            }
+            Obj::Seq(Seq::Bytes(xs)) => write_bytes(xs.as_slice(), formatter, flags),
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
         }
     }
@@ -885,7 +1059,9 @@ impl Display for ObjKey {
 
 // FIXME massive copypasta
 impl MyDisplay for ObjKey {
-    fn is_null(&self) -> bool { self == &ObjKey::Null } // thonk
+    fn is_null(&self) -> bool {
+        self == &ObjKey::Null
+    } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         flags.deduct(1);
         match self {
@@ -907,12 +1083,9 @@ impl MyDisplay for ObjKey {
                 write_slice(xs.as_slice(), formatter, flags)?;
                 write!(formatter, "]")
             }
-            ObjKey::Bytes(xs) => {
-                write_bytes(xs.as_slice(), formatter, flags)
-            }
+            ObjKey::Bytes(xs) => write_bytes(xs.as_slice(), formatter, flags),
         }
     }
-
 }
 
 impl ObjKey {
@@ -1006,7 +1179,7 @@ fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
     }
 }
 
-fn obj_to_cloning_iter<'a,'b>(obj: &'a Obj, purpose: &'b str) -> NRes<ObjToCloningIter<'a>> {
+fn obj_to_cloning_iter<'a, 'b>(obj: &'a Obj, purpose: &'b str) -> NRes<ObjToCloningIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(seq_to_cloning_iter(s)),
         _ => Err(NErr::type_error(format!("{}; not iterable", purpose))),
@@ -1059,10 +1232,13 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     }
 }
 
-fn mut_obj_into_iter<'a,'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
+fn mut_obj_into_iter<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
-        e => Err(NErr::type_error(format!("{}: not iterable: {}", purpose, e)))
+        e => Err(NErr::type_error(format!(
+            "{}: not iterable: {}",
+            purpose, e
+        ))),
     }
 }
 
@@ -1092,7 +1268,10 @@ fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
     }
 }
 
-fn mut_obj_into_iter_pairs<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIterPairs<'a>> {
+fn mut_obj_into_iter_pairs<'a, 'b>(
+    obj: &'a mut Obj,
+    purpose: &'b str,
+) -> NRes<MutObjIntoIterPairs<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter_pairs(s)),
         _ => Err(NErr::type_error(format!("{}: not iterable", purpose))),
@@ -1104,12 +1283,37 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 
     fn next(&mut self) -> Option<(ObjKey, Obj)> {
         match self {
-            MutObjIntoIterPairs::List(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), o)) }
+            MutObjIntoIterPairs::List(i, it) => {
+                let o = it.next()?;
+                let j = *i;
+                *i += 1;
+                Some((ObjKey::from(j), o))
+            }
             MutObjIntoIterPairs::Dict(it) => it.next(),
-            MutObjIntoIterPairs::String(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
-            MutObjIntoIterPairs::Vector(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::Num(o))) }
-            MutObjIntoIterPairs::Bytes(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o as usize))) }
-            MutObjIntoIterPairs::Stream(i, s) => { let o = s.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
+            MutObjIntoIterPairs::String(i, it) => {
+                let o = it.next()?;
+                let j = *i;
+                *i += 1;
+                Some((ObjKey::from(j), Obj::from(o)))
+            }
+            MutObjIntoIterPairs::Vector(i, it) => {
+                let o = it.next()?;
+                let j = *i;
+                *i += 1;
+                Some((ObjKey::from(j), Obj::Num(o)))
+            }
+            MutObjIntoIterPairs::Bytes(i, it) => {
+                let o = it.next()?;
+                let j = *i;
+                *i += 1;
+                Some((ObjKey::from(j), Obj::from(o as usize)))
+            }
+            MutObjIntoIterPairs::Stream(i, s) => {
+                let o = s.next()?;
+                let j = *i;
+                *i += 1;
+                Some((ObjKey::from(j), Obj::from(o)))
+            }
         }
     }
 }
@@ -1117,11 +1321,11 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 impl Seq {
     fn len(self) -> Option<usize> {
         match self {
-            Seq::List(d)    => Some(d.len()),
-            Seq::String(d)  => Some(d.len()),
+            Seq::List(d) => Some(d.len()),
+            Seq::String(d) => Some(d.len()),
             Seq::Dict(d, _) => Some(d.len()),
-            Seq::Vector(v)  => Some(v.len()),
-            Seq::Bytes(v)   => Some(v.len()),
+            Seq::Vector(v) => Some(v.len()),
+            Seq::Bytes(v) => Some(v.len()),
             Seq::Stream(v) => v.len(),
         }
     }
@@ -1147,7 +1351,10 @@ impl Seq {
                 Rc::make_mut(&mut v).reverse();
                 Ok(Seq::Bytes(v))
             }
-            Seq::Stream(s) => s.reversed().ok_or(NErr::type_error(format!("can't reverse this stream {:?}", s))),
+            Seq::Stream(s) => s.reversed().ok_or(NErr::type_error(format!(
+                "can't reverse this stream {:?}",
+                s
+            ))),
         }
     }
 }
@@ -1175,18 +1382,40 @@ pub enum NErr {
 }
 
 impl NErr {
-    fn argument_error(s: String) -> NErr { NErr::Just(format!("argument error: {}", s)) }
-    fn index_error   (s: String) -> NErr { NErr::Just(format!("index error: {}"   , s)) }
-    fn key_error     (s: String) -> NErr { NErr::Just(format!("key error: {}"     , s)) }
-    fn empty_error   (s: String) -> NErr { NErr::Just(format!("empty error: {}"   , s)) }
-    fn name_error    (s: String) -> NErr { NErr::Just(format!("name error: {}"    , s)) }
-    fn syntax_error  (s: String) -> NErr { NErr::Just(format!("syntax error: {}"  , s)) }
-    fn type_error    (s: String) -> NErr { NErr::Just(format!("type error: {}"    , s)) }
-    fn value_error   (s: String) -> NErr { NErr::Just(format!("value error: {}"   , s)) }
-    fn io_error      (s: String) -> NErr { NErr::Just(format!("io error: {}"      , s)) }
-    fn assert_error  (s: String) -> NErr { NErr::Just(format!("assert error: {}"  , s)) }
+    fn argument_error(s: String) -> NErr {
+        NErr::Just(format!("argument error: {}", s))
+    }
+    fn index_error(s: String) -> NErr {
+        NErr::Just(format!("index error: {}", s))
+    }
+    fn key_error(s: String) -> NErr {
+        NErr::Just(format!("key error: {}", s))
+    }
+    fn empty_error(s: String) -> NErr {
+        NErr::Just(format!("empty error: {}", s))
+    }
+    fn name_error(s: String) -> NErr {
+        NErr::Just(format!("name error: {}", s))
+    }
+    fn syntax_error(s: String) -> NErr {
+        NErr::Just(format!("syntax error: {}", s))
+    }
+    fn type_error(s: String) -> NErr {
+        NErr::Just(format!("type error: {}", s))
+    }
+    fn value_error(s: String) -> NErr {
+        NErr::Just(format!("value error: {}", s))
+    }
+    fn io_error(s: String) -> NErr {
+        NErr::Just(format!("io error: {}", s))
+    }
+    fn assert_error(s: String) -> NErr {
+        NErr::Just(format!("assert error: {}", s))
+    }
 
-    fn generic_argument_error() -> NErr { NErr::Just("unrecognized argument types".to_string()) }
+    fn generic_argument_error() -> NErr {
+        NErr::Just("unrecognized argument types".to_string())
+    }
 }
 
 fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
@@ -1340,7 +1569,7 @@ impl Display for Func {
     }
 }
 
-pub trait Builtin : Debug {
+pub trait Builtin: Debug {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
     // Used for builtins to identify each other, since comparing pointers is bad (?)
@@ -1351,18 +1580,32 @@ pub trait Builtin : Debug {
         None
     }
 
-    fn can_refer(&self) -> bool { false }
+    fn can_refer(&self) -> bool {
+        false
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ComparisonOperator {
     name: String, // will be "illegal" for chained operators
     chained: Vec<Func>,
-    accept: fn(Ordering) -> bool,
+    accept: fn(&Obj, &Obj) -> NRes<bool>,
+}
+impl Debug for ComparisonOperator {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            fmt,
+            concat!(
+                stringify!($name),
+                " {{ name: {:?}, chained: {:?}, accept: {:?} }}"
+            ),
+            self.name, self.chained, self.accept as usize
+        )
+    }
 }
 
 impl ComparisonOperator {
-    fn of(name: &str, accept: fn(Ordering) -> bool) -> ComparisonOperator {
+    fn of(name: &str, accept: fn(&Obj, &Obj) -> NRes<bool>) -> ComparisonOperator {
         ComparisonOperator {
             name: name.to_string(),
             chained: Vec::new(),
@@ -1373,29 +1616,41 @@ impl ComparisonOperator {
 
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
-        (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare nums {:?} and {:?}", a, b))),
-        (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!("Can't compare seqs {:?} and {:?}", a, b))),
-        _ => Err(NErr::type_error(format!("Can't compare {:?} and {:?}", aa, bb))),
+        (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
+            "Can't compare nums {:?} and {:?}",
+            a, b
+        ))),
+        (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
+            "Can't compare seqs {:?} and {:?}",
+            a, b
+        ))),
+        _ => Err(NErr::type_error(format!(
+            "Can't compare {:?} and {:?}",
+            aa, bb
+        ))),
     }
 }
 
-fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj{
-    Obj::Func(Func::PartialApp2(
-        Box::new(Func::Builtin(Rc::new(f.clone()))),
-        Box::new(arg)
-    ), Precedence::zero())
+fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj {
+    Obj::Func(
+        Func::PartialApp2(Box::new(Func::Builtin(Rc::new(f.clone()))), Box::new(arg)),
+        Precedence::zero(),
+    )
 }
 
 impl Builtin for ComparisonOperator {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             match few(args) {
-                Few::Zero => Err(NErr::argument_error(format!("Comparison operator {:?} needs 2+ args", self.name))),
+                Few::Zero => Err(NErr::argument_error(format!(
+                    "Comparison operator {:?} needs 2+ args",
+                    self.name
+                ))),
                 Few::One(arg) => Ok(clone_and_part_app_2(self, arg)),
                 Few::Many(args) => {
-                    for i in 0 .. args.len() - 1 {
-                        if !(self.accept)(ncmp(&args[i], &args[i+1])?) {
-                            return Ok(Obj::from(false))
+                    for i in 0..args.len() - 1 {
+                        if !(self.accept)(&args[i], &args[i + 1])? {
+                            return Ok(Obj::from(false));
                         }
                     }
                     Ok(Obj::from(true))
@@ -1403,38 +1658,45 @@ impl Builtin for ComparisonOperator {
             }
         } else {
             if self.chained.len() + 2 == args.len() {
-                if !(self.accept)(ncmp(&args[0], &args[1])?) {
-                    return Ok(Obj::from(false))
+                if !(self.accept)(&args[0], &args[1])? {
+                    return Ok(Obj::from(false));
                 }
-                for i in 0 .. self.chained.len() {
-                    let res = self.chained[i].run(env, vec![args[i+1].clone(), args[i+2].clone()])?;
+                for i in 0..self.chained.len() {
+                    let res =
+                        self.chained[i].run(env, vec![args[i + 1].clone(), args[i + 2].clone()])?;
                     if !res.truthy() {
-                        return Ok(res)
+                        return Ok(res);
                     }
                 }
                 Ok(Obj::from(true))
             } else {
-                Err(NErr::argument_error(format!("Chained comparison operator got the wrong number of args")))
+                Err(NErr::argument_error(format!(
+                    "Chained comparison operator got the wrong number of args"
+                )))
             }
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                other_name @ ("==" | "!=" | "<" | ">" | "<=" | ">=") => Some(Func::Builtin(Rc::new(ComparisonOperator {
-                    name: format!("{},{}", self.name, other_name),
-                    chained: {
-                        let mut k = self.chained.clone();
-                        k.push(Func::clone(other));
-                        k
-                    },
-                    accept: self.accept,
-                }))),
+                other_name @ ("==" | "!=" | "<" | ">" | "<=" | ">=") => {
+                    Some(Func::Builtin(Rc::new(ComparisonOperator {
+                        name: format!("{},{}", self.name, other_name),
+                        chained: {
+                            let mut k = self.chained.clone();
+                            k.push(Func::clone(other));
+                            k
+                        },
+                        accept: self.accept,
+                    })))
+                }
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1450,7 +1712,11 @@ impl Builtin for TilBuiltin {
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), BigInt::from(1))))))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                    n1,
+                    Some(n2),
+                    BigInt::from(1),
+                )))))
             }
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
@@ -1458,23 +1724,24 @@ impl Builtin for TilBuiltin {
                 let n3 = into_bigint_ok(c)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), n3)))))
             }
-            _ => Err(NErr::argument_error(format!("Bad args for til")))
+            _ => Err(NErr::argument_error(format!("Bad args for til"))),
         }
     }
 
-    fn builtin_name(&self) -> &str { "til" }
+    fn builtin_name(&self) -> &str {
+        "til"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "by" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 struct ToBuiltin {}
@@ -1486,27 +1753,41 @@ impl Builtin for ToBuiltin {
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2 + 1usize), BigInt::from(1))))))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                    n1,
+                    Some(n2 + 1usize),
+                    BigInt::from(1),
+                )))))
             }
             Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, a), // sugar lmao
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
                 let n3 = into_bigint_ok(c)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(if n3.is_negative() { n2 - 1usize } else { n2 + 1usize }), n3)))))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                    n1,
+                    Some(if n3.is_negative() {
+                        n2 - 1usize
+                    } else {
+                        n2 + 1usize
+                    }),
+                    n3,
+                )))))
             }
-            _ => Err(NErr::argument_error(format!("Bad args for to")))
+            _ => Err(NErr::argument_error(format!("Bad args for to"))),
         }
     }
 
-    fn builtin_name(&self) -> &str { "to" }
+    fn builtin_name(&self) -> &str {
+        "to"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "by" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1530,7 +1811,9 @@ impl Builtin for Zip {
                         (Obj::Func(f, _), None) => {
                             func = Some(f.clone());
                         }
-                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error("zip: more than one function".to_string()))?,
+                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
+                            "zip: more than one function".to_string(),
+                        ))?,
                         (arg, _) => iterators.push(mut_obj_into_iter(arg, "zip")?),
                     }
                 }
@@ -1549,14 +1832,16 @@ impl Builtin for Zip {
         }
     }
 
-    fn builtin_name(&self) -> &str { "zip" }
+    fn builtin_name(&self) -> &str {
+        "zip"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "zip" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1567,7 +1852,11 @@ impl Builtin for Zip {
 struct CartesianProduct {}
 
 // surprisingly rare function where we really can't consume the iterators
-fn cartesian_foreach(acc: &mut Vec<Obj>, seqs: &[Seq], f: &mut impl FnMut(&Vec<Obj>) -> NRes<()>) -> NRes<()> {
+fn cartesian_foreach(
+    acc: &mut Vec<Obj>,
+    seqs: &[Seq],
+    f: &mut impl FnMut(&Vec<Obj>) -> NRes<()>,
+) -> NRes<()> {
     match seqs {
         [] => f(acc)?,
         [a, rest @ ..] => {
@@ -1595,9 +1884,13 @@ impl Builtin for CartesianProduct {
                         Obj::Seq(s) => seqs.push(s),
                         Obj::Num(n) => match scalar {
                             None => scalar = Some(into_bigint_ok(n)?),
-                            Some(_) => Err(NErr::argument_error("cartesian product: more than one integer".to_string()))?,
-                        }
-                        _ => Err(NErr::argument_error("cartesian product: non-sequence non-integer".to_string()))?,
+                            Some(_) => Err(NErr::argument_error(
+                                "cartesian product: more than one integer".to_string(),
+                            ))?,
+                        },
+                        _ => Err(NErr::argument_error(
+                            "cartesian product: non-sequence non-integer".to_string(),
+                        ))?,
                     }
                 }
 
@@ -1621,20 +1914,24 @@ impl Builtin for CartesianProduct {
                         cartesian_foreach(&mut acc, seqs.as_slice(), &mut f)?;
                         Ok(Obj::list(ret))
                     }
-                    _ => Err(NErr::argument_error("cartesian product: bad combo of scalars and sequences".to_string()))?,
+                    _ => Err(NErr::argument_error(
+                        "cartesian product: bad combo of scalars and sequences".to_string(),
+                    ))?,
                 }
             }
         }
     }
 
-    fn builtin_name(&self) -> &str { "**" }
+    fn builtin_name(&self) -> &str {
+        "**"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "**" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1662,8 +1959,8 @@ impl Builtin for Fold {
                             Ok(cur)
                         }
                         None => Err(NErr::empty_error("fold: empty seq".to_string())),
-                    }
-                    _ => Err(NErr::type_error("fold: not callable".to_string()))
+                    },
+                    _ => Err(NErr::type_error("fold: not callable".to_string())),
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
@@ -1676,21 +1973,23 @@ impl Builtin for Fold {
                         }
                         Ok(cur)
                     }
-                    _ => Err(NErr::type_error("fold: not callable".to_string()))
+                    _ => Err(NErr::type_error("fold: not callable".to_string())),
                 }
             }
             Few3::Many(_) => Err(NErr::argument_error("fold: too many args".to_string())),
         }
     }
 
-    fn builtin_name(&self) -> &str { "fold" }
+    fn builtin_name(&self) -> &str {
+        "fold"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "from" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1703,23 +2002,32 @@ struct Replace {}
 impl Builtin for Replace {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
-            Few3::Three(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b)), Obj::Seq(Seq::String(c))) => {
+            Few3::Three(
+                Obj::Seq(Seq::String(a)),
+                Obj::Seq(Seq::String(b)),
+                Obj::Seq(Seq::String(c)),
+            ) => {
                 // rust's replacement syntax is $n or ${n} for nth group
-                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("replace: invalid regex: {}", e)))?;
+                let r = Regex::new(&b)
+                    .map_err(|e| NErr::value_error(format!("replace: invalid regex: {}", e)))?;
                 Ok(Obj::from(r.replace(&a, &*c).into_owned()))
             }
-            _ => Err(NErr::type_error("replace: must get three strings".to_string()))
+            _ => Err(NErr::type_error(
+                "replace: must get three strings".to_string(),
+            )),
         }
     }
 
-    fn builtin_name(&self) -> &str { "replace" }
+    fn builtin_name(&self) -> &str {
+        "replace"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "with" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1735,20 +2043,22 @@ impl Builtin for Parallel {
         for arg in args {
             match arg {
                 Obj::Func(f, _) => res.push(f),
-                _ => return Err(NErr::type_error("parallel: functions only".to_string()))
+                _ => return Err(NErr::type_error("parallel: functions only".to_string())),
             }
         }
         Ok(Obj::Func(Func::Parallel(res), Precedence::zero()))
     }
 
-    fn builtin_name(&self) -> &str { "***" }
+    fn builtin_name(&self) -> &str {
+        "***"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "***" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -1764,25 +2074,26 @@ impl Builtin for Fanout {
         for arg in args {
             match arg {
                 Obj::Func(f, _) => res.push(f),
-                _ => return Err(NErr::type_error("fanout: functions only".to_string()))
+                _ => return Err(NErr::type_error("fanout: functions only".to_string())),
             }
         }
         Ok(Obj::Func(Func::Fanout(res), Precedence::zero()))
     }
 
-    fn builtin_name(&self) -> &str { "&&&" }
+    fn builtin_name(&self) -> &str {
+        "&&&"
+    }
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 "&&&" => Some(Func::Builtin(Rc::new(self.clone()))),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Preposition(String);
@@ -1792,8 +2103,12 @@ impl Builtin for Preposition {
         Err(NErr::type_error(format!("{}: cannot call", self.0)))
     }
 
-    fn builtin_name(&self) -> &str { &self.0 }
-    fn can_refer(&self) -> bool { false }
+    fn builtin_name(&self) -> &str {
+        &self.0
+    }
+    fn can_refer(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -1808,10 +2123,17 @@ macro_rules! standard_three_part_debug {
     ($name:ident) => {
         impl Debug for $name {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-                write!(fmt, concat!(stringify!($name), " {{ name: {:?}, can_refer: {:?}, body: {:?} }}"), self.name, self.can_refer, self.body as usize)
+                write!(
+                    fmt,
+                    concat!(
+                        stringify!($name),
+                        " {{ name: {:?}, can_refer: {:?}, body: {:?} }}"
+                    ),
+                    self.name, self.can_refer, self.body as usize
+                )
             }
         }
-    }
+    };
 }
 standard_three_part_debug!(BasicBuiltin);
 
@@ -1820,8 +2142,12 @@ impl Builtin for BasicBuiltin {
         err_add_name((self.body)(env, args), &self.name)
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { self.can_refer }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        self.can_refer
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1835,12 +2161,20 @@ impl Builtin for OneArgBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(arg) => err_add_name((self.body)(arg), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts one argument, got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { self.can_refer }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        self.can_refer
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1856,12 +2190,20 @@ impl Builtin for TwoArgBuiltin {
             // partial application, spicy
             Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few2::Two(a, b) => err_add_name((self.body)(a, b), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts two arguments (or one for partial application), got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { self.can_refer }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        self.can_refer
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1882,12 +2224,20 @@ impl Builtin for EnvOneArgBuiltin {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(arg) => err_add_name((self.body)(env, arg), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len()))),
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts one argument, got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { self.can_refer }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        self.can_refer
+    }
 }
 
 #[derive(Clone)]
@@ -1904,27 +2254,43 @@ impl Builtin for EnvTwoArgBuiltin {
             // partial application, spicy
             Few2::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few2::Two(a, b) => err_add_name((self.body)(env, a, b), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts two arguments (or one for partial application), got {}", self.name, f.len())))
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts two arguments (or one for partial application), got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { self.can_refer }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        self.can_refer
+    }
 }
 
-
-fn to_obj_vector(iter: impl Iterator<Item=NRes<Obj>>) -> NRes<Obj> {
-    Ok(Obj::Seq(Seq::Vector(Rc::new(iter.map(|e| match e? {
-        Obj::Num(n) => Ok(n),
-        x => Err(NErr::type_error(format!("can't convert to vector, non-number: {}", x))),
-    }).collect::<NRes<Vec<NNum>>>()?))))
+fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
+    Ok(Obj::Seq(Seq::Vector(Rc::new(
+        iter.map(|e| match e? {
+            Obj::Num(n) => Ok(n),
+            x => Err(NErr::type_error(format!(
+                "can't convert to vector, non-number: {}",
+                x
+            ))),
+        })
+        .collect::<NRes<Vec<NNum>>>()?,
+    ))))
 }
 
 fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj> {
     match a {
         Obj::Num(a) => body(a),
         Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(mut_rc_vec_into_iter(&mut a).map(body)),
-        x => Err(NErr::argument_error(format!("only accepts numbers, got {:?}", x))),
+        x => Err(NErr::argument_error(format!(
+            "only accepts numbers, got {:?}",
+            x
+        ))),
     }
 }
 
@@ -1932,12 +2298,20 @@ impl Builtin for OneNumBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(x) => err_add_name(expect_nums_and_vectorize_1(self.body, x), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts one argument, got {}", self.name, f.len())))
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts one argument, got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
-    fn can_refer(&self) -> bool { false }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+    fn can_refer(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1948,15 +2322,29 @@ pub struct NumsBuiltin {
 
 impl Builtin for NumsBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
-        err_add_name((self.body)(args.into_iter().map(|x| match x {
-            Obj::Num(n) => Ok(n),
-            _ => Err(NErr::argument_error(format!("only accepts numbers, got {:?}", x))),
-        }).collect::<NRes<Vec<NNum>>>()?), &self.name)
+        err_add_name(
+            (self.body)(
+                args.into_iter()
+                    .map(|x| match x {
+                        Obj::Num(n) => Ok(n),
+                        _ => Err(NErr::argument_error(format!(
+                            "only accepts numbers, got {:?}",
+                            x
+                        ))),
+                    })
+                    .collect::<NRes<Vec<NNum>>>()?,
+            ),
+            &self.name,
+        )
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
 
-    fn can_refer(&self) -> bool { false }
+    fn can_refer(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1968,17 +2356,31 @@ pub struct TwoNumsBuiltin {
 fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj) -> NRes<Obj> {
     match (a, b) {
         (Obj::Num(a), Obj::Num(b)) => body(a, b),
-        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => to_obj_vector(mut_rc_vec_into_iter(&mut b).map(|e| body(a.clone(), e))),
-        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => to_obj_vector(mut_rc_vec_into_iter(&mut a).map(|e| body(e, b.clone()))),
-        (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => if a.len() == b.len() {
-            to_obj_vector(
-                mut_rc_vec_into_iter(&mut a)
-                .zip(mut_rc_vec_into_iter(&mut b))
-                .map(|(a, b)| body(a, b)))
-        } else {
-            Err(NErr::value_error(format!("vectorized op: different lengths: {} {}", a.len(), b.len())))
-        },
-        (a, b) => Err(NErr::argument_error(format!("only accepts numbers (or vectors), got {:?} {:?}", a, b))),
+        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => {
+            to_obj_vector(mut_rc_vec_into_iter(&mut b).map(|e| body(a.clone(), e)))
+        }
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => {
+            to_obj_vector(mut_rc_vec_into_iter(&mut a).map(|e| body(e, b.clone())))
+        }
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
+            if a.len() == b.len() {
+                to_obj_vector(
+                    mut_rc_vec_into_iter(&mut a)
+                        .zip(mut_rc_vec_into_iter(&mut b))
+                        .map(|(a, b)| body(a, b)),
+                )
+            } else {
+                Err(NErr::value_error(format!(
+                    "vectorized op: different lengths: {} {}",
+                    a.len(),
+                    b.len()
+                )))
+            }
+        }
+        (a, b) => Err(NErr::argument_error(format!(
+            "only accepts numbers (or vectors), got {:?} {:?}",
+            a, b
+        ))),
     }
 }
 
@@ -1986,16 +2388,31 @@ impl Builtin for TwoNumsBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             // partial application, spicy
-            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => Ok(clone_and_part_app_2(self, arg)),
-            Few2::One(a) => Err(NErr::argument_error(format!("{} only accepts numbers (or vectors), got {:?}", self.name, a))),
-            Few2::Two(a, b) => err_add_name(expect_nums_and_vectorize_2(self.body, a, b), &self.name),
-            f => Err(NErr::argument_error(format!("{} only accepts two numbers, got {}", self.name, f.len()))),
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
+                Ok(clone_and_part_app_2(self, arg))
+            }
+            Few2::One(a) => Err(NErr::argument_error(format!(
+                "{} only accepts numbers (or vectors), got {:?}",
+                self.name, a
+            ))),
+            Few2::Two(a, b) => {
+                err_add_name(expect_nums_and_vectorize_2(self.body, a, b), &self.name)
+            }
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts two numbers, got {}",
+                self.name,
+                f.len()
+            ))),
         }
     }
 
-    fn builtin_name(&self) -> &str { &self.name }
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
 
-    fn can_refer(&self) -> bool { false }
+    fn can_refer(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone)]
@@ -2008,24 +2425,33 @@ pub struct Closure {
 // directly debug-printing env can easily recurse infinitely
 impl Debug for Closure {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "Closure {{ params: {:?}, body: {:?}, env: ... }}", self.params, self.body)
+        write!(
+            fmt,
+            "Closure {{ params: {:?}, body: {:?}, env: ... }}",
+            self.params, self.body
+        )
     }
 }
 
 impl Closure {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
         let ee = Env::with_parent(&self.env);
-        let p = self.params.iter().map(|e| Ok(Box::new(eval_lvalue(&ee, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
+        let p = self
+            .params
+            .iter()
+            .map(|e| Ok(Box::new(eval_lvalue(&ee, e)?)))
+            .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
         assign_all(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &args)?;
         match evaluate(&ee, &self.body) {
             Err(NErr::Return(k)) => Ok(k),
-            x => x
+            x => x,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
+    Invalid(String),
     IntLit(BigInt),
     FloatLit(f64),
     ImaginaryFloatLit(f64),
@@ -2068,7 +2494,11 @@ pub enum Token {
 }
 
 #[derive(Debug)]
-pub enum ForIterationType { Normal, Item, Declare }
+pub enum ForIterationType {
+    Normal,
+    Item,
+    Declare,
+}
 
 #[derive(Debug)]
 pub enum ForIteration {
@@ -2167,18 +2597,18 @@ enum EvaluatedLvalue {
 fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
     match expr {
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
-        Expr::Index(e, i) => {
-            match to_lvalue(*e)? {
-                Lvalue::IndexedIdent(idn, mut ixs) => {
-                    ixs.push(i);
-                    Ok(Lvalue::IndexedIdent(idn, ixs))
-                }
-                ee => Err(format!("can't to_lvalue index of nonident {:?}", ee)),
+        Expr::Index(e, i) => match to_lvalue(*e)? {
+            Lvalue::IndexedIdent(idn, mut ixs) => {
+                ixs.push(i);
+                Ok(Lvalue::IndexedIdent(idn, ixs))
             }
-        }
+            ee => Err(format!("can't to_lvalue index of nonident {:?}", ee)),
+        },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
         Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
-            es.into_iter().map(|e| Ok(Box::new(to_lvalue(*e)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?
+            es.into_iter()
+                .map(|e| Ok(Box::new(to_lvalue(*e)?)))
+                .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
         Expr::Paren(p) => Ok(Lvalue::Unannotation(Box::new(to_lvalue(*p)?))),
@@ -2199,15 +2629,16 @@ fn to_value_no_literals(expr: Expr) -> Result<Lvalue, String> {
 }
 
 #[derive(Clone, Copy)]
-struct CodeLoc {
-    line: usize,
-    col: usize,
+pub struct CodeLoc {
+    pub line: usize,
+    pub col: usize,
+    pub index: usize,
 }
 
 pub struct LocToken {
-    token: Token,
-    start: CodeLoc,
-    end: CodeLoc,
+    pub token: Token,
+    pub start: CodeLoc,
+    pub end: CodeLoc,
 }
 
 struct Lexer<'a> {
@@ -2226,8 +2657,16 @@ impl<'a> Lexer<'a> {
     fn new(code: &'a str) -> Self {
         Lexer {
             chars: code.chars().peekable(),
-            start: CodeLoc { line: 1, col: 1 },
-            cur: CodeLoc { line: 1, col: 1 },
+            start: CodeLoc {
+                line: 1,
+                col: 1,
+                index: 0,
+            },
+            cur: CodeLoc {
+                line: 1,
+                col: 1,
+                index: 0,
+            },
             tokens: Vec::new(),
             last_comment: None,
         }
@@ -2240,15 +2679,26 @@ impl<'a> Lexer<'a> {
     fn next(&mut self) -> Option<char> {
         let c = self.chars.next();
         match c {
-            Some('\n') => { self.cur.line += 1; self.cur.col = 1; }
-            Some(_) => { self.cur.col += 1; }
+            Some('\n') => {
+                self.cur.line += 1;
+                self.cur.col = 1;
+                self.cur.index += 1;
+            }
+            Some(_) => {
+                self.cur.col += 1;
+                self.cur.index += 1;
+            }
             None => {}
         }
         c
     }
 
     fn emit(&mut self, token: Token) {
-        self.tokens.push(LocToken { token, start: self.start, end: self.cur });
+        self.tokens.push(LocToken {
+            token,
+            start: self.start,
+            end: self.cur,
+        });
         self.start = self.cur;
     }
 
@@ -2268,11 +2718,25 @@ impl<'a> Lexer<'a> {
                         let d2 = self.next().expect(e).to_digit(16).expect(e);
                         acc.push(char::from_u32(d1 * 16 + d2).unwrap())
                     }
-                    Some(c) => panic!("lexing: string literal: unknown escape {}", c),
-                    None => panic!("lexing: string literal: escape eof"),
-                }
+                    Some(c) => {
+                        self.emit(Token::Invalid(format!(
+                            "lexing: string literal: unknown escape {}",
+                            c
+                        )));
+                        break;
+                    }
+                    None => {
+                        self.emit(Token::Invalid(format!(
+                            "lexing: string literal: escape eof"
+                        )));
+                        break;
+                    }
+                },
                 Some(c) => acc.push(c),
-                None => panic!("lexing: string literal hit eof")
+                None => {
+                    self.emit(Token::Invalid(format!("lexing: string literal hit eof")));
+                    break;
+                }
             }
         }
         self.next();
@@ -2306,7 +2770,8 @@ impl<'a> Lexer<'a> {
 
     fn lex(&mut self) {
         lazy_static! {
-            static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
+            static ref OPERATOR_SYMBOLS: HashSet<char> =
+                "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
         }
 
         // let mut chars = code.chars().peekable();
@@ -2329,8 +2794,7 @@ impl<'a> Lexer<'a> {
                         self.emit(Token::Colon);
                     }
                 }
-                ' ' => (),
-                '\n' => (),
+                ' ' | '\n' => self.start = self.cur,
                 '#' => {
                     let mut comment = String::new();
                     loop {
@@ -2366,9 +2830,11 @@ impl<'a> Lexer<'a> {
                                     self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
                                 }
                                 Some('e' | 'E') => {
-                                    acc.push('e'); self.next();
+                                    acc.push('e');
+                                    self.next();
                                     if self.peek() == Some(&'-') {
-                                        acc.push('-'); self.next();
+                                        acc.push('-');
+                                        self.next();
                                     }
                                     while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
                                         acc.push(*cc);
@@ -2376,14 +2842,23 @@ impl<'a> Lexer<'a> {
                                     }
                                     self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
                                 }
-                                _ => self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                                _ => self.emit(Token::FloatLit(acc.parse::<f64>().unwrap())),
                             }
                         } else {
                             match (acc.as_str(), self.peek()) {
-                                ("0", Some('x' | 'X')) => { self.next(); self.lex_base_and_emit(16) }
-                                ("0", Some('b' | 'B')) => { self.next(); self.lex_base_and_emit(2) }
-                                ("0", Some('o' | 'O')) => { self.next(); self.lex_base_and_emit(8) }
-                                ( _ , Some('r' | 'R')) => {
+                                ("0", Some('x' | 'X')) => {
+                                    self.next();
+                                    self.lex_base_and_emit(16)
+                                }
+                                ("0", Some('b' | 'B')) => {
+                                    self.next();
+                                    self.lex_base_and_emit(2)
+                                }
+                                ("0", Some('o' | 'O')) => {
+                                    self.next();
+                                    self.lex_base_and_emit(8)
+                                }
+                                (_, Some('r' | 'R')) => {
                                     // radix. not sure who does this actually? common lisp?
                                     match acc.parse::<u32>() {
                                         Ok(radix) if 2 <= radix && radix <= 36 => {
@@ -2394,18 +2869,21 @@ impl<'a> Lexer<'a> {
                                             self.next();
                                             self.lex_base_64_and_emit()
                                         }
-                                        _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
+                                        _ => {
+                                            self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap()))
+                                        }
                                     }
-
                                 }
-                                ( _ , Some('i' | 'I' | 'j' | 'J')) => {
+                                (_, Some('i' | 'I' | 'j' | 'J')) => {
                                     self.next();
                                     self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
                                 }
-                                ( _ , Some('e' | 'E')) => {
-                                    acc.push('e'); self.next();
+                                (_, Some('e' | 'E')) => {
+                                    acc.push('e');
+                                    self.next();
                                     if self.peek() == Some(&'-') {
-                                        acc.push('-'); self.next();
+                                        acc.push('-');
+                                        self.next();
                                     }
                                     while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {
                                         acc.push(*cc);
@@ -2419,7 +2897,9 @@ impl<'a> Lexer<'a> {
                     } else if c.is_alphabetic() {
                         let mut acc = c.to_string();
 
-                        while let Some(cc) = self.peek().filter(|c| c.is_alphanumeric() || **c == '_') {
+                        while let Some(cc) =
+                            self.peek().filter(|c| c.is_alphanumeric() || **c == '_')
+                        {
                             acc.push(*cc);
                             self.next();
                         }
@@ -2431,7 +2911,9 @@ impl<'a> Lexer<'a> {
                                     let s = self.lex_simple_string_after_start(delim);
                                     self.emit(Token::FormatString(Rc::new(s)))
                                 }
-                                _ => panic!("lexing: format string: no quote")
+                                _ => self.emit(Token::Invalid(
+                                    "lexing: format string: no quote".to_string(),
+                                )),
                             }
                         } else if acc == "R" {
                             // wow
@@ -2441,20 +2923,25 @@ impl<'a> Lexer<'a> {
                                     while self.peek() != Some(&delim) {
                                         match self.next() {
                                             Some(c) => acc.push(c),
-                                            None => panic!("lexing: string literal hit eof")
+                                            None => {
+                                                self.emit(Token::Invalid(
+                                                    "lexing: string literal hit eof".to_string(),
+                                                ));
+                                                break;
+                                            }
                                         }
                                     }
                                     self.next();
                                     self.emit(Token::StringLit(Rc::new(acc)))
                                 }
-                                _ => panic!("lexing: raw string literal: no quote")
+                                _ => self.emit(Token::Invalid(
+                                    "lexing: raw string literal: no quote".to_string(),
+                                )),
                             }
                         } else if acc == "V" {
                             match self.next() {
-                                Some('(') => {
-                                    self.emit(Token::VLeftParen)
-                                }
-                                _ => panic!("lexing: V: what")
+                                Some('(') => self.emit(Token::VLeftParen),
+                                _ => self.emit(Token::Invalid("lexing: V: what".to_string())),
                             }
                         } else {
                             self.emit(match acc.as_str() {
@@ -2492,7 +2979,8 @@ impl<'a> Lexer<'a> {
                         }
                         match (acc.as_str(), last) {
                             ("!" | "<" | ">" | "=", '=') => {
-                                acc.push(last); self.emit(Token::Ident(acc))
+                                acc.push(last);
+                                self.emit(Token::Ident(acc))
                             }
                             ("", '=') => self.emit(Token::Assign),
                             (_, '=') => {
@@ -2504,7 +2992,7 @@ impl<'a> Lexer<'a> {
                                 self.emit(match acc.as_str() {
                                     "!" => Token::Bang,
                                     "..." => Token::Ellipsis,
-                                    _ => Token::Ident(acc)
+                                    _ => Token::Ident(acc),
                                 })
                             }
                         }
@@ -2544,7 +3032,8 @@ impl Parser {
 
     fn try_consume(&mut self, desired: &Token) -> bool {
         if self.peek() == Some(desired) {
-            self.advance(); true
+            self.advance();
+            true
         } else {
             false
         }
@@ -2552,16 +3041,24 @@ impl Parser {
 
     fn peek_err(&self) -> String {
         match self.tokens.get(self.i) {
-            Some(LocToken { token, start, end }) => format!("{:?} (at {}:{}-{})", token, start.line, start.col, end.col),
-            None => "EOF".to_string()
+            Some(LocToken { token, start, end }) => {
+                format!("{:?} (at {}:{}-{})", token, start.line, start.col, end.col)
+            }
+            None => "EOF".to_string(),
         }
     }
 
     fn require(&mut self, expected: Token, message: String) -> Result<(), String> {
-        if self.try_consume(&expected) { // wat
+        if self.try_consume(&expected) {
+            // wat
             Ok(())
         } else {
-            Err(format!("{}; required {:?}, got {:?}", message, expected, self.peek_err()))
+            Err(format!(
+                "{}; required {:?}, got {:?}",
+                message,
+                expected,
+                self.peek_err()
+            ))
         }
     }
 
@@ -2604,11 +3101,15 @@ impl Parser {
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(Expr::Pop(Box::new(to_value_no_literals(self.single("pop")?)?)))
+                    Ok(Expr::Pop(Box::new(to_value_no_literals(
+                        self.single("pop")?,
+                    )?)))
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(Expr::Remove(Box::new(to_value_no_literals(self.single("remove")?)?)))
+                    Ok(Expr::Remove(Box::new(to_value_no_literals(
+                        self.single("remove")?,
+                    )?)))
                 }
                 Token::Break => {
                     self.advance();
@@ -2692,13 +3193,18 @@ impl Parser {
                     self.advance();
                     if let Some(Token::IntLit(x)) = self.peek().cloned() {
                         self.advance();
-                        Ok(Expr::Backref(x.to_usize().ok_or(format!("backref: not usize: {}", x))?))
+                        Ok(Expr::Backref(
+                            x.to_usize().ok_or(format!("backref: not usize: {}", x))?,
+                        ))
                     } else {
                         let params = if self.try_consume(&Token::Colon) {
                             Vec::new()
                         } else {
                             let (params0, _) = self.comma_separated()?;
-                            let ps = params0.into_iter().map(|p| Ok(Box::new(to_value_no_literals(*p)?))).collect::<Result<Vec<Box<Lvalue>>, String>>()?;
+                            let ps = params0
+                                .into_iter()
+                                .map(|p| Ok(Box::new(to_value_no_literals(*p)?)))
+                                .collect::<Result<Vec<Box<Lvalue>>, String>>()?;
                             self.require(Token::Colon, "lambda start".to_string())?;
                             ps
                         };
@@ -2726,9 +3232,17 @@ impl Parser {
                     loop {
                         its.push(self.for_iteration()?);
                         match self.peek() {
-                            Some(Token::RightParen) => { self.advance(); break }
-                            Some(Token::Semicolon) => { self.advance(); }
-                            _ => Err(format!("for: expected right paren or semicolon after iteration, got {}", self.peek_err()))?,
+                            Some(Token::RightParen) => {
+                                self.advance();
+                                break;
+                            }
+                            Some(Token::Semicolon) => {
+                                self.advance();
+                            }
+                            _ => Err(format!(
+                                "for: expected right paren or semicolon after iteration, got {}",
+                                self.peek_err()
+                            ))?,
                         }
                     }
                     let do_yield = self.try_consume(&Token::Yield);
@@ -2766,7 +3280,9 @@ impl Parser {
 
     fn for_iteration(&mut self) -> Result<ForIteration, String> {
         if self.try_consume(&Token::If) {
-            Ok(ForIteration::Guard(Box::new(self.single("for iteration guard")?)))
+            Ok(ForIteration::Guard(Box::new(
+                self.single("for iteration guard")?,
+            )))
         } else {
             let pat0 = self.pattern()?;
             let pat = to_value_no_literals(pat0)?;
@@ -2783,10 +3299,19 @@ impl Parser {
                     self.advance();
                     ForIterationType::Item
                 }
-                _ => return Err(format!("for: require : or :: or :=, got {}", self.peek_err())),
+                _ => {
+                    return Err(format!(
+                        "for: require : or :: or :=, got {}",
+                        self.peek_err()
+                    ))
+                }
             };
             let iteratee = self.pattern()?;
-            Ok(ForIteration::Iteration(ty, Box::new(pat), Box::new(iteratee)))
+            Ok(ForIteration::Iteration(
+                ty,
+                Box::new(pat),
+                Box::new(iteratee),
+            ))
         }
     }
 
@@ -2813,17 +3338,26 @@ impl Parser {
                         } else {
                             let c = self.single("slice end")?;
                             self.require(Token::RightBracket, "index expr".to_string())?;
-                            cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, Some(Box::new(c))));
+                            cur = Expr::Index(
+                                Box::new(cur),
+                                IndexOrSlice::Slice(None, Some(Box::new(c))),
+                            );
                         }
                     } else {
                         let c = self.single("index/slice start")?;
                         if self.try_consume(&Token::Colon) {
                             if self.try_consume(&Token::RightBracket) {
-                                cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), None));
+                                cur = Expr::Index(
+                                    Box::new(cur),
+                                    IndexOrSlice::Slice(Some(Box::new(c)), None),
+                                );
                             } else {
                                 let cc = self.single("slice end")?;
                                 self.require(Token::RightBracket, "index expr".to_string())?;
-                                cur = Expr::Index(Box::new(cur), IndexOrSlice::Slice(Some(Box::new(c)), Some(Box::new(cc))));
+                                cur = Expr::Index(
+                                    Box::new(cur),
+                                    IndexOrSlice::Slice(Some(Box::new(c)), Some(Box::new(cc))),
+                                );
                             }
                         } else {
                             self.require(Token::RightBracket, "index expr".to_string())?;
@@ -2840,7 +3374,7 @@ impl Parser {
                         cur = Expr::Call(Box::new(cur), cs);
                     }
                 }
-                _ => break Ok(cur)
+                _ => break Ok(cur),
             }
         }
     }
@@ -2862,13 +3396,14 @@ impl Parser {
     }
 
     fn peek_chain_stopper(&self) -> bool {
-        self.peek_csc_stopper() || match self.peek() {
-            Some(Token::Comma) => true,
-            Some(Token::And) => true,
-            Some(Token::Or) => true,
-            Some(Token::Coalesce) => true,
-            _ => false,
-        }
+        self.peek_csc_stopper()
+            || match self.peek() {
+                Some(Token::Comma) => true,
+                Some(Token::And) => true,
+                Some(Token::Or) => true,
+                Some(Token::Coalesce) => true,
+                _ => false,
+            }
     }
 
     fn chain(&mut self) -> Result<Expr, String> {
@@ -2922,13 +3457,19 @@ impl Parser {
             match self.peek() {
                 Some(Token::Or) => {
                     self.advance();
-                    op1 = Expr::Or(Box::new(op1), Box::new(err_add_context(self.logic_and(), ctx)?));
+                    op1 = Expr::Or(
+                        Box::new(op1),
+                        Box::new(err_add_context(self.logic_and(), ctx)?),
+                    );
                 }
                 Some(Token::Coalesce) => {
                     self.advance();
-                    op1 = Expr::Coalesce(Box::new(op1), Box::new(err_add_context(self.logic_and(), ctx)?));
+                    op1 = Expr::Coalesce(
+                        Box::new(op1),
+                        Box::new(err_add_context(self.logic_and(), ctx)?),
+                    );
                 }
-                _ => return Ok(op1)
+                _ => return Ok(op1),
             }
         }
     }
@@ -2942,21 +3483,24 @@ impl Parser {
         while self.try_consume(&Token::Comma) {
             comma = true;
             if self.peek_csc_stopper() {
-                return Ok((xs, comma))
+                return Ok((xs, comma));
             }
             xs.push(Box::new(self.single("comma-separated next")?));
         }
-        return Ok((xs, comma))
+        return Ok((xs, comma));
     }
 
     // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think.
     fn pattern(&mut self) -> Result<Expr, String> {
         let (exs, comma) = self.comma_separated()?;
         match (few(exs), comma) {
-            (Few::Zero, _) => Err(format!("Expected pattern, got nothing, next is {}", self.peek_err())),
+            (Few::Zero, _) => Err(format!(
+                "Expected pattern, got nothing, next is {}",
+                self.peek_err()
+            )),
             (Few::One(ex), false) => Ok(*ex),
             (Few::One(ex), true) => Ok(Expr::CommaSeq(vec![ex])),
-            (Few::Many(exs), _) => Ok(Expr::CommaSeq(exs))
+            (Few::Many(exs), _) => Ok(Expr::CommaSeq(exs)),
         }
     }
 
@@ -2967,7 +3511,10 @@ impl Parser {
             if self.peek_csc_stopper() {
                 Ok(Expr::Annotation(Box::new(pat), None))
             } else {
-                Ok(Expr::Annotation(Box::new(pat), Some(Box::new(self.single("annotation")?))))
+                Ok(Expr::Annotation(
+                    Box::new(pat),
+                    Some(Box::new(self.single("annotation")?)),
+                ))
             }
         } else {
             Ok(pat)
@@ -2978,7 +3525,10 @@ impl Parser {
         let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
             let a = to_value_no_literals(self.single("swap target 1")?)?;
-            self.require(Token::Comma, format!("swap between lvalues at {}", ag_start_err))?;
+            self.require(
+                Token::Comma,
+                format!("swap between lvalues at {}", ag_start_err),
+            )?;
             let b = to_value_no_literals(self.single("swap target 2")?)?;
             Ok(Expr::Swap(Box::new(a), Box::new(b)))
         } else {
@@ -2997,11 +3547,16 @@ impl Parser {
                                 Box::new(*op),
                                 Box::new(self.pattern()?),
                             )),
-                            _ => Err(format!("call w not 1 arg is not assignop, at {}", ag_start_err)),
-                        }
-                        _ => {
-                            Ok(Expr::Assign(every, Box::new(to_value_no_literals(pat)?), Box::new(self.pattern()?)))
-                        }
+                            _ => Err(format!(
+                                "call w not 1 arg is not assignop, at {}",
+                                ag_start_err
+                            )),
+                        },
+                        _ => Ok(Expr::Assign(
+                            every,
+                            Box::new(to_value_no_literals(pat)?),
+                            Box::new(self.pattern()?),
+                        )),
                     }
                 }
                 /*
@@ -3010,10 +3565,16 @@ impl Parser {
                     Ok(Expr::Declare(Box::new(to_lvalue(pat)?), Box::new(self.pattern()?)))
                 }
                 */
-                _ => if every {
-                    Err(format!("`every` as not assignment at {} now {}", ag_start_err, self.peek_err()))
-                } else {
-                    Ok(pat)
+                _ => {
+                    if every {
+                        Err(format!(
+                            "`every` as not assignment at {} now {}",
+                            ag_start_err,
+                            self.peek_err()
+                        ))
+                    } else {
+                        Ok(pat)
+                    }
                 }
             }
         }
@@ -3050,10 +3611,12 @@ pub fn parse(code: &str) -> Result<Option<Expr>, String> {
     } else {
         let mut p = Parser { tokens, i: 0 };
         match p.expression() {
-            Ok(ret) => if p.is_at_end() {
-                Ok(Some(ret))
-            } else {
-                Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+            Ok(ret) => {
+                if p.is_at_end() {
+                    Ok(Some(ret))
+                } else {
+                    Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+                }
             }
             Err(err) => Err(err),
         }
@@ -3065,13 +3628,19 @@ pub trait WriteMaybeExtractable: Write {
 }
 
 impl WriteMaybeExtractable for io::Sink {
-    fn extract(&self) -> Option<&[u8]> { None }
+    fn extract(&self) -> Option<&[u8]> {
+        None
+    }
 }
 impl WriteMaybeExtractable for io::Stdout {
-    fn extract(&self) -> Option<&[u8]> { None }
+    fn extract(&self) -> Option<&[u8]> {
+        None
+    }
 }
 impl WriteMaybeExtractable for Vec<u8> {
-    fn extract(&self) -> Option<&[u8]> { Some(self) }
+    fn extract(&self) -> Option<&[u8]> {
+        Some(self)
+    }
 }
 
 pub struct TopEnv {
@@ -3082,23 +3651,31 @@ pub struct TopEnv {
 
 impl Debug for TopEnv {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "TopEnv {{ backrefs: {:?}, input: {:p}, output: {:p} }}", self.backrefs, self.input, self.output)
+        write!(
+            fmt,
+            "TopEnv {{ backrefs: {:?}, input: {:p}, output: {:p} }}",
+            self.backrefs, self.input, self.output
+        )
     }
 }
 
 #[derive(Debug)]
 pub struct Env {
-    vars: HashMap<String, (ObjType, Obj)>,
-    parent: Result<Rc<RefCell<Env>>, TopEnv>,
+    pub vars: HashMap<String, (ObjType, Obj)>,
+    pub parent: Result<Rc<RefCell<Env>>, TopEnv>,
 }
 impl Env {
     pub fn new(top: TopEnv) -> Env {
-        Env { vars: HashMap::new(), parent: Err(top) }
+        Env {
+            vars: HashMap::new(),
+            parent: Err(top),
+        }
     }
     fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
-        Rc::new(RefCell::new(
-            Env { vars: HashMap::new(), parent: Ok(Rc::clone(&env)) }
-        ))
+        Rc::new(RefCell::new(Env {
+            vars: HashMap::new(),
+            parent: Ok(Rc::clone(&env)),
+        }))
     }
     pub fn mut_top_env<T>(&mut self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
         match &mut self.parent {
@@ -3113,27 +3690,39 @@ impl Env {
             None => match &self.parent {
                 Ok(p) => p.borrow().get_var(s),
                 Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
-            }
+            },
         }
     }
 
-    fn modify_existing_var<T>(&mut self, key: &str, f: impl FnOnce(&mut (ObjType, Obj)) -> T) -> Option<T> {
+    fn modify_existing_var<T>(
+        &mut self,
+        key: &str,
+        f: impl FnOnce(&mut (ObjType, Obj)) -> T,
+    ) -> Option<T> {
         match self.vars.get_mut(key) {
             Some(target) => Some(f(target)),
             None => match &self.parent {
                 Ok(p) => p.borrow_mut().modify_existing_var(key, f),
                 Err(_) => None,
-            }
+            },
         }
     }
     fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> Option<Obj> {
         self.vars.insert(key, (ty, val)).map(|x| x.1)
     }
     fn insert_type(&mut self, b: ObjType) {
-        self.insert(b.name(), ObjType::Any, Obj::Func(Func::Type(b), Precedence::zero()));
+        self.insert(
+            b.name(),
+            ObjType::Any,
+            Obj::Func(Func::Type(b), Precedence::zero()),
+        );
     }
     fn insert_builtin_with_precedence(&mut self, b: impl Builtin + 'static, p: Precedence) {
-        self.insert(b.builtin_name().to_string(), ObjType::Any, Obj::Func(Func::Builtin(Rc::new(b)), p));
+        self.insert(
+            b.builtin_name().to_string(),
+            ObjType::Any,
+            Obj::Func(Func::Builtin(Rc::new(b)), p),
+        );
     }
     fn insert_builtin(&mut self, b: impl Builtin + 'static) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
@@ -3143,25 +3732,45 @@ impl Env {
 
 // the ObjType is provided iff it's a declaration
 
-fn assign_all_basic(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>, rhs: &[Obj]) -> NRes<()> {
+fn assign_all_basic(
+    env: &mut Env,
+    lhs: &[Box<EvaluatedLvalue>],
+    rt: Option<&ObjType>,
+    rhs: &[Obj],
+) -> NRes<()> {
     if lhs.len() == rhs.len() {
         for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
             assign(env, lhs1, rt, rhs1)?;
         }
         Ok(())
     } else {
-        Err(NErr::value_error(format!("Can't unpack into mismatched length {:?} {} != {:?} {}", lhs, lhs.len(), rhs, rhs.len())))
+        Err(NErr::value_error(format!(
+            "Can't unpack into mismatched length {:?} {} != {:?} {}",
+            lhs,
+            lhs.len(),
+            rhs,
+            rhs.len()
+        )))
     }
 }
 
-fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>, rhs: &[Obj]) -> NRes<()> {
+fn assign_all(
+    env: &mut Env,
+    lhs: &[Box<EvaluatedLvalue>],
+    rt: Option<&ObjType>,
+    rhs: &[Obj],
+) -> NRes<()> {
     let mut splat = None;
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
-            EvaluatedLvalue::Splat(inner) => match splat {
-                Some(_) => return Err(NErr::syntax_error(format!("Can't have two splats in same sequence on left-hand side of assignment"))),
-                None => {
-                    splat = Some((i, inner));
+            EvaluatedLvalue::Splat(inner) => {
+                match splat {
+                    Some(_) => return Err(NErr::syntax_error(format!(
+                        "Can't have two splats in same sequence on left-hand side of assignment"
+                    ))),
+                    None => {
+                        splat = Some((i, inner));
+                    }
                 }
             }
             _ => {}
@@ -3170,8 +3779,18 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
     match splat {
         Some((si, inner)) => {
             assign_all_basic(env, &lhs[..si], rt, &rhs[..si])?;
-            assign(env, inner, rt, &Obj::from(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec()))?;
-            assign_all_basic(env, &lhs[si + 1..], rt, &rhs[rhs.len() - lhs.len() + si + 1..])
+            assign(
+                env,
+                inner,
+                rt,
+                &Obj::from(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec()),
+            )?;
+            assign_all_basic(
+                env,
+                &lhs[si + 1..],
+                rt,
+                &rhs[rhs.len() - lhs.len() + si + 1..],
+            )
         }
         None => assign_all_basic(env, lhs, rt, rhs),
     }
@@ -3180,17 +3799,27 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
 // Modifying parts of a &mut Obj
 // =============================
 
-fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every: bool) -> NRes<()> {
+fn set_index(
+    lhs: &mut Obj,
+    indexes: &[EvaluatedIndexOrSlice],
+    value: Obj,
+    every: bool,
+) -> NRes<()> {
     // hack
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
+                "Can't assign to unforceable stream"
+            )))?)
         }
         _ => {}
     }
     match (lhs, indexes) {
-        (lhs, []) => { *lhs = value; Ok(()) }
+        (lhs, []) => {
+            *lhs = value;
+            Ok(())
+        }
         (Obj::Seq(s), [fi, rest @ ..]) => match (s, fi) {
             (Seq::List(v), EvaluatedIndexOrSlice::Index(i)) => {
                 set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value, every)
@@ -3219,23 +3848,32 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                             Err(e) => {
                                 // put it baaaack!!
                                 *mut_s = String::from_utf8(owned).unwrap();
-                                return Err(e)
+                                return Err(e);
                             }
                         };
-                        owned[i..i+1].copy_from_slice(v.as_bytes());
+                        owned[i..i + 1].copy_from_slice(v.as_bytes());
                         match String::from_utf8(owned) {
-                            Ok(r) => { *mut_s = r; Ok(()) }
+                            Ok(r) => {
+                                *mut_s = r;
+                                Ok(())
+                            }
                             Err(err) => {
                                 *mut_s = String::from_utf8_lossy(err.as_bytes()).into_owned();
-                                Err(NErr::value_error(format!("assigning to string result not utf-8 (string corrupted)")))
+                                Err(NErr::value_error(format!(
+                                    "assigning to string result not utf-8 (string corrupted)"
+                                )))
                             }
                         }
                     } else {
-                        Err(NErr::value_error(format!("assigning to string index, not a byte")))
+                        Err(NErr::value_error(format!(
+                            "assigning to string index, not a byte"
+                        )))
                     }
                 }
-                _ => Err(NErr::value_error(format!("assigning to string index, not a string")))
-            }
+                _ => Err(NErr::value_error(format!(
+                    "assigning to string index, not a string"
+                ))),
+            },
             (Seq::String(_), _) => Err(NErr::type_error(format!("string bad slice"))),
             (Seq::Dict(v, _), EvaluatedIndexOrSlice::Index(kk)) => {
                 let k = to_key(kk.clone())?;
@@ -3243,12 +3881,21 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                 // We might create a new map entry, but only at the end, which is a bit of a
                 // mismatch for Rust's map API if we want to recurse all the way
                 if rest.is_empty() {
-                    mut_d.insert(k, value); Ok(())
+                    mut_d.insert(k, value);
+                    Ok(())
                 } else {
-                    set_index(match mut_d.get_mut(&k) {
-                        Some(vvv) => vvv,
-                        None => Err(NErr::type_error(format!("setting dictionary: nothing at key {:?} {:?}", mut_d, k)))?,
-                    }, rest, value, every)
+                    set_index(
+                        match mut_d.get_mut(&k) {
+                            Some(vvv) => vvv,
+                            None => Err(NErr::type_error(format!(
+                                "setting dictionary: nothing at key {:?} {:?}",
+                                mut_d, k
+                            )))?,
+                        },
+                        rest,
+                        value,
+                        every,
+                    )
                 }
             }
             (Seq::Dict(v, _), EvaluatedIndexOrSlice::Slice(None, None)) if rest.is_empty() => {
@@ -3259,56 +3906,80 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                     }
                     Ok(())
                 } else {
-                    Err(NErr::type_error(format!("can't slice dictionaries except with every")))
+                    Err(NErr::type_error(format!(
+                        "can't slice dictionaries except with every"
+                    )))
                 }
             }
             (Seq::Dict(..), _) => Err(NErr::type_error(format!("dict bad slice"))),
-            (Seq::Vector(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => {
-                match value {
-                    Obj::Num(n) => {
-                        let i = pythonic_index(v, i)?;
-                        Rc::make_mut(v)[i] = n;
-                        Ok(())
-                    }
-                    _ => Err(NErr::type_error(format!("vec bad value assgn")))
+            (Seq::Vector(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
+                Obj::Num(n) => {
+                    let i = pythonic_index(v, i)?;
+                    Rc::make_mut(v)[i] = n;
+                    Ok(())
                 }
-            }
+                _ => Err(NErr::type_error(format!("vec bad value assgn"))),
+            },
             (Seq::Vector(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
-            (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => {
-                match value {
-                    Obj::Num(n) => {
-                        let i = pythonic_index(v, i)?;
-                        Rc::make_mut(v)[i] = n.to_u8().ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
-                        Ok(())
-                    }
-                    _ => Err(NErr::type_error(format!("bytes bad value assgn")))
+            (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
+                Obj::Num(n) => {
+                    let i = pythonic_index(v, i)?;
+                    Rc::make_mut(v)[i] = n
+                        .to_u8()
+                        .ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
+                    Ok(())
                 }
-            }
+                _ => Err(NErr::type_error(format!("bytes bad value assgn"))),
+            },
             (Seq::Bytes(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
             (Seq::Stream(_), _) => panic!("stream handled above"),
-        }
-        (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))]) => match &***r {
+        },
+        (
+            Obj::Func(_, Precedence(p, _)),
+            [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))],
+        ) => match &***r {
             "precedence" => match value {
                 Obj::Num(f) => match f.to_f64() {
-                    Some(f) => { *p = f; Ok(()) }
-                    None => Err(NErr::value_error(format!("precedence must be convertible to float: {}", f))),
-                }
-                f => Err(NErr::type_error(format!("precedence must be number, got {}", f))),
-            }
-            k => Err(NErr::key_error(format!("function key must be 'precedence', got {}", k))),
-        }
-        (lhs, ii) => Err(NErr::index_error(format!("can't set index {:?} {:?}", lhs, ii))),
+                    Some(f) => {
+                        *p = f;
+                        Ok(())
+                    }
+                    None => Err(NErr::value_error(format!(
+                        "precedence must be convertible to float: {}",
+                        f
+                    ))),
+                },
+                f => Err(NErr::type_error(format!(
+                    "precedence must be number, got {}",
+                    f
+                ))),
+            },
+            k => Err(NErr::key_error(format!(
+                "function key must be 'precedence', got {}",
+                k
+            ))),
+        },
+        (lhs, ii) => Err(NErr::index_error(format!(
+            "can't set index {:?} {:?}",
+            lhs, ii
+        ))),
     }
 }
 
 // be careful not to call this with both lhs holding a mutable reference into a RefCell and rhs
 // trying to take such a reference!
-fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: impl FnOnce(&mut Obj) -> NRes<Obj>) -> NRes<Obj> {
+fn modify_existing_index(
+    lhs: &mut Obj,
+    indexes: &[EvaluatedIndexOrSlice],
+    f: impl FnOnce(&mut Obj) -> NRes<Obj>,
+) -> NRes<Obj> {
     // hack
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
+                "Can't assign to unforceable stream"
+            )))?)
         }
         _ => {}
     }
@@ -3325,30 +3996,53 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: im
                     // FIXME improve
                     if !mut_d.contains_key(&k) {
                         match def {
-                            Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
-                            None => return Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k))),
+                            Some(d) => {
+                                mut_d.insert(k.clone(), (&**d).clone());
+                            }
+                            None => {
+                                return Err(NErr::key_error(format!(
+                                    "nothing at key {:?} {:?}",
+                                    mut_d, k
+                                )))
+                            }
                         }
                     }
-                    modify_existing_index(match mut_d.get_mut(&k) {
-                        Some(vvv) => vvv,
-                        // shouldn't happen:
-                        None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
-                    }, rest, f)
+                    modify_existing_index(
+                        match mut_d.get_mut(&k) {
+                            Some(vvv) => vvv,
+                            // shouldn't happen:
+                            None => Err(NErr::key_error(format!(
+                                "nothing at key {:?} {:?}",
+                                mut_d, k
+                            )))?,
+                        },
+                        rest,
+                        f,
+                    )
                 }
                 // TODO everything
-                (lhs2, ii) => Err(NErr::type_error(format!("can't modify index {:?} {:?}", lhs2, ii))),
+                (lhs2, ii) => Err(NErr::type_error(format!(
+                    "can't modify index {:?} {:?}",
+                    lhs2, ii
+                ))),
             }
         }
     }
 }
 
 // same here...
-fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: &mut impl FnMut(&mut Obj) -> NRes<()>) -> NRes<()> {
+fn modify_every_existing_index(
+    lhs: &mut Obj,
+    indexes: &[EvaluatedIndexOrSlice],
+    f: &mut impl FnMut(&mut Obj) -> NRes<()>,
+) -> NRes<()> {
     // hack
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
+                "Can't assign to unforceable stream"
+            )))?)
         }
         _ => {}
     }
@@ -3372,18 +4066,35 @@ fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice],
                     // FIXME improve
                     if !mut_d.contains_key(&k) {
                         match def {
-                            Some(d) => { mut_d.insert(k.clone(), (&**d).clone()); }
-                            None => return Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k))),
+                            Some(d) => {
+                                mut_d.insert(k.clone(), (&**d).clone());
+                            }
+                            None => {
+                                return Err(NErr::key_error(format!(
+                                    "nothing at key {:?} {:?}",
+                                    mut_d, k
+                                )))
+                            }
                         }
                     }
-                    modify_every_existing_index(match mut_d.get_mut(&k) {
-                        Some(vvv) => vvv,
-                        // shouldn't happen:
-                        None => Err(NErr::key_error(format!("nothing at key {:?} {:?}", mut_d, k)))?,
-                    }, rest, f)
+                    modify_every_existing_index(
+                        match mut_d.get_mut(&k) {
+                            Some(vvv) => vvv,
+                            // shouldn't happen:
+                            None => Err(NErr::key_error(format!(
+                                "nothing at key {:?} {:?}",
+                                mut_d, k
+                            )))?,
+                        },
+                        rest,
+                        f,
+                    )
                 }
                 // TODO everything
-                (lhs2, ii) => Err(NErr::type_error(format!("can't modify every index {:?} {:?}", lhs2, ii))),
+                (lhs2, ii) => Err(NErr::type_error(format!(
+                    "can't modify every index {:?} {:?}",
+                    lhs2, ii
+                ))),
             }
         }
     }
@@ -3397,7 +4108,13 @@ fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     }
 }
 
-fn assign_respecting_type(env: &mut Env, s: &str, ixs: &[EvaluatedIndexOrSlice], rhs: &Obj, every: bool) -> NRes<()> {
+fn assign_respecting_type(
+    env: &mut Env,
+    s: &str,
+    ixs: &[EvaluatedIndexOrSlice],
+    rhs: &Obj,
+    every: bool,
+) -> NRes<()> {
     env.modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
@@ -3427,29 +4144,43 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
                 if ixs.is_empty() {
                     insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::name_error(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
+                    return Err(NErr::name_error(format!(
+                        "Can't declare new value into index expression: {:?} {:?}",
+                        s, ixs
+                    )));
                 }
             }
             None => assign_respecting_type(env, s, ixs, rhs, false),
-        }
-        EvaluatedLvalue::CommaSeq(ss) => {
-            match rhs {
-                Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls),
-                rhs => assign_all(env, ss, rt, obj_to_cloning_iter(&rhs, "unpacking")?.collect::<Vec<Obj>>().as_slice()),
-            }
-        }
+        },
+        EvaluatedLvalue::CommaSeq(ss) => match rhs {
+            Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls),
+            rhs => assign_all(
+                env,
+                ss,
+                rt,
+                obj_to_cloning_iter(&rhs, "unpacking")?
+                    .collect::<Vec<Obj>>()
+                    .as_slice(),
+            ),
+        },
         EvaluatedLvalue::Annotation(s, ann) => match ann {
             None => assign(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
-        }
-        EvaluatedLvalue::Unannotation(s) => {
-            assign(env, s, None, rhs)
-        }
-        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
-        EvaluatedLvalue::Literal(obj) => if obj == rhs {
-            Ok(())
-        } else {
-            Err(NErr::type_error(format!("Literal pattern didn't match: {} {}", obj, rhs)))
+        },
+        EvaluatedLvalue::Unannotation(s) => assign(env, s, None, rhs),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
+            "Can't assign to raw splat {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::Literal(obj) => {
+            if obj == rhs {
+                Ok(())
+            } else {
+                Err(NErr::type_error(format!(
+                    "Literal pattern didn't match: {} {}",
+                    obj, rhs
+                )))
+            }
         }
     }
 }
@@ -3462,11 +4193,14 @@ fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs:
                 if ixs.is_empty() {
                     insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::name_error(format!("Can't declare new value into index expression: {:?} {:?}", s, ixs)))
+                    return Err(NErr::name_error(format!(
+                        "Can't declare new value into index expression: {:?} {:?}",
+                        s, ixs
+                    )));
                 }
             }
             None => assign_respecting_type(env, s, ixs, rhs, true),
-        }
+        },
         EvaluatedLvalue::CommaSeq(ss) => {
             for v in ss {
                 assign_every(env, v, rt, rhs)?;
@@ -3476,22 +4210,32 @@ fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs:
         EvaluatedLvalue::Annotation(s, ann) => match ann {
             None => assign_every(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs),
-        }
-        EvaluatedLvalue::Unannotation(s) => {
-            assign_every(env, s, None, rhs)
-        }
-        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
-        EvaluatedLvalue::Literal(obj) => if obj == rhs {
-            Ok(())
-        } else {
-            Err(NErr::type_error(format!("Literal pattern didn't match: {} {}", obj, rhs)))
+        },
+        EvaluatedLvalue::Unannotation(s) => assign_every(env, s, None, rhs),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
+            "Can't assign to raw splat {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::Literal(obj) => {
+            if obj == rhs {
+                Ok(())
+            } else {
+                Err(NErr::type_error(format!(
+                    "Literal pattern didn't match: {} {}",
+                    obj, rhs
+                )))
+            }
         }
     }
 }
 
 // different: doesn't hold a mutable borrow to the environment when calling rhs; doesn't accept
 // declarations
-fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl FnMut(Obj) -> NRes<Obj>) -> NRes<()> {
+fn modify_every(
+    env: &Rc<RefCell<Env>>,
+    lhs: &EvaluatedLvalue,
+    rhs: &mut impl FnMut(Obj) -> NRes<Obj>,
+) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             // drop borrow immediately
@@ -3499,17 +4243,29 @@ fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl Fn
 
             if ixs.is_empty() {
                 let new = rhs(old)?;
-                env.borrow_mut().modify_existing_var(s, |(ty, old)| {
-                    if is_type(ty, &new) {
-                        *old = new.clone(); Ok(())
-                    } else {
-                        Err(NErr::name_error(format!("Modify every: assignment to {} type check failed: {} not {}", s, new, ty.name())))
-                    }
-                }).ok_or(NErr::name_error(format!("Variable {:?} not found in modify every", s)))?
+                env.borrow_mut()
+                    .modify_existing_var(s, |(ty, old)| {
+                        if is_type(ty, &new) {
+                            *old = new.clone();
+                            Ok(())
+                        } else {
+                            Err(NErr::name_error(format!(
+                                "Modify every: assignment to {} type check failed: {} not {}",
+                                s,
+                                new,
+                                ty.name()
+                            )))
+                        }
+                    })
+                    .ok_or(NErr::name_error(format!(
+                        "Variable {:?} not found in modify every",
+                        s
+                    )))?
             } else {
                 modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
                     // TODO take??
-                    *x = rhs(x.clone())?; Ok(())
+                    *x = rhs(x.clone())?;
+                    Ok(())
                 })
             }
         }
@@ -3519,13 +4275,20 @@ fn modify_every(env: &Rc<RefCell<Env>>, lhs: &EvaluatedLvalue, rhs: &mut impl Fn
             }
             Ok(())
         }
-        EvaluatedLvalue::Annotation(..) => Err(NErr::type_error(format!("No annotations in modify every: {:?}", lhs))),
+        EvaluatedLvalue::Annotation(..) => Err(NErr::type_error(format!(
+            "No annotations in modify every: {:?}",
+            lhs
+        ))),
         EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
-        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!("Can't assign to raw splat {:?}", lhs))),
-        EvaluatedLvalue::Literal(_) => Err(NErr::type_error(format!("Can't modify literal {:?}", lhs))),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
+            "Can't assign to raw splat {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::Literal(_) => {
+            Err(NErr::type_error(format!("Can't modify literal {:?}", lhs)))
+        }
     }
 }
-
 
 const DEFAULT_PRECEDENCE: f64 = 0.0;
 const COMPARISON_PRECEDENCE: f64 = 1.0;
@@ -3538,20 +4301,25 @@ const INDEX_PRECEDENCE: f64 = 7.0;
 const DOT_PRECEDENCE: f64 = 8.0;
 
 fn default_precedence(name: &str) -> f64 {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '_' {
-        DEFAULT_PRECEDENCE
-    } else {
-        match c {
-            '=' | '<' | '>' | '~' => COMPARISON_PRECEDENCE,
-            '$' => STRING_PRECEDENCE,
-            '|' => OR_PRECEDENCE,
-            '+' | '-' | '@' => PLUS_PRECEDENCE,
-            '*' | '/' | '%' | '&' => MULTIPLY_PRECEDENCE,
-            '^' => EXPONENT_PRECEDENCE,
-            '!' | '?' => INDEX_PRECEDENCE,
-            _ => DOT_PRECEDENCE, // particularly .
-        }
-    }).reduce(f64::min).unwrap_or(0.0)
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                DEFAULT_PRECEDENCE
+            } else {
+                match c {
+                    '=' | '<' | '>' | '~' => COMPARISON_PRECEDENCE,
+                    '$' => STRING_PRECEDENCE,
+                    '|' => OR_PRECEDENCE,
+                    '+' | '-' | '@' => PLUS_PRECEDENCE,
+                    '*' | '/' | '%' | '&' => MULTIPLY_PRECEDENCE,
+                    '^' => EXPONENT_PRECEDENCE,
+                    '!' | '?' => INDEX_PRECEDENCE,
+                    _ => DOT_PRECEDENCE, // particularly .
+                }
+            }
+        })
+        .reduce(f64::min)
+        .unwrap_or(0.0)
 }
 
 struct ChainEvaluator {
@@ -3561,7 +4329,10 @@ struct ChainEvaluator {
 
 impl ChainEvaluator {
     fn new(operand: Obj) -> ChainEvaluator {
-        ChainEvaluator { operands: vec![vec![operand]], operators: Vec::new() }
+        ChainEvaluator {
+            operands: vec![vec![operand]],
+            operators: Vec::new(),
+        }
     }
 
     fn run_top_popped(&mut self, env: &REnv, op: Func) -> NRes<()> {
@@ -3577,16 +4348,28 @@ impl ChainEvaluator {
         self.run_top_popped(env, op)
     }
 
-    fn give(&mut self, env: &REnv, operator: Func, precedence: Precedence, operand: Obj) -> NRes<()> {
-        while self.operators.last().map_or(false, |t| t.1.0 >= precedence.0) {
+    fn give(
+        &mut self,
+        env: &REnv,
+        operator: Func,
+        precedence: Precedence,
+        operand: Obj,
+    ) -> NRes<()> {
+        while self
+            .operators
+            .last()
+            .map_or(false, |t| t.1 .0 >= precedence.0)
+        {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
                 Some(new_op) => {
                     self.operators.push((new_op, prec));
                     self.operands.last_mut().expect("sync").push(operand);
-                    return Ok(())
+                    return Ok(());
                 }
-                None => { self.run_top_popped(env, top)?; }
+                None => {
+                    self.run_top_popped(env, top)?;
+                }
             }
         }
 
@@ -3617,10 +4400,10 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
                 match res {
                     // FIXME
                     Obj::Seq(Seq::List(mut xx)) => acc.append(Rc::make_mut(&mut xx)),
-                    _ => Err(NErr::type_error(format!("Can't splat non-list {:?}", res)))?
+                    _ => Err(NErr::type_error(format!("Can't splat non-list {:?}", res)))?,
                 }
             }
-            _ => acc.push(evaluate(env, x)?)
+            _ => acc.push(evaluate(env, x)?),
         }
     }
     Ok(acc)
@@ -3630,8 +4413,15 @@ fn eval_index_or_slice(env: &Rc<RefCell<Env>>, expr: &IndexOrSlice) -> NRes<Eval
     match expr {
         IndexOrSlice::Index(v) => Ok(EvaluatedIndexOrSlice::Index(evaluate(env, v)?)),
         IndexOrSlice::Slice(a, b) => Ok(EvaluatedIndexOrSlice::Slice(
-                match a { Some(a) => Some(evaluate(env, a)?), None => None },
-                match b { Some(b) => Some(evaluate(env, b)?), None => None })),
+            match a {
+                Some(a) => Some(evaluate(env, a)?),
+                None => None,
+            },
+            match b {
+                Some(b) => Some(evaluate(env, b)?),
+                None => None,
+            },
+        )),
     }
 }
 
@@ -3639,17 +4429,24 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     match expr {
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
             s.to_string(),
-            v.iter().map(|e| Ok(eval_index_or_slice(env, e)?)).collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?
+            v.iter()
+                .map(|e| Ok(eval_index_or_slice(env, e)?))
+                .collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?,
         )),
         Lvalue::Annotation(s, t) => Ok(EvaluatedLvalue::Annotation(
             Box::new(eval_lvalue(env, s)?),
-            match t { Some(e) => Some(evaluate(env, e)?), None => None }
+            match t {
+                Some(e) => Some(evaluate(env, e)?),
+                None => None,
+            },
         )),
-        Lvalue::Unannotation(s) => Ok(EvaluatedLvalue::Unannotation(
-            Box::new(eval_lvalue(env, s)?),
-        )),
+        Lvalue::Unannotation(s) => Ok(EvaluatedLvalue::Unannotation(Box::new(eval_lvalue(
+            env, s,
+        )?))),
         Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
-            v.iter().map(|e| Ok(Box::new(eval_lvalue(env, e)?))).collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?
+            v.iter()
+                .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
+                .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
         Lvalue::Literal(obj) => Ok(EvaluatedLvalue::Literal(obj.clone())),
@@ -3657,10 +4454,14 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
 }
 
 fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
-    if n >= 0 && n < (xs.len() as isize) { return Ok(n as usize) }
+    if n >= 0 && n < (xs.len() as isize) {
+        return Ok(n as usize);
+    }
 
     let i2 = (n + (xs.len() as isize)) as usize;
-    if i2 < xs.len() { return Ok(i2) }
+    if i2 < xs.len() {
+        return Ok(i2);
+    }
 
     Err(NErr::index_error(format!("Index out of bounds: {:?}", n)))
 }
@@ -3669,36 +4470,61 @@ fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
             Some(n) => pythonic_index_isize(xs, n),
-            _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
-        }
-        _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", i))),
+            _ => Err(NErr::index_error(format!(
+                "Index out of bounds of isize or non-integer: {:?}",
+                ii
+            ))),
+        },
+        _ => Err(NErr::index_error(format!(
+            "Invalid (non-numeric) index: {:?}",
+            i
+        ))),
     }
 }
 
 fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
-    let ii = pythonic_index(xs, i)?; Ok(&mut xs[ii])
+    let ii = pythonic_index(xs, i)?;
+    Ok(&mut xs[ii])
 }
 
 // for slicing
 fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
-    if i >= 0 { return (i as usize).min(xs.len()) }
+    if i >= 0 {
+        return (i as usize).min(xs.len());
+    }
 
     let i2 = i + (xs.len() as isize);
-    if i2 < 0 { 0 } else { i2 as usize }
+    if i2 < 0 {
+        0
+    } else {
+        i2 as usize
+    }
 }
 
 fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usize, usize) {
     (
-        match lo { Some(lo) => clamped_pythonic_index(xs, lo), None => 0 },
-        match hi { Some(hi) => clamped_pythonic_index(xs, hi), None => xs.len() },
+        match lo {
+            Some(lo) => clamped_pythonic_index(xs, lo),
+            None => 0,
+        },
+        match hi {
+            Some(hi) => clamped_pythonic_index(xs, hi),
+            None => xs.len(),
+        },
     )
 }
 
 fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
     match x {
         None => Ok(None),
-        Some(Obj::Num(n)) => Ok(Some(n.to_isize().ok_or(NErr::index_error(format!("Slice index out of bounds of isize or non-integer: {:?}", n)))?)),
-        Some(x) => Err(NErr::index_error(format!("Invalid (non-numeric) slice index: {:?}", x)))
+        Some(Obj::Num(n)) => Ok(Some(n.to_isize().ok_or(NErr::index_error(format!(
+            "Slice index out of bounds of isize or non-integer: {:?}",
+            n
+        )))?)),
+        Some(x) => Err(NErr::index_error(format!(
+            "Invalid (non-numeric) slice index: {:?}",
+            x
+        ))),
     }
 }
 
@@ -3711,14 +4537,22 @@ fn pythonic_slice_obj<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(
 fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
-            Some(n) => if xs.len() == 0 {
-                Err(NErr::index_error("Empty, can't cyclic index".to_string()))
-            } else {
-                Ok(n.rem_euclid(xs.len() as isize) as usize)
+            Some(n) => {
+                if xs.len() == 0 {
+                    Err(NErr::index_error("Empty, can't cyclic index".to_string()))
+                } else {
+                    Ok(n.rem_euclid(xs.len() as isize) as usize)
+                }
             }
-            _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
-        }
-        _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", i))),
+            _ => Err(NErr::index_error(format!(
+                "Index out of bounds of isize or non-integer: {:?}",
+                ii
+            ))),
+        },
+        _ => Err(NErr::index_error(format!(
+            "Invalid (non-numeric) index: {:?}",
+            i
+        ))),
     }
 }
 
@@ -3732,10 +4566,17 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
             let i = pythonic_index_isize(bs, i)?;
             // TODO this was the path of least resistance; idk what good semantics actually are
             // TODO copypasta
-            Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+            Ok(Obj::from(
+                String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
+            ))
         }
-        Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!("Can't index stream {:?} {:?}", v, i))),
-        Seq::Dict(..) => Err(NErr::type_error("dict is not a linear sequence".to_string())),
+        Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!(
+            "Can't index stream {:?} {:?}",
+            v, i
+        ))),
+        Seq::Dict(..) => Err(NErr::type_error(
+            "dict is not a linear sequence".to_string(),
+        )),
     }
 }
 
@@ -3747,7 +4588,9 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 let bs = s.as_bytes();
                 let i = pythonic_index(bs, &ii)?;
                 // TODO this was the path of least resistance; idk what good semantics actually are
-                Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+                Ok(Obj::from(
+                    String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
+                ))
             }
             Seq::Dict(xx, def) => {
                 let k = to_key(ii)?;
@@ -3755,26 +4598,36 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     Some(e) => Ok(e.clone()),
                     None => match def {
                         Some(d) => Ok((&**d).clone()),
-                        None => Err(NErr::key_error(format!("Dictionary lookup: nothing at key {:?} {:?}", xx, k))),
-                    }
+                        None => Err(NErr::key_error(format!(
+                            "Dictionary lookup: nothing at key {:?} {:?}",
+                            xx, k
+                        ))),
+                    },
                 }
             }
             Seq::Vector(v) => Ok(Obj::Num(v[pythonic_index(v, &ii)?].clone())),
             Seq::Bytes(v) => Ok(Obj::from(v[pythonic_index(v, &ii)?] as usize)),
             Seq::Stream(v) => match ii {
                 Obj::Num(ii) => match ii.to_isize() {
-                    Some(n) => {
-                        v.pythonic_index_isize(n).ok_or(NErr::type_error(format!("Can't index stream {:?} {:?}", v, ii)))
-                    }
-                    _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
-                }
-                _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", ii))),
-            }
-        }
+                    Some(n) => v.pythonic_index_isize(n).ok_or(NErr::type_error(format!(
+                        "Can't index stream {:?} {:?}",
+                        v, ii
+                    ))),
+                    _ => Err(NErr::index_error(format!(
+                        "Index out of bounds of isize or non-integer: {:?}",
+                        ii
+                    ))),
+                },
+                _ => Err(NErr::index_error(format!(
+                    "Invalid (non-numeric) index: {:?}",
+                    ii
+                ))),
+            },
+        },
         (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
             "precedence" => Ok(Obj::from(*p)),
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
-        }
+        },
         (xr, ir) => Err(NErr::type_error(format!("can't index {:?} {:?}", xr, ir))),
     }
 }
@@ -3787,17 +4640,26 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 let bs = s.as_bytes();
                 let i = cyclic_index(bs, &ii)?;
                 // TODO this was the path of least resistance; idk what good semantics actually are
-                Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
+                Ok(Obj::from(
+                    String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
+                ))
             }
-            Seq::Dict(..) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ii))),
+            Seq::Dict(..) => Err(NErr::type_error(format!(
+                "can't cyclically index {:?} {:?}",
+                xr, ii
+            ))),
             Seq::Vector(xx) => Ok(Obj::Num(xx[cyclic_index(xx, &ii)?].clone())),
             Seq::Bytes(xx) => Ok(Obj::from(xx[cyclic_index(xx, &ii)?] as usize)),
-            Seq::Stream(v) => {
-                Err(NErr::type_error(format!("Can't cyclically index stream {:?} {:?}", v, ii)))
-            }
-        }
+            Seq::Stream(v) => Err(NErr::type_error(format!(
+                "Can't cyclically index stream {:?} {:?}",
+                v, ii
+            ))),
+        },
         // TODO other sequences
-        (xr, ir) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ir))),
+        (xr, ir) => Err(NErr::type_error(format!(
+            "can't cyclically index {:?} {:?}",
+            xr, ir
+        ))),
     }
 }
 
@@ -3816,9 +4678,14 @@ fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
         (Obj::Seq(Seq::Stream(s)), lo, hi) => {
             let lo = obj_to_isize_slice_index(lo.as_ref())?;
             let hi = obj_to_isize_slice_index(hi.as_ref())?;
-            Ok(Obj::Seq(s.pythonic_slice(lo, hi).ok_or(NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)))?))
+            Ok(Obj::Seq(s.pythonic_slice(lo, hi).ok_or(
+                NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)),
+            )?))
         }
-        (xr, lo, hi) => Err(NErr::type_error(format!("can't slice {:?} {:?} {:?}", xr, lo, hi))),
+        (xr, lo, hi) => Err(NErr::type_error(format!(
+            "can't slice {:?} {:?} {:?}",
+            xr, lo, hi
+        ))),
     }
 }
 
@@ -3829,7 +4696,6 @@ fn index_or_slice(xr: Obj, ir: EvaluatedIndexOrSlice) -> NRes<Obj> {
     }
 }
 
-
 fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
         (Obj::Null, _) => Ok(Obj::Null),
@@ -3838,7 +4704,9 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 let bs = s.as_bytes();
                 // TODO above
                 match pythonic_index(bs, ii) {
-                    Ok(i) => Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned())),
+                    Ok(i) => Ok(Obj::from(
+                        String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
+                    )),
                     Err(_) => Ok(Obj::Null),
                 }
             }
@@ -3856,7 +4724,7 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     None => match def {
                         Some(d) => Ok((&**d).clone()),
                         None => Ok(Obj::Null),
-                    }
+                    },
                 }
             }
             Seq::Vector(v) => {
@@ -3873,11 +4741,15 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     Err(_) => Ok(Obj::Null),
                 }
             }
-            Seq::Stream(v) => {
-                Err(NErr::type_error(format!("Can't safe index stream {:?} {:?}", v, ir)))
-            }
-        }
-        _ => Err(NErr::type_error(format!("Can't safe index {:?} {:?}", xr, ir))),
+            Seq::Stream(v) => Err(NErr::type_error(format!(
+                "Can't safe index stream {:?} {:?}",
+                v, ir
+            ))),
+        },
+        _ => Err(NErr::type_error(format!(
+            "Can't safe index {:?} {:?}",
+            xr, ir
+        ))),
     }
 }
 
@@ -3892,10 +4764,19 @@ fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
         Obj::Func(ff, _) => ff.run(env, args),
         f => match few(args) {
-            Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(Func::PartialApp1(Box::new(f2), Box::new(f)), Precedence::zero())),
-            Few::One(f2) => Err(NErr::type_error(format!("Can't call non-function {:?} (and argument {:?} not callable)", f, f2))),
-            _ => Err(NErr::type_error(format!("Can't call non-function {:?} (and more than one argument)", f))),
-        }
+            Few::One(Obj::Func(f2, _)) => Ok(Obj::Func(
+                Func::PartialApp1(Box::new(f2), Box::new(f)),
+                Precedence::zero(),
+            )),
+            Few::One(f2) => Err(NErr::type_error(format!(
+                "Can't call non-function {:?} (and argument {:?} not callable)",
+                f, f2
+            ))),
+            _ => Err(NErr::type_error(format!(
+                "Can't call non-function {:?} (and more than one argument)",
+                f
+            ))),
+        },
     }
 }
 
@@ -3907,14 +4788,18 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
                 sr = index_or_slice(sr, eval_index_or_slice(env, ix)?)?.clone();
             }
             Ok(sr)
-        },
+        }
         Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
         Lvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
         Lvalue::CommaSeq(v) => Ok(Obj::from(
-            v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
+            v.iter()
+                .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
+                .collect::<NRes<Vec<Obj>>>()?,
         )),
         // maybe if commaseq eagerly looks for splats...
-        Lvalue::Splat(_) => Err(NErr::syntax_error("Can't evaluate splat on LHS of assignment??".to_string())),
+        Lvalue::Splat(_) => Err(NErr::syntax_error(
+            "Can't evaluate splat on LHS of assignment??".to_string(),
+        )),
         // seems questionable
         Lvalue::Literal(x) => Ok(x.clone()),
     }
@@ -3952,7 +4837,12 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     }
 }
 
-fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callback: &mut impl FnMut(Obj) -> ()) -> NRes<()> {
+fn evaluate_for(
+    env: &Rc<RefCell<Env>>,
+    its: &[ForIteration],
+    body: &Expr,
+    callback: &mut impl FnMut(Obj) -> (),
+) -> NRes<()> {
     match its {
         [] => match evaluate(env, body) {
             Ok(k) => Ok(callback(k)),
@@ -3979,7 +4869,12 @@ fn evaluate_for(env: &Rc<RefCell<Env>>, its: &[ForIteration], body: &Expr, callb
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &Obj::from(vec![key_to_obj(k), v]))?;
+                        assign(
+                            &mut ee.borrow_mut(),
+                            &p,
+                            Some(&ObjType::Any),
+                            &Obj::from(vec![key_to_obj(k), v]),
+                        )?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
@@ -4031,11 +4926,18 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             p.next();
                             ret.push('}');
                         } else {
-                            return Err(NErr::syntax_error("format string: unmatched right brace".to_string()))
+                            return Err(NErr::syntax_error(
+                                "format string: unmatched right brace".to_string(),
+                            ));
                         }
                     }
-                    (0, c) => { ret.push(c); }
-                    (_, '{') => { nesting_level += 1; expr_acc.push('{'); }
+                    (0, c) => {
+                        ret.push(c);
+                    }
+                    (_, '{') => {
+                        nesting_level += 1;
+                        expr_acc.push('{');
+                    }
                     (1, '}') => {
                         nesting_level -= 1;
 
@@ -4043,39 +4945,67 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         lexer.lex();
                         let mut flags = MyFmtFlags::new();
                         if lexer.tokens.is_empty() {
-                            return Err(NErr::syntax_error("format string: empty format expr".to_string()))
+                            return Err(NErr::syntax_error(
+                                "format string: empty format expr".to_string(),
+                            ));
                         } else {
                             for com in lexer.last_comment {
                                 for c in com.chars() {
                                     match c {
-                                        'x' => { flags.base = FmtBase::LowerHex; }
-                                        'X' => { flags.base = FmtBase::UpperHex; }
-                                        'b' | 'B' => { flags.base = FmtBase::Binary; }
-                                        'o' | 'O' => { flags.base = FmtBase::Octal; }
+                                        'x' => {
+                                            flags.base = FmtBase::LowerHex;
+                                        }
+                                        'X' => {
+                                            flags.base = FmtBase::UpperHex;
+                                        }
+                                        'b' | 'B' => {
+                                            flags.base = FmtBase::Binary;
+                                        }
+                                        'o' | 'O' => {
+                                            flags.base = FmtBase::Octal;
+                                        }
                                         // 'e' => { flags.base = FmtBase::LowerExp; }
                                         // 'E' => { flags.base = FmtBase::UpperExp; }
-                                        'd' | 'D' => { flags.base = FmtBase::Decimal; }
+                                        'd' | 'D' => {
+                                            flags.base = FmtBase::Decimal;
+                                        }
                                         _ => {}
                                     }
                                 }
                             }
-                            let mut p = Parser { tokens: lexer.tokens, i: 0 };
-                            let fex = p.expression().map_err(|e| NErr::syntax_error(format!("format string: failed to parse expr: {}", e)))?;
+                            let mut p = Parser {
+                                tokens: lexer.tokens,
+                                i: 0,
+                            };
+                            let fex = p.expression().map_err(|e| {
+                                NErr::syntax_error(format!(
+                                    "format string: failed to parse expr: {}",
+                                    e
+                                ))
+                            })?;
                             if p.is_at_end() {
                                 // FIXME err?
                                 evaluate(env, &fex)?.fmt_with(&mut ret, flags).unwrap();
                             } else {
-                                return Err(NErr::syntax_error("format string: couldn't finish parsing format expr".to_string()))
+                                return Err(NErr::syntax_error(
+                                    "format string: couldn't finish parsing format expr"
+                                        .to_string(),
+                                ));
                             }
                         }
                         expr_acc.clear();
                     }
-                    (_, '}') => { nesting_level -= 1; expr_acc.push('}'); }
-                    (_, c) => { expr_acc.push(c) }
+                    (_, '}') => {
+                        nesting_level -= 1;
+                        expr_acc.push('}');
+                    }
+                    (_, c) => expr_acc.push(c),
                 }
             }
             if nesting_level != 0 {
-                return Err(NErr::syntax_error("format string: unmatched left brace".to_string()))
+                return Err(NErr::syntax_error(
+                    "format string: unmatched left brace".to_string(),
+                ));
             }
             Ok(Obj::from(ret))
         }
@@ -4094,7 +5024,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let oprd = evaluate(env, opd)?;
                     ev.give(env, b, prec, oprd)?;
                 } else {
-                    return Err(NErr::type_error(format!("Chain cannot use nonblock in operand position: {:?}", oprr)))
+                    return Err(NErr::type_error(format!(
+                        "Chain cannot use nonblock in operand position: {:?}",
+                        oprr
+                    )));
                 }
             }
             ev.finish(env)
@@ -4137,46 +5070,56 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
-        Expr::Pop(pat) => {
-            match eval_lvalue(env, pat)? {
-                EvaluatedLvalue::IndexedIdent(s, ixs) => {
-                    env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
-                        modify_existing_index(vv, &ixs, |x| match x {
-                            Obj::Seq(Seq::List(xs)) => {
-                                Rc::make_mut(xs).pop().ok_or(NErr::name_error("can't pop empty".to_string()))
-                            }
-                            _ => Err(NErr::type_error("can't pop".to_string())),
-                        })
-                    }).ok_or(NErr::type_error("failed to pop??".to_string()))?
-                }
-                _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
-            }
-        }
+        Expr::Pop(pat) => match eval_lvalue(env, pat)? {
+            EvaluatedLvalue::IndexedIdent(s, ixs) => env
+                .borrow_mut()
+                .modify_existing_var(&s, |(_type, vv)| {
+                    modify_existing_index(vv, &ixs, |x| match x {
+                        Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
+                            .pop()
+                            .ok_or(NErr::name_error("can't pop empty".to_string())),
+                        _ => Err(NErr::type_error("can't pop".to_string())),
+                    })
+                })
+                .ok_or(NErr::type_error("failed to pop??".to_string()))?,
+            _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
+        },
         Expr::Remove(pat) => {
             match eval_lvalue(env, pat)? {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
-                    [] => Err(NErr::value_error("can't remove flat identifier".to_string())),
+                    [] => Err(NErr::value_error(
+                        "can't remove flat identifier".to_string(),
+                    )),
                     [rest @ .., last_i] => {
-                        env.borrow_mut().modify_existing_var(&s, |(_type, vv)| {
-                            modify_existing_index(vv, &rest, |x| match (x, last_i) {
-                                (Obj::Seq(Seq::List(xs)), EvaluatedIndexOrSlice::Index(i)) => {
-                                    let ii = pythonic_index(xs, i)?;
-                                    Ok(Rc::make_mut(xs).remove(ii))
-                                }
-                                (Obj::Seq(Seq::List(xs)), EvaluatedIndexOrSlice::Slice(i, j)) => {
-                                    let (lo, hi) = pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
-                                    Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
-                                }
-                                (Obj::Seq(Seq::Dict(xs, _)), EvaluatedIndexOrSlice::Index(i)) => {
-                                    Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(NErr::key_error("key not found in dict".to_string()))
-                                }
-                                // TODO: remove parts of strings...
-                                // TODO: vecs, bytes...
-                                _ => Err(NErr::type_error("can't remove".to_string())),
+                        env.borrow_mut()
+                            .modify_existing_var(&s, |(_type, vv)| {
+                                modify_existing_index(vv, &rest, |x| match (x, last_i) {
+                                    (Obj::Seq(Seq::List(xs)), EvaluatedIndexOrSlice::Index(i)) => {
+                                        let ii = pythonic_index(xs, i)?;
+                                        Ok(Rc::make_mut(xs).remove(ii))
+                                    }
+                                    (
+                                        Obj::Seq(Seq::List(xs)),
+                                        EvaluatedIndexOrSlice::Slice(i, j),
+                                    ) => {
+                                        let (lo, hi) =
+                                            pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
+                                        Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
+                                    }
+                                    (
+                                        Obj::Seq(Seq::Dict(xs, _)),
+                                        EvaluatedIndexOrSlice::Index(i),
+                                    ) => Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(
+                                        NErr::key_error("key not found in dict".to_string()),
+                                    ),
+                                    // TODO: remove parts of strings...
+                                    // TODO: vecs, bytes...
+                                    _ => Err(NErr::type_error("can't remove".to_string())),
+                                })
                             })
-                        }).ok_or(NErr::name_error("var not found to remove".to_string()))?
+                            .ok_or(NErr::name_error("var not found to remove".to_string()))?
                     }
-                }
+                },
                 _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
             }
         }
@@ -4198,10 +5141,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             Expr::CommaSeq(xs) => Ok(Obj::from(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        modify_every(env, &p, &mut |x| { ff.run(env, vec![x, res.clone()]) })?;
+                        modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()]))?;
                         Ok(Obj::Null)
                     }
-                    opv => Err(NErr::type_error(format!("Operator assignment: operator is not function {:?}", opv))),
+                    opv => Err(NErr::type_error(format!(
+                        "Operator assignment: operator is not function {:?}",
+                        opv
+                    ))),
                 }
             } else {
                 let pv = eval_lvalue_as_obj(env, pat)?;
@@ -4220,7 +5166,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         assign(&mut env.borrow_mut(), &p, None, &fres)?;
                         Ok(Obj::Null)
                     }
-                    opv => Err(NErr::type_error(format!("Operator assignment: operator is not function {:?}", opv))),
+                    opv => Err(NErr::type_error(format!(
+                        "Operator assignment: operator is not function {:?}",
+                        opv
+                    ))),
                 }
             }
         }
@@ -4229,14 +5178,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             let a = eval_seq(env, args)?;
             call_or_part_apply(env, fr, a)
         }
-        Expr::CommaSeq(_) => Err(NErr::syntax_error("Comma seqs only allowed directly on a side of an assignment (for now)".to_string())),
-        Expr::Splat(_) => Err(NErr::syntax_error("Splats only allowed on an assignment-related place or in call or list (?)".to_string())),
-        Expr::List(xs) => {
-            Ok(Obj::from(eval_seq(env, xs)?))
-        }
-        Expr::Vector(xs) => {
-            to_obj_vector(eval_seq(env, xs)?.into_iter().map(Ok))
-        }
+        Expr::CommaSeq(_) => Err(NErr::syntax_error(
+            "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
+        )),
+        Expr::Splat(_) => Err(NErr::syntax_error(
+            "Splats only allowed on an assignment-related place or in call or list (?)".to_string(),
+        )),
+        Expr::List(xs) => Ok(Obj::from(eval_seq(env, xs)?)),
+        Expr::Vector(xs) => to_obj_vector(eval_seq(env, xs)?.into_iter().map(Ok)),
         Expr::Dict(def, xs) => {
             let dv = match def {
                 Some(de) => Some(evaluate(env, de)?),
@@ -4290,7 +5239,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 let mut acc = Vec::new();
                 let mut f = |e| acc.push(e);
                 match evaluate_for(env, iteratees.as_slice(), body, &mut f) {
-                    Ok(()) | Err(NErr::Break(Obj::Null))  => Ok(Obj::from(acc)),
+                    Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::from(acc)),
                     Err(NErr::Break(e)) => Ok(e), // ??????
                     Err(e) => Err(e),
                 }
@@ -4330,15 +5279,20 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             // error??
             Ok(Obj::Null)
         }
-        Expr::Lambda(params, body) => {
-            Ok(Obj::Func(Func::Closure(Closure {
+        Expr::Lambda(params, body) => Ok(Obj::Func(
+            Func::Closure(Closure {
                 params: Rc::clone(params),
                 body: Rc::clone(body),
                 env: Rc::clone(env),
-            }), Precedence::zero()))
-        }
+            }),
+            Precedence::zero(),
+        )),
         Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
-            match if *i == 0 { top.backrefs.last() } else { top.backrefs.get(i - 1) } {
+            match if *i == 0 {
+                top.backrefs.last()
+            } else {
+                top.backrefs.get(i - 1)
+            } {
                 Some(x) => Ok(x.clone()),
                 None => Err(NErr::index_error("no such backref".to_string())),
             }
@@ -4353,7 +5307,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
 }
 
 pub fn simple_eval(code: &str) -> Obj {
-    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(io::empty()), output: Box::new(io::sink()) });
+    let mut env = Env::new(TopEnv {
+        backrefs: Vec::new(),
+        input: Box::new(io::empty()),
+        output: Box::new(io::sink()),
+    });
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
@@ -4391,7 +5349,7 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(TwoNumsBuiltin {
         name: "+".to_string(),
-        body: |a, b| { Ok(Obj::Num(a + b)) }
+        body: |a, b| Ok(Obj::Num(a + b)),
     });
     env.insert_builtin(BasicBuiltin {
         name: "-".to_string(),
@@ -4399,18 +5357,18 @@ pub fn initialize(env: &mut Env) {
         body: |_env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a-b)), a, b),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b),
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
-        }
+        },
     });
     // for partial application
     env.insert_builtin(TwoNumsBuiltin {
         name: "subtract".to_string(),
-        body: |a, b| { Ok(Obj::Num(a - b)) }
+        body: |a, b| Ok(Obj::Num(a - b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "*".to_string(),
-        body: |a, b| { Ok(Obj::Num(a * b)) }
+        body: |a, b| Ok(Obj::Num(a * b)),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "sum".to_string(),
@@ -4419,12 +5377,12 @@ pub fn initialize(env: &mut Env) {
             let mut acc = NNum::from(0);
             for x in mut_obj_into_iter(&mut arg, "sum")? {
                 match x {
-                    Obj::Num(n) => { acc += &n }
+                    Obj::Num(n) => acc += &n,
                     _ => Err(NErr::argument_error("non-number".to_string()))?,
                 }
             }
             Ok(Obj::Num(acc))
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "product".to_string(),
@@ -4433,103 +5391,125 @@ pub fn initialize(env: &mut Env) {
             let mut acc = NNum::from(1);
             for x in mut_obj_into_iter(&mut arg, "product")? {
                 match x {
-                    Obj::Num(n) => { acc = acc * &n }
+                    Obj::Num(n) => acc = acc * &n,
                     _ => Err(NErr::argument_error("non-number".to_string()))?,
                 }
             }
             Ok(Obj::Num(acc))
-        }
+        },
     });
-    env.insert_builtin(ComparisonOperator::of("==", |ord| ord == Ordering::Equal));
-    env.insert_builtin(ComparisonOperator::of("!=", |ord| ord != Ordering::Equal));
-    env.insert_builtin(ComparisonOperator::of("<",  |ord| ord == Ordering::Less));
-    env.insert_builtin(ComparisonOperator::of(">",  |ord| ord == Ordering::Greater));
-    env.insert_builtin(ComparisonOperator::of("<=", |ord| ord != Ordering::Greater));
-    env.insert_builtin(ComparisonOperator::of(">=", |ord| ord != Ordering::Less));
+    env.insert_builtin(ComparisonOperator::of("==", |a, b| Ok(a == b)));
+    env.insert_builtin(ComparisonOperator::of("!=", |a, b| Ok(a != b)));
+    env.insert_builtin(ComparisonOperator::of("<", |a, b| {
+        Ok(ncmp(a, b)? == Ordering::Less)
+    }));
+    env.insert_builtin(ComparisonOperator::of("<", |a, b| {
+        Ok(ncmp(a, b)? == Ordering::Greater)
+    }));
+    env.insert_builtin(ComparisonOperator::of("<=", |a, b| {
+        Ok(ncmp(a, b)? != Ordering::Greater)
+    }));
+    env.insert_builtin(ComparisonOperator::of(">=", |a, b| {
+        Ok(ncmp(a, b)? != Ordering::Less)
+    }));
     env.insert_builtin(TwoNumsBuiltin {
         name: "/".to_string(),
-        body: |a, b| { Ok(Obj::Num(a / b)) }
+        body: |a, b| Ok(Obj::Num(a / b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
-        body: |a, b| { Ok(Obj::Num(a % b)) }
+        body: |a, b| Ok(Obj::Num(a % b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
-        body: |a, b| { Ok(Obj::Num(a.div_floor(&b))) }
+        body: |a, b| Ok(Obj::Num(a.div_floor(&b))),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
-        body: |a, b| { Ok(Obj::Num(a.mod_floor(&b))) }
+        body: |a, b| Ok(Obj::Num(a.mod_floor(&b))),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
-        body: |a, b| { Ok(Obj::Num(a.pow_num(&b))) }
+        body: |a, b| Ok(Obj::Num(a.pow_num(&b))),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "&".to_string(),
-        body: |a, b| { Ok(Obj::Num(a & b)) }
+        body: |a, b| Ok(Obj::Num(a & b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "|".to_string(),
-        body: |a, b| { Ok(Obj::Num(a | b)) }
+        body: |a, b| Ok(Obj::Num(a | b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "@".to_string(),
-        body: |a, b| { Ok(Obj::Num(a ^ b)) }
+        body: |a, b| Ok(Obj::Num(a ^ b)),
     });
-    env.insert_builtin_with_precedence(TwoNumsBuiltin {
-        name: "<<".to_string(),
-        body: |a, b| { Ok(Obj::Num(a << b)) }
-    }, Precedence(EXPONENT_PRECEDENCE, Assoc::Left));
-    env.insert_builtin_with_precedence(TwoNumsBuiltin {
-        name: ">>".to_string(),
-        body: |a, b| { Ok(Obj::Num(a >> b)) }
-    }, Precedence(EXPONENT_PRECEDENCE, Assoc::Left));
+    env.insert_builtin_with_precedence(
+        TwoNumsBuiltin {
+            name: "<<".to_string(),
+            body: |a, b| Ok(Obj::Num(a << b)),
+        },
+        Precedence(EXPONENT_PRECEDENCE, Assoc::Left),
+    );
+    env.insert_builtin_with_precedence(
+        TwoNumsBuiltin {
+            name: ">>".to_string(),
+            body: |a, b| Ok(Obj::Num(a >> b)),
+        },
+        Precedence(EXPONENT_PRECEDENCE, Assoc::Left),
+    );
     env.insert_builtin(OneNumBuiltin {
         name: "abs".to_string(),
-        body: |a| { Ok(Obj::Num(a.abs())) }
+        body: |a| Ok(Obj::Num(a.abs())),
     });
     env.insert_builtin(OneNumBuiltin {
         name: "floor".to_string(),
-        body: |a| { Ok(Obj::Num(a.floor())) }
+        body: |a| Ok(Obj::Num(a.floor())),
     });
     env.insert_builtin(OneNumBuiltin {
         name: "ceil".to_string(),
-        body: |a| { Ok(Obj::Num(a.ceil())) }
+        body: |a| Ok(Obj::Num(a.ceil())),
     });
     env.insert_builtin(OneNumBuiltin {
         name: "signum".to_string(),
-        body: |a| { Ok(Obj::Num(a.signum())) }
+        body: |a| Ok(Obj::Num(a.signum())),
     });
     env.insert_builtin(OneNumBuiltin {
         name: "even".to_string(),
-        body: |a| { Ok(Obj::Num(NNum::iverson(!a.mod_floor(&NNum::from(2)).is_nonzero()))) }
+        body: |a| {
+            Ok(Obj::Num(NNum::iverson(
+                !a.mod_floor(&NNum::from(2)).is_nonzero(),
+            )))
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "odd".to_string(),
-        body: |a| { Ok(Obj::Num(NNum::iverson(a.mod_floor(&NNum::from(2)) == NNum::from(1)))) }
+        body: |a| {
+            Ok(Obj::Num(NNum::iverson(
+                a.mod_floor(&NNum::from(2)) == NNum::from(1),
+            )))
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "real_part".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
             Ok(f) => Ok(Obj::from(f)),
             Err(c) => Ok(Obj::from(c.re)),
-        }
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "imag_part".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
             Ok(_) => Ok(Obj::from(0.0)),
             Err(c) => Ok(Obj::from(c.im)),
-        }
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "complex_parts".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
             Ok(f) => Ok(Obj::list(vec![Obj::from(f), Obj::from(0.0)])),
             Err(c) => Ok(Obj::list(vec![Obj::from(c.re), Obj::from(c.im)])),
-        }
+        },
     });
 
     macro_rules! forward_f64 {
@@ -4539,9 +5519,9 @@ pub fn initialize(env: &mut Env) {
                 body: |a| match a.to_f64_or_inf_or_complex() {
                     Ok(f) => Ok(Obj::from(f.$name())),
                     Err(c) => Ok(Obj::from(c.$name())),
-                }
+                },
             });
-        }
+        };
     }
     forward_f64!(sin);
     forward_f64!(sinh);
@@ -4568,10 +5548,14 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(OneNumBuiltin {
         name: "factorize".to_string(),
-        body: |a| { Ok(Obj::list(
-                                nnum::lazy_factorize(into_bigint_ok(a)?).into_iter().map(
-                                    |(a, e)| Obj::list(vec![Obj::from(a), Obj::from(e)]))
-                                .collect())) }
+        body: |a| {
+            Ok(Obj::list(
+                nnum::lazy_factorize(into_bigint_ok(a)?)
+                    .into_iter()
+                    .map(|(a, e)| Obj::list(vec![Obj::from(a), Obj::from(e)]))
+                    .collect(),
+            ))
+        },
     });
     env.insert_builtin(TilBuiltin {});
     env.insert_builtin(ToBuiltin {});
@@ -4587,15 +5571,19 @@ pub fn initialize(env: &mut Env) {
                 }
             }
             _ => Err(NErr::type_error("arg non-string".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "chr".to_string(),
         can_refer: false,
         body: |arg| match arg {
-            Obj::Num(n) => Ok(Obj::from(nnum::char_from_bigint(&into_bigint_ok(n)?).ok_or(NErr::value_error("chr of int oob".to_string()))?.to_string())),
+            Obj::Num(n) => Ok(Obj::from(
+                nnum::char_from_bigint(&into_bigint_ok(n)?)
+                    .ok_or(NErr::value_error("chr of int oob".to_string()))?
+                    .to_string(),
+            )),
             _ => Err(NErr::type_error("not number".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "len".to_string(),
@@ -4604,9 +5592,9 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(s) => match s.len() {
                 Some(n) => Ok(Obj::from(n)),
                 None => Ok(Obj::from(f64::INFINITY)),
-            }
-            e => Err(NErr::type_error(format!("sequence only, got {}", e)))
-        }
+            },
+            e => Err(NErr::type_error(format!("sequence only, got {}", e))),
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "then".to_string(),
@@ -4661,25 +5649,34 @@ pub fn initialize(env: &mut Env) {
         name: ">>>".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(g), Box::new(f)), Precedence::zero())),
-            _ => Err(NErr::type_error("not function".to_string()))
-        }
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
+                Func::Composition(Box::new(g), Box::new(f)),
+                Precedence::zero(),
+            )),
+            _ => Err(NErr::type_error("not function".to_string())),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "<<<".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::Composition(Box::new(f), Box::new(g)), Precedence::zero())),
-            _ => Err(NErr::type_error("not function".to_string()))
-        }
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
+                Func::Composition(Box::new(f), Box::new(g)),
+                Precedence::zero(),
+            )),
+            _ => Err(NErr::type_error("not function".to_string())),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "on".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::OnComposition(Box::new(f), Box::new(g)), Precedence::zero())),
-            _ => Err(NErr::type_error("not function".to_string()))
-        }
+            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
+                Func::OnComposition(Box::new(f), Box::new(g)),
+                Precedence::zero(),
+            )),
+            _ => Err(NErr::type_error("not function".to_string())),
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "repeat".to_string(),
@@ -4695,7 +5692,11 @@ pub fn initialize(env: &mut Env) {
         name: "iota".to_string(),
         can_refer: false,
         body: |a| match a {
-            Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(x, None, BigInt::from(1)))))),
+            Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                x,
+                None,
+                BigInt::from(1),
+            ))))),
             _ => Err(NErr::generic_argument_error()),
         },
     });
@@ -4706,7 +5707,7 @@ pub fn initialize(env: &mut Env) {
             let v = to_rc_vec_obj(a)?;
             let iv = Rc::new((0..v.len()).collect());
             Ok(Obj::Seq(Seq::Stream(Rc::new(Permutations(v, Some(iv))))))
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "combinations".to_string(),
@@ -4715,13 +5716,15 @@ pub fn initialize(env: &mut Env) {
             let v = to_rc_vec_obj(a)?;
             match b {
                 Obj::Num(n) => {
-                    let u = n.to_usize().ok_or(NErr::value_error("bad combo".to_string()))?;
+                    let u = n
+                        .to_usize()
+                        .ok_or(NErr::value_error("bad combo".to_string()))?;
                     let iv = Rc::new((0..u).collect());
                     Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(iv))))))
                 }
-                _ => Err(NErr::generic_argument_error())
+                _ => Err(NErr::generic_argument_error()),
             }
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "each".to_string(),
@@ -4735,9 +5738,9 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::Null)
                 }
-                _ => Err(NErr::type_error("not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string())),
             }
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
@@ -4746,38 +5749,43 @@ pub fn initialize(env: &mut Env) {
             let it = mut_obj_into_iter(&mut a, "map")?;
             match b {
                 Obj::Func(b, _) => Ok(Obj::from(
-                    it.map(|e| b.run(env, vec![e])).collect::<NRes<Vec<Obj>>>()?
+                    it.map(|e| b.run(env, vec![e]))
+                        .collect::<NRes<Vec<Obj>>>()?,
                 )),
-                _ => Err(NErr::type_error("not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string())),
             }
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_keys".to_string(),
         can_refer: true,
         body: |env, a, b| match (a, b) {
-            (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => {
-                Ok(Obj::dict(
-                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((to_key(b.run(env, vec![key_to_obj(k)])?)?, v))).collect::<NRes<HashMap<ObjKey, Obj>>>()?, def.map(|x| *x)))
-            }
-            _ => Err(NErr::type_error("not dict or callable".to_string()))
-        }
+            (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
+                Rc::make_mut(&mut d)
+                    .drain()
+                    .map(|(k, v)| Ok((to_key(b.run(env, vec![key_to_obj(k)])?)?, v)))
+                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                def.map(|x| *x),
+            )),
+            _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_values".to_string(),
         can_refer: true,
         body: |env, a, b| match (a, b) {
-            (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => {
-                Ok(Obj::dict(
-                    Rc::make_mut(&mut d).drain().map(|(k, v)| Ok((k, b.run(env, vec![v])?))).collect::<NRes<HashMap<ObjKey, Obj>>>()?,
-                    match def {
-                        Some(def) => Some(b.run(env, vec![*def])?),
-                        None => None
-                    }
-                ))
-            }
-            _ => Err(NErr::type_error("not dict or callable".to_string()))
-        }
+            (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
+                Rc::make_mut(&mut d)
+                    .drain()
+                    .map(|(k, v)| Ok((k, b.run(env, vec![v])?)))
+                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                match def {
+                    Some(def) => Some(b.run(env, vec![*def])?),
+                    None => None,
+                },
+            )),
+            _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "flatten".to_string(),
@@ -4790,7 +5798,7 @@ pub fn initialize(env: &mut Env) {
                 }
             }
             Ok(Obj::from(acc))
-        }
+        },
     });
     // haxx
     env.insert_builtin(OneArgBuiltin {
@@ -4802,7 +5810,7 @@ pub fn initialize(env: &mut Env) {
                 acc.push(key_to_obj(k));
             }
             Ok(Obj::from(acc))
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "values".to_string(),
@@ -4813,7 +5821,7 @@ pub fn initialize(env: &mut Env) {
                 acc.push(v);
             }
             Ok(Obj::from(acc))
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
@@ -4831,9 +5839,9 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::type_error("not callable".to_string()))
+                _ => Err(NErr::type_error("not callable".to_string())),
             }
-        }
+        },
     });
     env.insert_builtin(Zip {});
     env.insert_builtin(Parallel {});
@@ -4853,9 +5861,9 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::type_error("list and func only".to_string()))
+                _ => Err(NErr::type_error("list and func only".to_string())),
             }
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "reject".to_string(),
@@ -4872,44 +5880,48 @@ pub fn initialize(env: &mut Env) {
                     }
                     Ok(Obj::from(acc))
                 }
-                _ => Err(NErr::type_error("seq and func only".to_string()))
+                _ => Err(NErr::type_error("seq and func only".to_string())),
             }
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "any".to_string(),
         can_refer: true,
         body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
-            Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()))),
+            Few2::One(mut a) => Ok(Obj::from(
+                mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()),
+            )),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "any")? {
                     if b.run(env, vec![e])?.truthy() {
-                        return Ok(Obj::from(true))
+                        return Ok(Obj::from(true));
                     }
                 }
                 Ok(Obj::from(false))
             }
             _ => Err(NErr::argument_error("too many args".to_string())),
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "all".to_string(),
         can_refer: true,
         body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
-            Few2::One(mut a) => Ok(Obj::from(mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()))),
+            Few2::One(mut a) => Ok(Obj::from(
+                mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()),
+            )),
             Few2::Two(mut a, Obj::Func(b, _)) => {
                 for e in mut_obj_into_iter(&mut a, "all")? {
                     if !b.run(env, vec![e])?.truthy() {
-                        return Ok(Obj::from(false))
+                        return Ok(Obj::from(false));
                     }
                 }
                 Ok(Obj::from(true))
             }
             Few2::Two(_, b) => Err(NErr::type_error(format!("second arg not func: {}", b))),
             ff => Err(NErr::argument_error(format!("too many args: {:?}", ff))),
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "count".to_string(),
@@ -4920,17 +5932,21 @@ pub fn initialize(env: &mut Env) {
             match b {
                 Obj::Func(b, _) => {
                     for e in it {
-                        if b.run(env, vec![e])?.truthy() { c += 1; }
+                        if b.run(env, vec![e])?.truthy() {
+                            c += 1;
+                        }
                     }
                 }
                 b => {
                     for e in it {
-                        if e == b { c += 1; }
+                        if e == b {
+                            c += 1;
+                        }
                     }
                 }
             }
             Ok(Obj::from(c))
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "frequencies".to_string(),
@@ -4941,8 +5957,11 @@ pub fn initialize(env: &mut Env) {
             for e in it {
                 *c.entry(to_key(e)?).or_insert(0) += 1;
             }
-            Ok(Obj::Seq(Seq::Dict(Rc::new(c.into_iter().map(|(k, v)| (k, Obj::from(v))).collect()), Some(Box::new(Obj::from(0))))))
-        }
+            Ok(Obj::Seq(Seq::Dict(
+                Rc::new(c.into_iter().map(|(k, v)| (k, Obj::from(v))).collect()),
+                Some(Box::new(Obj::from(0))),
+            )))
+        },
     });
     env.insert_builtin(Fold {});
     env.insert_builtin(TwoArgBuiltin {
@@ -4953,18 +5972,18 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).push(b.clone());
                 Ok(Obj::Seq(Seq::List(a)))
             }
-            _ => Err(NErr::argument_error("2 args only".to_string()))
-        }
+            _ => Err(NErr::argument_error("2 args only".to_string())),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "<=>".to_string(),
         can_refer: false,
         body: |a, b| match ncmp(&a, &b) {
-            Ok(Ordering::Less)    => Ok(Obj::Num(-NNum::from(1))),
-            Ok(Ordering::Equal)   => Ok(Obj::Num( NNum::from(0))),
-            Ok(Ordering::Greater) => Ok(Obj::Num( NNum::from(1))),
+            Ok(Ordering::Less) => Ok(Obj::Num(-NNum::from(1))),
+            Ok(Ordering::Equal) => Ok(Obj::Num(NNum::from(0))),
+            Ok(Ordering::Greater) => Ok(Obj::Num(NNum::from(1))),
             Err(e) => Err(e),
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "max".to_string(),
@@ -4977,7 +5996,9 @@ pub fn initialize(env: &mut Env) {
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == Ordering::Greater,
-                    } { ret = Some(b) }
+                    } {
+                        ret = Some(b)
+                    }
                 }
                 Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
             }
@@ -4987,11 +6008,13 @@ pub fn initialize(env: &mut Env) {
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == Ordering::Greater,
-                    } { ret = Some(b) }
+                    } {
+                        ret = Some(b)
+                    }
                 }
                 Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
             }
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "min".to_string(),
@@ -5004,9 +6027,13 @@ pub fn initialize(env: &mut Env) {
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == Ordering::Less,
-                    } { ret = Some(b) }
+                    } {
+                        ret = Some(b)
+                    }
                 }
-                Ok(ret.ok_or(NErr::empty_error("min: empty".to_string()))?.clone())
+                Ok(ret
+                    .ok_or(NErr::empty_error("min: empty".to_string()))?
+                    .clone())
             }
             Few::Many(t) => {
                 let mut ret: Option<Obj> = None;
@@ -5014,59 +6041,75 @@ pub fn initialize(env: &mut Env) {
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == Ordering::Less,
-                    } { ret = Some(b) }
+                    } {
+                        ret = Some(b)
+                    }
                 }
-                Ok(ret.ok_or(NErr::empty_error("min: empty".to_string()))?.clone())
+                Ok(ret
+                    .ok_or(NErr::empty_error("min: empty".to_string()))?
+                    .clone())
             }
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut().mut_top_env(|t| {
-                let mut started = false;
-                for arg in args.iter() {
-                    if started { write!(t.output, " ")?; }
-                    started = true;
-                    write!(t.output, "{}", arg)?;
-                }
-                writeln!(t.output, "")
-            }).unwrap(); // TODO: propagate error
+            env.borrow_mut()
+                .mut_top_env(|t| {
+                    let mut started = false;
+                    for arg in args.iter() {
+                        if started {
+                            write!(t.output, " ")?;
+                        }
+                        started = true;
+                        write!(t.output, "{}", arg)?;
+                    }
+                    writeln!(t.output, "")
+                })
+                .unwrap(); // TODO: propagate error
             Ok(Obj::Null)
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "echo".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut().mut_top_env(|t| {
-                let mut started = false;
-                for arg in args.iter() {
-                    if started { write!(t.output, " ")?; }
-                    started = true;
-                    write!(t.output, "{}", arg)?;
-                }
-                write!(t.output, "") // FIXME >.<
-            }).unwrap(); // TODO: propagate error
+            env.borrow_mut()
+                .mut_top_env(|t| {
+                    let mut started = false;
+                    for arg in args.iter() {
+                        if started {
+                            write!(t.output, " ")?;
+                        }
+                        started = true;
+                        write!(t.output, "{}", arg)?;
+                    }
+                    write!(t.output, "") // FIXME >.<
+                })
+                .unwrap(); // TODO: propagate error
             Ok(Obj::Null)
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut().mut_top_env(|t| {
-                let mut started = false;
-                for arg in args.iter() {
-                    if started { write!(t.output, " ")?; }
-                    started = true;
-                    write!(t.output, "{:?}", arg)?;
-                }
-                writeln!(t.output, "")
-            }).unwrap(); // TODO: propagate error
+            env.borrow_mut()
+                .mut_top_env(|t| {
+                    let mut started = false;
+                    for arg in args.iter() {
+                        if started {
+                            write!(t.output, " ")?;
+                        }
+                        started = true;
+                        write!(t.output, "{:?}", arg)?;
+                    }
+                    writeln!(t.output, "")
+                })
+                .unwrap(); // TODO: propagate error
             Ok(Obj::Null)
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "is".to_string(),
@@ -5095,21 +6138,25 @@ pub fn initialize(env: &mut Env) {
                 acc += format!("{}", arg).as_str();
             }
             Ok(Obj::from(acc))
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "*$".to_string(),
         can_refer: false,
         body: |a, b| {
-            Ok(Obj::from(format!("{}", b).repeat(obj_clamp_to_usize_ok(&a)?)))
-        }
+            Ok(Obj::from(
+                format!("{}", b).repeat(obj_clamp_to_usize_ok(&a)?),
+            ))
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "$*".to_string(),
         can_refer: false,
         body: |a, b| {
-            Ok(Obj::from(format!("{}", a).repeat(obj_clamp_to_usize_ok(&b)?)))
-        }
+            Ok(Obj::from(
+                format!("{}", a).repeat(obj_clamp_to_usize_ok(&b)?),
+            ))
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "upper".to_string(),
@@ -5117,7 +6164,7 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_uppercase())),
             _ => Err(NErr::type_error("expected string".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "lower".to_string(),
@@ -5125,7 +6172,7 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_lowercase())),
             _ => Err(NErr::type_error("expected string".to_string())),
-        }
+        },
     });
     // unlike python these are true on empty string. hmm...
     env.insert_builtin(OneArgBuiltin {
@@ -5134,7 +6181,7 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_uppercase))),
             _ => Err(NErr::type_error("expected string".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "is_lower".to_string(),
@@ -5142,30 +6189,32 @@ pub fn initialize(env: &mut Env) {
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_lowercase))),
             _ => Err(NErr::type_error("expected string".to_string())),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "join".to_string(),
         can_refer: false,
-        body: |a, b| {
-            Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?))
-        }
+        body: |a, b| Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "split".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(s.split(&*t).map(|w| Obj::from(w.to_string())).collect())),
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
+                s.split(&*t).map(|w| Obj::from(w.to_string())).collect(),
+            )),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "starts_with".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.starts_with(&*t))),
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => {
+                Ok(Obj::from(s.starts_with(&*t)))
+            }
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "ends_with".to_string(),
@@ -5173,7 +6222,7 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.ends_with(&*t))),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "strip".to_string(),
@@ -5181,7 +6230,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "trim".to_string(),
@@ -5189,23 +6238,29 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "words".to_string(),
         can_refer: false,
         body: |a| match a {
-            Obj::Seq(Seq::String(s)) => Ok(Obj::list(s.split_whitespace().map(|w| Obj::from(w)).collect())),
+            Obj::Seq(Seq::String(s)) => Ok(Obj::list(
+                s.split_whitespace().map(|w| Obj::from(w)).collect(),
+            )),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "lines".to_string(),
         can_refer: false,
         body: |a| match a {
-            Obj::Seq(Seq::String(s)) => Ok(Obj::list(s.split_terminator('\n').map(|w| Obj::from(w.to_string())).collect())),
+            Obj::Seq(Seq::String(s)) => Ok(Obj::list(
+                s.split_terminator('\n')
+                    .map(|w| Obj::from(w.to_string()))
+                    .collect(),
+            )),
             _ => Err(NErr::argument_error(":(".to_string())),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "unwords".to_string(),
@@ -5219,7 +6274,7 @@ pub fn initialize(env: &mut Env) {
             let mut s = simple_join(a, "\n")?;
             s.push('\n');
             Ok(Obj::from(s))
-        }
+        },
     });
 
     env.insert_builtin(TwoArgBuiltin {
@@ -5227,7 +6282,8 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
-                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
+                let r = Regex::new(&b)
+                    .map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
                 if r.capture_locations().len() == 1 {
                     match r.find(&a) {
                         None => Ok(Obj::Null),
@@ -5236,35 +6292,50 @@ pub fn initialize(env: &mut Env) {
                 } else {
                     match r.captures(&a) {
                         None => Ok(Obj::Null),
-                        Some(c) => Ok(Obj::list(c.iter().map(|cap| match cap {
-                            None => Obj::Null, // didn't participate
-                            Some(s) => Obj::from(s.as_str()),
-                        }).collect())),
+                        Some(c) => Ok(Obj::list(
+                            c.iter()
+                                .map(|cap| match cap {
+                                    None => Obj::Null, // didn't participate
+                                    Some(s) => Obj::from(s.as_str()),
+                                })
+                                .collect(),
+                        )),
                     }
                 }
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "search_all".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
-                let r = Regex::new(&b).map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
+                let r = Regex::new(&b)
+                    .map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
                 if r.capture_locations().len() == 1 {
-                    Ok(Obj::list(r.find_iter(&a).map(|c| Obj::from(c.as_str())).collect()))
+                    Ok(Obj::list(
+                        r.find_iter(&a).map(|c| Obj::from(c.as_str())).collect(),
+                    ))
                 } else {
-                    Ok(Obj::list(r.captures_iter(&a).map(|c|
-                        Obj::list(c.iter().map(|cap| match cap {
-                            None => Obj::Null, // didn't participate
-                            Some(s) => Obj::from(s.as_str()),
-                        }).collect())
-                    ).collect()))
+                    Ok(Obj::list(
+                        r.captures_iter(&a)
+                            .map(|c| {
+                                Obj::list(
+                                    c.iter()
+                                        .map(|cap| match cap {
+                                            None => Obj::Null, // didn't participate
+                                            Some(s) => Obj::from(s.as_str()),
+                                        })
+                                        .collect(),
+                                )
+                            })
+                            .collect(),
+                    ))
                 }
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
 
     // Haskell-ism for partial application (when that works)
@@ -5294,7 +6365,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::List(a)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ".+".to_string(),
@@ -5305,7 +6376,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::List(b)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "+.".to_string(),
@@ -5316,31 +6387,27 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::List(a)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "..".to_string(),
         can_refer: false,
-        body: |a, b| Ok(Obj::from(vec![a, b]))
+        body: |a, b| Ok(Obj::from(vec![a, b])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "=>".to_string(),
         can_refer: false,
-        body: |a, b| Ok(Obj::from(vec![a, b]))
+        body: |a, b| Ok(Obj::from(vec![a, b])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "*.".to_string(),
         can_refer: false,
-        body: |a, b| {
-            Ok(Obj::list(vec![b; obj_clamp_to_usize_ok(&a)?]))
-        }
+        body: |a, b| Ok(Obj::list(vec![b; obj_clamp_to_usize_ok(&a)?])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ".*".to_string(),
         can_refer: false,
-        body: |a, b| {
-            Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?]))
-        }
+        body: |a, b| Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?])),
     });
     env.insert_builtin(CartesianProduct {});
     env.insert_builtin(OneArgBuiltin {
@@ -5358,8 +6425,8 @@ pub fn initialize(env: &mut Env) {
         can_refer: true,
         body: |a| match a {
             Obj::Func(f, _) => Ok(Obj::Func(Func::Flip(Box::new(f)), Precedence::zero())),
-            _ => Err(NErr::type_error("not function".to_string()))
-        }
+            _ => Err(NErr::type_error("not function".to_string())),
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "first".to_string(),
@@ -5367,7 +6434,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 0),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "second".to_string(),
@@ -5375,7 +6442,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 1),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "third".to_string(),
@@ -5383,7 +6450,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 2),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "last".to_string(),
@@ -5391,7 +6458,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, -1),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "tail".to_string(),
@@ -5416,7 +6483,9 @@ pub fn initialize(env: &mut Env) {
                 // ????
                 let mut ret = Ok(());
                 v.sort_by(|a, b| {
-                    if ret.is_err() { return Ordering::Equal }
+                    if ret.is_err() {
+                        return Ordering::Equal;
+                    }
                     match a.partial_cmp(b) {
                         Some(k) => k,
                         None => {
@@ -5428,7 +6497,7 @@ pub fn initialize(env: &mut Env) {
                 ret
             })?)),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "sort_by".to_string(),
@@ -5438,19 +6507,27 @@ pub fn initialize(env: &mut Env) {
                 // ????
                 let mut ret = Ok(());
                 v.sort_by(|a, b| {
-                    if ret.is_err() { return Ordering::Equal }
+                    if ret.is_err() {
+                        return Ordering::Equal;
+                    }
                     match f.run(env, vec![a.clone(), b.clone()]) {
                         Ok(k) => match ncmp(&k, &Obj::from(0)) {
                             Ok(ord) => ord,
-                            Err(e) => { ret = Err(e); Ordering::Equal }
+                            Err(e) => {
+                                ret = Err(e);
+                                Ordering::Equal
+                            }
+                        },
+                        Err(e) => {
+                            ret = Err(e);
+                            Ordering::Equal
                         }
-                        Err(e) => { ret = Err(e); Ordering::Equal }
                     }
                 });
                 ret
             })?)),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "reverse".to_string(),
@@ -5458,7 +6535,7 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(s.reversed()?)),
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
 
     // Dicts
@@ -5471,7 +6548,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "|.".to_string(),
@@ -5482,7 +6559,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "discard".to_string(),
@@ -5493,7 +6570,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "-.".to_string(),
@@ -5504,7 +6581,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             _ => Err(NErr::generic_argument_error()),
-        }
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "insert".to_string(),
@@ -5517,10 +6594,10 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
                     Ok(Obj::Seq(Seq::Dict(a, d)))
                 }
-                _ => Err(NErr::argument_error("RHS must be pair".to_string()))
-            }
-            _ => Err(NErr::generic_argument_error())
-        }
+                _ => Err(NErr::argument_error("RHS must be pair".to_string())),
+            },
+            _ => Err(NErr::generic_argument_error()),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "|..".to_string(),
@@ -5532,10 +6609,10 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
                     Ok(Obj::Seq(Seq::Dict(a, d)))
                 }
-                _ => Err(NErr::argument_error("RHS must be pair".to_string()))
-            }
-            _ => Err(NErr::generic_argument_error())
-        }
+                _ => Err(NErr::argument_error("RHS must be pair".to_string())),
+            },
+            _ => Err(NErr::generic_argument_error()),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "&&".to_string(),
@@ -5545,32 +6622,44 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error())
-        }
+            _ => Err(NErr::generic_argument_error()),
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "set".to_string(),
         can_refer: false,
         body: |mut a| {
-            Ok(Obj::dict(mut_obj_into_iter(&mut a, "set conversion")?.map(|k| Ok((to_key(k)?, Obj::Null))).collect::<NRes<HashMap<ObjKey,Obj>>>()?, None))
-        }
+            Ok(Obj::dict(
+                mut_obj_into_iter(&mut a, "set conversion")?
+                    .map(|k| Ok((to_key(k)?, Obj::Null)))
+                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                None,
+            ))
+        },
     });
     // TODO
     env.insert_builtin(OneArgBuiltin {
         name: "items".to_string(),
         can_refer: false,
         body: |mut a| {
-            Ok(Obj::list(mut_obj_into_iter_pairs(&mut a, "items conversion")?.map(|(k, v)| Obj::from(vec![key_to_obj(k), v])).collect()))
-        }
+            Ok(Obj::list(
+                mut_obj_into_iter_pairs(&mut a, "items conversion")?
+                    .map(|(k, v)| Obj::from(vec![key_to_obj(k), v]))
+                    .collect(),
+            ))
+        },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "enumerate".to_string(),
         can_refer: false,
         body: |mut a| {
-            Ok(Obj::list(mut_obj_into_iter_pairs(&mut a, "enumerate conversion")?.map(|(k, v)| Obj::from(vec![key_to_obj(k), v])).collect()))
-        }
+            Ok(Obj::list(
+                mut_obj_into_iter_pairs(&mut a, "enumerate conversion")?
+                    .map(|(k, v)| Obj::from(vec![key_to_obj(k), v]))
+                    .collect(),
+            ))
+        },
     });
-
 
     env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
@@ -5580,38 +6669,48 @@ pub fn initialize(env: &mut Env) {
                 Ok(Some(code)) => evaluate(env, &code),
                 Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
                 Err(s) => Err(NErr::value_error(s)),
-            }
+            },
             s => Err(NErr::value_error(format!("can't eval {:?}", s))),
-        }
+        },
     });
 
     // TODO safety, wasm version
     env.insert_builtin(BasicBuiltin {
         name: "input".to_string(),
         can_refer: false,
-        body: |env, args| if args.is_empty() {
-            let mut input = String::new();
-            match env.borrow_mut().mut_top_env(|t| t.input.read_line(&mut input)) {
-                Ok(_) => Ok(Obj::from(input)),
-                Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+        body: |env, args| {
+            if args.is_empty() {
+                let mut input = String::new();
+                match env
+                    .borrow_mut()
+                    .mut_top_env(|t| t.input.read_line(&mut input))
+                {
+                    Ok(_) => Ok(Obj::from(input)),
+                    Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+                }
+            } else {
+                Err(NErr::generic_argument_error())
             }
-        } else {
-            Err(NErr::generic_argument_error())
-        }
+        },
     });
     env.insert_builtin(BasicBuiltin {
         name: "read".to_string(),
         can_refer: false,
-        body: |env, args| if args.is_empty() {
-            let mut input = String::new();
-            // to EOF
-            match env.borrow_mut().mut_top_env(|t| t.input.read_to_string(&mut input)) {
-                Ok(_) => Ok(Obj::from(input)),
-                Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+        body: |env, args| {
+            if args.is_empty() {
+                let mut input = String::new();
+                // to EOF
+                match env
+                    .borrow_mut()
+                    .mut_top_env(|t| t.input.read_to_string(&mut input))
+                {
+                    Ok(_) => Ok(Obj::from(input)),
+                    Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+                }
+            } else {
+                Err(NErr::generic_argument_error())
             }
-        } else {
-            Err(NErr::generic_argument_error())
-        }
+        },
     });
 
     // TODO safety, wasm version
@@ -5622,20 +6721,22 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::String(s)) => match fs::read_to_string(&*s) {
                 Ok(c) => Ok(Obj::from(c)),
                 Err(e) => Err(NErr::io_error(format!("{}", e))),
-            }
-            _ => Err(NErr::generic_argument_error())
-        }
+            },
+            _ => Err(NErr::generic_argument_error()),
+        },
     });
 
     // this isn't a very good assert
     env.insert_builtin(OneArgBuiltin {
         name: "assert".to_string(),
         can_refer: false,
-        body: |a| if a.truthy() {
-            Ok(Obj::Null)
-        } else {
-            Err(NErr::assert_error(format!("{}", a)))
-        }
+        body: |a| {
+            if a.truthy() {
+                Ok(Obj::Null)
+            } else {
+                Err(NErr::assert_error(format!("{}", a)))
+            }
+        },
     });
 
     // l m a o
@@ -5651,34 +6752,59 @@ pub fn initialize(env: &mut Env) {
                             Ok(Some(code)) => evaluate(env, &code),
                             Ok(None) => Err(NErr::value_error("empty file".to_string())),
                             Err(s) => Err(NErr::value_error(format!("lex failed: {}", s))),
-                        }
+                        },
                         Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
-                    }
+                    },
                     a => Err(NErr::type_error(format!("can't import: {}", a))),
                 }?
             }
             Ok(ret)
-        }
+        },
+    });
+
+    env.insert_builtin(BasicBuiltin {
+        name: "vars".to_string(),
+        can_refer: false,
+        body: |env, _args| {
+            Ok(Obj::Seq(Seq::Dict(
+                Rc::new(
+                    env.borrow()
+                        .vars
+                        .iter()
+                        .map(|(k, (_t, v))| (ObjKey::String(Rc::new(k.clone())), v.clone()))
+                        .collect::<HashMap<ObjKey, Obj>>(),
+                ),
+                None,
+            )))
+        },
     });
 }
 
 // copypasta
-#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct WasmOutputs {
     output: String,
     error: String,
 }
 
-#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 impl WasmOutputs {
-    pub fn get_output(&self) -> String { self.output.to_string() }
-    pub fn get_error(&self) -> String { self.error.to_string() }
+    pub fn get_output(&self) -> String {
+        self.output.to_string()
+    }
+    pub fn get_error(&self) -> String {
+        self.error.to_string()
+    }
 }
 
 // stdout and error
-#[cfg_attr(target_arch="wasm32", wasm_bindgen)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
-    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(io::Cursor::new(input.as_bytes().to_vec())), output: Box::new(Vec::new()) });
+    let mut env = Env::new(TopEnv {
+        backrefs: Vec::new(),
+        input: Box::new(io::Cursor::new(input.as_bytes().to_vec())),
+        output: Box::new(Vec::new()),
+    });
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
@@ -5694,14 +6820,15 @@ pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
         },
         Ok(Some(code)) => match evaluate(&e, &code) {
             Err(err) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e|
-                   String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()),
+                output: e.borrow_mut().mut_top_env(|e| {
+                    String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
+                }),
                 error: format!("{}", err),
             },
             Ok(res) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e|
-                   String::from_utf8_lossy(e.output.extract().unwrap()).into_owned())
-                + &format!("{}", res),
+                output: e.borrow_mut().mut_top_env(|e| {
+                    String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
+                }) + &format!("{}", res),
                 error: String::new(),
             },
         },
