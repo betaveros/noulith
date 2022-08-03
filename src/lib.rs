@@ -16,8 +16,9 @@ use std::cell::RefCell;
 use regex::Regex;
 
 use num::complex::Complex64;
-use num::bigint::BigInt;
+use num::bigint::{BigInt, Sign};
 use num::ToPrimitive;
+use num::Signed;
 
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
@@ -108,6 +109,260 @@ pub enum Obj {
     Func(Func, Precedence),
 }
 
+// to support Rc<dyn Stream>, can't have Clone, because
+// https://doc.rust-lang.org/reference/items/traits.html#object-safety
+//
+// more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
+pub trait Stream: Iterator<Item=Obj> + Display + Debug {
+    fn clone_box(&self) -> Box<dyn Stream>;
+    // for now this means length or infinity, not sure yet
+    fn len(&self) -> Option<usize> {
+        let mut s = self.clone_box();
+        let mut ret = 0;
+        while let Some(_) = s.next() {
+            ret += 1;
+        }
+        Some(ret)
+    }
+    fn force(&self) -> Option<Vec<Obj>> {
+        Some(self.clone_box().collect())
+    }
+    fn pythonic_index_isize(&self, mut i: isize) -> Option<Obj> {
+        if i >= 0 {
+            let mut it = self.clone_box();
+            while let Some(e) = it.next() {
+                if i == 0 { return Some(e) }
+                i -= 1;
+            }
+            None
+        } else {
+            let mut v = self.force()?;
+            let i2 = (i + (v.len() as isize)) as usize;
+            if i2 < v.len() { Some(v.swap_remove(i2)) } else { None }
+        }
+    }
+    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
+        let lo = lo.unwrap_or(0);
+        match (lo, hi) {
+            (lo, None) if lo >= 0 => {
+                let mut it = self.clone_box();
+                for _ in 0..lo {
+                    if it.next().is_none() {
+                        return Some(Seq::Stream(Rc::from(it)))
+                    }
+                }
+                Some(Seq::Stream(Rc::from(it)))
+            }
+            (lo, Some(hi)) if lo >= 0 && hi >= 0 => {
+                let mut it = self.clone_box();
+                let mut v = Vec::new();
+                for _ in 0..lo {
+                    match it.next() {
+                        Some(_) => {}
+                        None => break
+                    }
+                }
+                for _ in lo..hi {
+                    match it.next() {
+                        Some(x) => v.push(x),
+                        None => break
+                    }
+                }
+                Some(Seq::List(Rc::new(v)))
+            }
+            (lo, hi) => {
+                let mut v = self.force()?;
+                let (lo, hi) = pythonic_slice(v.as_slice(), Some(lo), hi);
+                Some(Seq::List(Rc::new(v.drain(lo..hi).collect())))
+            }
+        }
+    }
+    fn reversed(&self) -> Option<Seq> {
+        let mut xs = self.force()?;
+        xs.reverse();
+        Some(Seq::List(Rc::new(xs)))
+    }
+}
+#[derive(Debug, Clone)]
+struct Repeat(Obj);
+impl Iterator for Repeat {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> { Some(self.0.clone()) }
+}
+impl Display for Repeat {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "repeat({})", self.0)
+    }
+}
+impl Stream for Repeat {
+    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn len(&self) -> Option<usize> { None }
+    fn force(&self) -> Option<Vec<Obj>> { None }
+    fn pythonic_index_isize(&self, _: isize) -> Option<Obj> { Some(self.0.clone()) }
+    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
+        let lo = match lo {
+            Some(x) => if x < 0 { x - 1 } else { x }, None => 0
+        };
+        let hi = match hi {
+            Some(x) => if x < 0 { x - 1 } else { x }, None => -1
+        };
+        Some(match (lo < 0, hi < 0) {
+            (true, true) | (false, false) => Seq::List(Rc::new(vec![self.0.clone(); (hi - lo).max(0) as usize])),
+            (true, false) => Seq::List(Rc::new(Vec::new())),
+            (false, true) => Seq::Stream(Rc::new(self.clone())),
+        })
+    }
+    fn reversed(&self) -> Option<Seq> { Some(Seq::Stream(Rc::new(self.clone()))) }
+}
+#[derive(Debug, Clone)]
+// just gonna say this has to be nonempty
+struct Cycle(Rc<Vec<Obj>>, usize);
+impl Iterator for Cycle {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let ret = self.0[self.1].clone();
+        self.1 = (self.1 + 1) % self.0.len();
+        Some(ret)
+    }
+}
+impl Display for Cycle {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "cycle({:?})", self.0)
+    }
+}
+impl Stream for Cycle {
+    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn len(&self) -> Option<usize> { None }
+    fn force(&self) -> Option<Vec<Obj>> { None }
+    fn pythonic_index_isize(&self, i: isize) -> Option<Obj> {
+        Some(self.0[(self.1 as isize + i).rem_euclid(self.0.len() as isize) as usize].clone())
+    }
+    fn reversed(&self) -> Option<Seq> {
+        let mut v: Vec<Obj> = (*self.0).clone();
+        v.reverse();
+        // 0 -> 0, 1 -> n - 1...
+        let i = (v.len() - self.1) % v.len();
+        Some(Seq::Stream(Rc::new(Cycle(Rc::new(v), i))))
+    }
+}
+#[derive(Debug, Clone)]
+struct Range(BigInt, Option<BigInt>, BigInt);
+impl Iterator for Range {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let Range(start, end, step) = self;
+        if match (step.sign(), end) {
+            (_, None) => false,
+            (Sign::Minus, Some(end)) => start <= end,
+            (Sign::NoSign | Sign::Plus, Some(end)) => start >= end,
+        } {
+            None
+        } else {
+            let ret = start.clone();
+            *start += &*step;
+            Some(Obj::from(ret))
+        }
+    }
+}
+impl Display for Range {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match &self.1 {
+            Some(end) => write!(formatter, "{} til {} by {}", self.0, end, self.2),
+            None => write!(formatter, "{} til ... by {}", self.0, self.2),
+        }
+    }
+}
+impl Stream for Range {
+    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+    fn len(&self) -> Option<usize> {
+        let Range(start, end, step) = self;
+        let end = end.as_ref()?;
+        match step.sign() {
+            // weird
+            Sign::NoSign => if start < end { None } else { Some(0) },
+            Sign::Minus => {
+                ((end - start - step + 1usize).max(BigInt::from(0)) / (-step)).to_usize()
+            }
+            Sign::Plus => {
+                ((end - start + step - 1usize).max(BigInt::from(0)) / step).to_usize()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Permutations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
+impl Iterator for Permutations {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let v = Rc::make_mut(self.1.as_mut()?);
+        let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
+
+        // 1 6 4 2 -> 2 1 4 6
+        // last increase, and the largest index of something larger than it
+        let mut up = None;
+        for i in 0..(v.len() - 1) {
+            if v[i] < v[i+1] {
+                up = Some((i, i+1));
+            } else {
+                match &mut up {
+                    Some((inc, linc)) => if v[i+1] > v[*inc] { *linc = i+1; }
+                    None => {}
+                }
+            }
+        }
+        match up {
+            Some((inc, linc)) => {
+                v.swap(inc, linc);
+                v[inc+1..].reverse();
+            }
+            None => { self.1 = None; }
+        }
+        Some(ret)
+    }
+}
+impl Display for Permutations {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "permutations({:?}; {:?})", self.0, self.1)
+    }
+}
+impl Stream for Permutations {
+    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+}
+
+#[derive(Debug, Clone)]
+struct Combinations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
+impl Iterator for Combinations {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let v = Rc::make_mut(self.1.as_mut()?);
+        let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
+
+        let mut last = self.0.len();
+        for i in (0..v.len()).rev() {
+            if v[i] + 1 < last {
+                // found the next
+                v[i] += 1;
+                for j in i+1..v.len() {
+                    v[j] = v[j-1] + 1;
+                }
+                return Some(ret)
+            }
+            last -= 1;
+        }
+        self.1 = None;
+        Some(ret)
+    }
+}
+impl Display for Combinations {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "combinations({:?}; {:?})", self.0, self.1)
+    }
+}
+impl Stream for Combinations {
+    fn clone_box(&self) -> Box<dyn Stream> { Box::new(self.clone()) }
+}
+
 #[derive(Debug, Clone)]
 pub enum Seq {
     String(Rc<String>),
@@ -115,11 +370,12 @@ pub enum Seq {
     Dict(Rc<HashMap<ObjKey, Obj>>, Option<Box<Obj>>), // default value
     Vector(Rc<Vec<NNum>>),
     Bytes(Rc<Vec<u8>>),
+    Stream(Rc<dyn Stream>),
 }
 
 // more like an arbitrary predicate. want to add subscripted types to this later
 #[derive(Debug, Clone)]
-pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Vector, Bytes, Func, Type, Any }
+pub enum ObjType { Null, Int, Float, Complex, Number, String, List, Dict, Vector, Bytes, Stream, Func, Type, Any }
 
 impl ObjType {
     fn name(&self) -> String {
@@ -134,6 +390,7 @@ impl ObjType {
             ObjType::Dict => "dict",
             ObjType::Vector => "vector",
             ObjType::Bytes => "bytes",
+            ObjType::Stream => "stream",
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
@@ -152,6 +409,7 @@ fn type_of(obj: &Obj) -> ObjType {
         Obj::Seq(Seq::Dict(..)) => ObjType::Dict,
         Obj::Seq(Seq::Vector(_)) => ObjType::Vector,
         Obj::Seq(Seq::Bytes(..)) => ObjType::Bytes,
+        Obj::Seq(Seq::Stream(_)) => ObjType::Stream,
         Obj::Func(Func::Type(_), _) => ObjType::Type,
         Obj::Func(..) => ObjType::Func,
     }
@@ -269,6 +527,7 @@ impl Obj {
             Obj::Seq(Seq::Dict(x, _)) => !x.is_empty(),
             Obj::Seq(Seq::Vector(x)) => !x.is_empty(),
             Obj::Seq(Seq::Bytes(x)) => !x.is_empty(),
+            Obj::Seq(Seq::Stream(x)) => x.len() == Some(0),
             Obj::Func(..) => true,
         }
     }
@@ -395,6 +654,10 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         }
         Obj::Seq(Seq::Vector(x)) => Ok(ObjKey::Vector(Rc::new(x.iter().map(|e| NTotalNum(e.clone())).collect()))),
         Obj::Seq(Seq::Bytes(x)) => Ok(ObjKey::Bytes(x)),
+        Obj::Seq(Seq::Stream(s)) =>
+            Ok(ObjKey::List(Rc::new(
+                    s.force().ok_or(NErr::type_error("infinite stream as key".to_string()))?
+                    .into_iter().map(|e| to_key(e)).collect::<NRes<Vec<ObjKey>>>()?))),
         Obj::Func(..) => Err(NErr::type_error("Using a function as a dictionary key isn't supported".to_string())),
     }
 }
@@ -582,6 +845,10 @@ impl MyDisplay for Obj {
                 write_slice(xs.as_slice(), formatter, flags)?;
                 write!(formatter, ")")
             }
+            Obj::Seq(Seq::Stream(x)) => {
+                // FIXME
+                write!(formatter, "Stream({})", x)
+            }
             Obj::Seq(Seq::Bytes(xs)) => {
                 write_bytes(xs.as_slice(), formatter, flags)
             }
@@ -725,6 +992,7 @@ pub enum ObjToCloningIter<'a> {
     String(std::str::Chars<'a>),
     Vector(std::slice::Iter<'a, NNum>),
     Bytes(std::slice::Iter<'a, u8>),
+    Stream(Box<dyn Stream>),
 }
 
 fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
@@ -734,6 +1002,7 @@ fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
         Seq::String(s) => ObjToCloningIter::String(s.chars()),
         Seq::Vector(v) => ObjToCloningIter::Vector(v.iter()),
         Seq::Bytes(v) => ObjToCloningIter::Bytes(v.iter()),
+        Seq::Stream(v) => ObjToCloningIter::Stream(v.clone_box()),
     }
 }
 
@@ -754,6 +1023,7 @@ impl Iterator for ObjToCloningIter<'_> {
             ObjToCloningIter::String(it) => Some(Obj::from(it.next()?)),
             ObjToCloningIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
             ObjToCloningIter::Bytes(it) => Some(Obj::from(*it.next()? as usize)),
+            ObjToCloningIter::Stream(it) => Some(Obj::from(it.next()?)),
         }
     }
 }
@@ -765,6 +1035,7 @@ pub enum MutObjIntoIter<'a> {
     String(std::str::Chars<'a>),
     Vector(RcVecIter<'a, NNum>),
     Bytes(RcVecIter<'a, u8>),
+    Stream(Box<dyn Stream>),
 }
 
 // iterates over (index, value) or (key, value)
@@ -774,6 +1045,7 @@ pub enum MutObjIntoIterPairs<'a> {
     String(usize, std::str::Chars<'a>),
     Vector(usize, RcVecIter<'a, NNum>),
     Bytes(usize, RcVecIter<'a, u8>),
+    Stream(usize, Box<dyn Stream>),
 }
 
 fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
@@ -783,6 +1055,7 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
         Seq::String(s) => MutObjIntoIter::String(s.chars()),
         Seq::Vector(v) => MutObjIntoIter::Vector(mut_rc_vec_into_iter(v)),
         Seq::Bytes(v) => MutObjIntoIter::Bytes(mut_rc_vec_into_iter(v)),
+        Seq::Stream(v) => MutObjIntoIter::Stream(v.clone_box()),
     }
 }
 
@@ -803,6 +1076,7 @@ impl Iterator for MutObjIntoIter<'_> {
             MutObjIntoIter::String(it) => Some(Obj::from(it.next()?)),
             MutObjIntoIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
             MutObjIntoIter::Bytes(it) => Some(Obj::from(it.next()? as usize)),
+            MutObjIntoIter::Stream(it) => Some(Obj::from(it.next()?)),
         }
     }
 }
@@ -814,6 +1088,7 @@ fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
         Seq::String(s) => MutObjIntoIterPairs::String(0, s.chars()),
         Seq::Vector(v) => MutObjIntoIterPairs::Vector(0, mut_rc_vec_into_iter(v)),
         Seq::Bytes(v) => MutObjIntoIterPairs::Bytes(0, mut_rc_vec_into_iter(v)),
+        Seq::Stream(v) => MutObjIntoIterPairs::Stream(0, v.clone_box()),
     }
 }
 
@@ -834,18 +1109,20 @@ impl Iterator for MutObjIntoIterPairs<'_> {
             MutObjIntoIterPairs::String(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
             MutObjIntoIterPairs::Vector(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::Num(o))) }
             MutObjIntoIterPairs::Bytes(i, it) => { let o = it.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o as usize))) }
+            MutObjIntoIterPairs::Stream(i, s) => { let o = s.next()?; let j = *i; *i += 1; Some((ObjKey::from(j), Obj::from(o))) }
         }
     }
 }
 
 impl Seq {
-    fn len(self) -> usize {
+    fn len(self) -> Option<usize> {
         match self {
-            Seq::List(d) => d.len(),
-            Seq::String(d) => d.len(),
-            Seq::Dict(d, _) => d.len(),
-            Seq::Vector(v) => v.len(),
-            Seq::Bytes(v) => v.len(),
+            Seq::List(d)    => Some(d.len()),
+            Seq::String(d)  => Some(d.len()),
+            Seq::Dict(d, _) => Some(d.len()),
+            Seq::Vector(v)  => Some(v.len()),
+            Seq::Bytes(v)   => Some(v.len()),
+            Seq::Stream(v) => v.len(),
         }
     }
 
@@ -870,6 +1147,7 @@ impl Seq {
                 Rc::make_mut(&mut v).reverse();
                 Ok(Seq::Bytes(v))
             }
+            Seq::Stream(s) => s.reversed().ok_or(NErr::type_error(format!("can't reverse this stream {:?}", s))),
         }
     }
 }
@@ -946,6 +1224,10 @@ pub enum Func {
     Composition(Box<Func>, Box<Func>),
     // (f on g)(a1, a2, ...) = f(g(a1), g(a2), ...)
     OnComposition(Box<Func>, Box<Func>),
+    // (a1, a2, ...) -> [f1(a1), f2(a2), ...]
+    Parallel(Vec<Func>),
+    // a... -> [f1(a...), f2(a...), ...]
+    Fanout(Vec<Func>),
     // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
     Flip(Box<Func>),
     Type(ObjType),
@@ -954,7 +1236,7 @@ pub enum Func {
 type REnv = Rc<RefCell<Env>>;
 
 impl Func {
-    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, mut args: Vec<Obj>) -> NRes<Obj> {
         match self {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
@@ -973,6 +1255,27 @@ impl Func {
                     mapped_args.push(g.run(env, vec![e])?);
                 }
                 f.run(env, mapped_args)
+            }
+            Func::Parallel(fs) => {
+                let mut res = Vec::new();
+                if args.len() == 1 {
+                    // TODO check lengths
+                    for (f, a) in fs.iter().zip(mut_obj_into_iter(&mut args.remove(0), "parallel")?) {
+                        res.push(f.run(env, vec![a])?);
+                    }
+                } else if args.len() == fs.len() {
+                    for (f, a) in fs.iter().zip(args) {
+                        res.push(f.run(env, vec![a])?);
+                    }
+                }
+                Ok(Obj::list(res))
+            }
+            Func::Fanout(fs) => {
+                let mut res = Vec::new();
+                for f in fs {
+                    res.push(f.run(env, args.clone())?);
+                }
+                Ok(Obj::list(res))
             }
             Func::Flip(f) => match few2(args) {
                 // weird lol
@@ -996,6 +1299,8 @@ impl Func {
             Func::PartialApp2(f, _) => f.can_refer(),
             Func::Composition(f, g) => f.can_refer() || g.can_refer(),
             Func::OnComposition(f, g) => f.can_refer() || g.can_refer(),
+            Func::Parallel(fs) => fs.iter().any(|f| f.can_refer()),
+            Func::Fanout(fs) => fs.iter().any(|f| f.can_refer()),
             Func::Flip(f) => f.can_refer(),
             Func::Type(_) => false,
         }
@@ -1009,6 +1314,8 @@ impl Func {
             Func::PartialApp2(..) => None,
             Func::Composition(..) => None,
             Func::OnComposition(..) => None,
+            Func::Parallel(_) => None,
+            Func::Fanout(_) => None,
             Func::Flip(..) => None,
             Func::Type(_) => None,
         }
@@ -1024,6 +1331,9 @@ impl Display for Func {
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
             Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
+            // TODO
+            Func::Parallel(fs) => write!(formatter, "Parallel({:?})", fs),
+            Func::Fanout(fs) => write!(formatter, "Fanout({:?})", fs),
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             Func::Type(t) => write!(formatter, "{}", t.name()),
         }
@@ -1140,15 +1450,13 @@ impl Builtin for TilBuiltin {
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
-                // TODO: should be lazy
-                Ok(Obj::list(num::range(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect()))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), BigInt::from(1))))))
             }
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
                 let n3 = into_bigint_ok(c)?;
-                // TODO: should be lazy
-                Ok(Obj::list(num::range_step(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect()))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), n3)))))
             }
             _ => Err(NErr::argument_error(format!("Bad args for til")))
         }
@@ -1178,16 +1486,14 @@ impl Builtin for ToBuiltin {
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
-                // TODO: should be lazy
-                Ok(Obj::list(num::range_inclusive(n1, n2).map(|x| Obj::Num(NNum::from(x))).collect()))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2 + 1usize), BigInt::from(1))))))
             }
             Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, a), // sugar lmao
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
                 let n3 = into_bigint_ok(c)?;
-                // TODO: should be lazy
-                Ok(Obj::list(num::range_step_inclusive(n1, n2, n3).map(|x| Obj::Num(NNum::from(x))).collect()))
+                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(if n3.is_negative() { n2 - 1usize } else { n2 + 1usize }), n3)))))
             }
             _ => Err(NErr::argument_error(format!("Bad args for to")))
         }
@@ -1418,6 +1724,65 @@ impl Builtin for Replace {
         }
     }
 }
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct Parallel {}
+
+impl Builtin for Parallel {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        let mut res = Vec::new();
+        for arg in args {
+            match arg {
+                Obj::Func(f, _) => res.push(f),
+                _ => return Err(NErr::type_error("parallel: functions only".to_string()))
+            }
+        }
+        Ok(Obj::Func(Func::Parallel(res), Precedence::zero()))
+    }
+
+    fn builtin_name(&self) -> &str { "***" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "***" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct Fanout {}
+
+impl Builtin for Fanout {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        let mut res = Vec::new();
+        for arg in args {
+            match arg {
+                Obj::Func(f, _) => res.push(f),
+                _ => return Err(NErr::type_error("fanout: functions only".to_string()))
+            }
+        }
+        Ok(Obj::Func(Func::Fanout(res), Precedence::zero()))
+    }
+
+    fn builtin_name(&self) -> &str { "&&&" }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "&&&" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            }
+            _ => None,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub struct Preposition(String);
@@ -2816,6 +3181,14 @@ fn assign_all(env: &mut Env, lhs: &[Box<EvaluatedLvalue>], rt: Option<&ObjType>,
 // =============================
 
 fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every: bool) -> NRes<()> {
+    // hack
+    match (&*lhs, indexes) {
+        (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
+            let mm = m.clone_box();
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+        }
+        _ => {}
+    }
     match (lhs, indexes) {
         (lhs, []) => { *lhs = value; Ok(()) }
         (Obj::Seq(s), [fi, rest @ ..]) => match (s, fi) {
@@ -2825,7 +3198,7 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
             (Seq::List(v), EvaluatedIndexOrSlice::Slice(i, j)) => {
                 if every {
                     let v = Rc::make_mut(v);
-                    let (lo, hi) = pythonic_slice(v, i.as_ref(), j.as_ref())?;
+                    let (lo, hi) = pythonic_slice_obj(v, i.as_ref(), j.as_ref())?;
                     for i in lo..hi {
                         set_index(&mut v[i], rest, value.clone(), true)?;
                     }
@@ -2912,6 +3285,7 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
                 }
             }
             (Seq::Bytes(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
+            (Seq::Stream(_), _) => panic!("stream handled above"),
         }
         (Obj::Func(_, Precedence(p, _)), [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))]) => match &***r {
             "precedence" => match value {
@@ -2930,6 +3304,14 @@ fn set_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], value: Obj, every
 // be careful not to call this with both lhs holding a mutable reference into a RefCell and rhs
 // trying to take such a reference!
 fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: impl FnOnce(&mut Obj) -> NRes<Obj>) -> NRes<Obj> {
+    // hack
+    match (&*lhs, indexes) {
+        (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
+            let mm = m.clone_box();
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+        }
+        _ => {}
+    }
     match indexes.split_first() {
         None => f(lhs),
         Some((i, rest)) => {
@@ -2962,6 +3344,14 @@ fn modify_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: im
 
 // same here...
 fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice], f: &mut impl FnMut(&mut Obj) -> NRes<()>) -> NRes<()> {
+    // hack
+    match (&*lhs, indexes) {
+        (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
+            let mm = m.clone_box();
+            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!("Can't assign to unforceable stream")))?)
+        }
+        _ => {}
+    }
     match indexes.split_first() {
         None => f(lhs),
         Some((i, rest)) => {
@@ -2970,7 +3360,7 @@ fn modify_every_existing_index(lhs: &mut Obj, indexes: &[EvaluatedIndexOrSlice],
                     modify_every_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
                 }
                 (Obj::Seq(Seq::List(v)), EvaluatedIndexOrSlice::Slice(lo, hi)) => {
-                    let (lo, hi) = pythonic_slice(v, lo.as_ref(), hi.as_ref())?;
+                    let (lo, hi) = pythonic_slice_obj(v, lo.as_ref(), hi.as_ref())?;
                     for m in &mut Rc::make_mut(v)[lo..hi] {
                         modify_every_existing_index(m, rest, f)?
                     }
@@ -3290,26 +3680,32 @@ fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
 }
 
 // for slicing
-fn clamped_pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
-    match i {
-        Obj::Num(ii) => match ii.to_isize() {
-            Some(n) => {
-                if n >= 0 { return Ok((n as usize).min(xs.len())) }
+fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
+    if i >= 0 { return (i as usize).min(xs.len()) }
 
-                let i2 = n + (xs.len() as isize);
-                if i2 < 0 { Ok(0) } else { Ok(i2 as usize) }
-            }
-            _ => Err(NErr::index_error(format!("Slice index out of bounds of isize or non-integer: {:?}", ii)))
-        }
-        _ => Err(NErr::index_error(format!("Invalid (non-numeric) slice index: {:?}", i))),
+    let i2 = i + (xs.len() as isize);
+    if i2 < 0 { 0 } else { i2 as usize }
+}
+
+fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usize, usize) {
+    (
+        match lo { Some(lo) => clamped_pythonic_index(xs, lo), None => 0 },
+        match hi { Some(hi) => clamped_pythonic_index(xs, hi), None => xs.len() },
+    )
+}
+
+fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
+    match x {
+        None => Ok(None),
+        Some(Obj::Num(n)) => Ok(Some(n.to_isize().ok_or(NErr::index_error(format!("Slice index out of bounds of isize or non-integer: {:?}", n)))?)),
+        Some(x) => Err(NErr::index_error(format!("Invalid (non-numeric) slice index: {:?}", x)))
     }
 }
 
-fn pythonic_slice<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(usize, usize)> {
-    Ok((
-        match lo { Some(lo) => clamped_pythonic_index(xs, &lo)?, None => 0 },
-        match hi { Some(hi) => clamped_pythonic_index(xs, &hi)?, None => xs.len() },
-    ))
+fn pythonic_slice_obj<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(usize, usize)> {
+    let lo = obj_to_isize_slice_index(lo)?;
+    let hi = obj_to_isize_slice_index(hi)?;
+    Ok(pythonic_slice(xs, lo, hi))
 }
 
 fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
@@ -3338,6 +3734,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
             // TODO copypasta
             Ok(Obj::from(String::from_utf8_lossy(&bs[i..i+1]).into_owned()))
         }
+        Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!("Can't index stream {:?} {:?}", v, i))),
         Seq::Dict(..) => Err(NErr::type_error("dict is not a linear sequence".to_string())),
     }
 }
@@ -3364,6 +3761,15 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             }
             Seq::Vector(v) => Ok(Obj::Num(v[pythonic_index(v, &ii)?].clone())),
             Seq::Bytes(v) => Ok(Obj::from(v[pythonic_index(v, &ii)?] as usize)),
+            Seq::Stream(v) => match ii {
+                Obj::Num(ii) => match ii.to_isize() {
+                    Some(n) => {
+                        v.pythonic_index_isize(n).ok_or(NErr::type_error(format!("Can't index stream {:?} {:?}", v, ii)))
+                    }
+                    _ => Err(NErr::index_error(format!("Index out of bounds of isize or non-integer: {:?}", ii)))
+                }
+                _ => Err(NErr::index_error(format!("Invalid (non-numeric) index: {:?}", ii))),
+            }
         }
         (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
             "precedence" => Ok(Obj::from(*p)),
@@ -3386,6 +3792,9 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
             Seq::Dict(..) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ii))),
             Seq::Vector(xx) => Ok(Obj::Num(xx[cyclic_index(xx, &ii)?].clone())),
             Seq::Bytes(xx) => Ok(Obj::from(xx[cyclic_index(xx, &ii)?] as usize)),
+            Seq::Stream(v) => {
+                Err(NErr::type_error(format!("Can't cyclically index stream {:?} {:?}", v, ii)))
+            }
         }
         // TODO other sequences
         (xr, ir) => Err(NErr::type_error(format!("can't cyclically index {:?} {:?}", xr, ir))),
@@ -3395,14 +3804,19 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
 fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
     match (&xr, lo, hi) {
         (Obj::Seq(Seq::List(xx)), lo, hi) => {
-            let (lo, hi) = pythonic_slice(xx, lo.as_ref(), hi.as_ref())?;
+            let (lo, hi) = pythonic_slice_obj(xx, lo.as_ref(), hi.as_ref())?;
             Ok(Obj::from(xx[lo..hi].to_vec()))
         }
         (Obj::Seq(Seq::String(s)), lo, hi) => {
             let bs = s.as_bytes();
-            let (lo, hi) = pythonic_slice(bs, lo.as_ref(), hi.as_ref())?;
+            let (lo, hi) = pythonic_slice_obj(bs, lo.as_ref(), hi.as_ref())?;
             // TODO this was the path of least resistance; idk what good semantics actually are
             Ok(Obj::from(String::from_utf8_lossy(&bs[lo..hi]).into_owned()))
+        }
+        (Obj::Seq(Seq::Stream(s)), lo, hi) => {
+            let lo = obj_to_isize_slice_index(lo.as_ref())?;
+            let hi = obj_to_isize_slice_index(hi.as_ref())?;
+            Ok(Obj::Seq(s.pythonic_slice(lo, hi).ok_or(NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)))?))
         }
         (xr, lo, hi) => Err(NErr::type_error(format!("can't slice {:?} {:?} {:?}", xr, lo, hi))),
     }
@@ -3458,6 +3872,9 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     Ok(i) => Ok(Obj::from(v[i] as usize)),
                     Err(_) => Ok(Obj::Null),
                 }
+            }
+            Seq::Stream(v) => {
+                Err(NErr::type_error(format!("Can't safe index stream {:?} {:?}", v, ir)))
             }
         }
         _ => Err(NErr::type_error(format!("Can't safe index {:?} {:?}", xr, ir))),
@@ -3747,7 +4164,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                                     Ok(Rc::make_mut(xs).remove(ii))
                                 }
                                 (Obj::Seq(Seq::List(xs)), EvaluatedIndexOrSlice::Slice(i, j)) => {
-                                    let (lo, hi) = pythonic_slice(xs, i.as_ref(), j.as_ref())?;
+                                    let (lo, hi) = pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
                                     Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
                                 }
                                 (Obj::Seq(Seq::Dict(xs, _)), EvaluatedIndexOrSlice::Index(i)) => {
@@ -3955,6 +4372,13 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
         started = true;
     }
     Ok(acc)
+}
+
+fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
+    match a {
+        Obj::Seq(Seq::List(v)) => Ok(v),
+        mut a => Ok(Rc::new(mut_obj_into_iter(&mut a, "to_rc_vec")?.collect())),
+    }
 }
 
 pub fn initialize(env: &mut Env) {
@@ -4177,7 +4601,10 @@ pub fn initialize(env: &mut Env) {
         name: "len".to_string(),
         can_refer: false,
         body: |arg| match arg {
-            Obj::Seq(s) => Ok(Obj::Num(NNum::from(s.len()))),
+            Obj::Seq(s) => match s.len() {
+                Some(n) => Ok(Obj::from(n)),
+                None => Ok(Obj::from(f64::INFINITY)),
+            }
             e => Err(NErr::type_error(format!("sequence only, got {}", e)))
         }
     });
@@ -4252,6 +4679,48 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(Func::OnComposition(Box::new(f), Box::new(g)), Precedence::zero())),
             _ => Err(NErr::type_error("not function".to_string()))
+        }
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "repeat".to_string(),
+        can_refer: false,
+        body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Repeat(a))))),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "cycle".to_string(),
+        can_refer: false,
+        body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Cycle(to_rc_vec_obj(a)?, 0))))),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "iota".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(x, None, BigInt::from(1)))))),
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "permutations".to_string(),
+        can_refer: false,
+        body: |a| {
+            let v = to_rc_vec_obj(a)?;
+            let iv = Rc::new((0..v.len()).collect());
+            Ok(Obj::Seq(Seq::Stream(Rc::new(Permutations(v, Some(iv))))))
+        }
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "combinations".to_string(),
+        can_refer: false,
+        body: |a, b| {
+            let v = to_rc_vec_obj(a)?;
+            match b {
+                Obj::Num(n) => {
+                    let u = n.to_usize().ok_or(NErr::value_error("bad combo".to_string()))?;
+                    let iv = Rc::new((0..u).collect());
+                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(iv))))))
+                }
+                _ => Err(NErr::generic_argument_error())
+            }
         }
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -4367,6 +4836,8 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(Zip {});
+    env.insert_builtin(Parallel {});
+    env.insert_builtin(Fanout {});
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
         can_refer: true,
@@ -4923,6 +5394,21 @@ pub fn initialize(env: &mut Env) {
         }
     });
     env.insert_builtin(OneArgBuiltin {
+        name: "tail".to_string(),
+        can_refer: false,
+        body: |a| slice(a, Some(Obj::from(1)), None),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "take".to_string(),
+        can_refer: false,
+        body: |a, b| slice(a, None, Some(b)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "drop".to_string(),
+        can_refer: false,
+        body: |a, b| slice(a, Some(b), None),
+    });
+    env.insert_builtin(OneArgBuiltin {
         name: "sort".to_string(),
         can_refer: false,
         body: |a| match a {
@@ -5084,6 +5570,7 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::list(mut_obj_into_iter_pairs(&mut a, "enumerate conversion")?.map(|(k, v)| Obj::from(vec![key_to_obj(k), v])).collect()))
         }
     });
+
 
     env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
