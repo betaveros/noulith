@@ -547,6 +547,19 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 "float: expected number or string".to_string(),
             )),
         },
+        ObjType::Number => match arg {
+            Obj::Num(n) => Ok(Obj::Num(n)),
+            Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
+                Ok(x) => Ok(Obj::from(x)),
+                Err(_) => match s.parse::<f64>() {
+                    Ok(x) => Ok(Obj::from(x)),
+                    Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
+                },
+            },
+            _ => Err(NErr::type_error(
+                "number: expected number or string".to_string(),
+            )),
+        },
         ObjType::List => match arg {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(
@@ -594,7 +607,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             )),
         },
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
-        // TODO: complex, number, vector, bytes
+        // TODO: complex
         _ => Err(NErr::type_error(
             "that type can't be called (maybe not implemented)".to_string(),
         )),
@@ -824,7 +837,7 @@ fn key_to_obj(key: ObjKey) -> Obj {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum FmtBase {
     Decimal,
     Binary,
@@ -833,7 +846,7 @@ pub enum FmtBase {
     UpperHex,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MyFmtFlags {
     base: FmtBase,
     repr: bool,
@@ -1057,7 +1070,6 @@ impl Display for ObjKey {
     }
 }
 
-// FIXME massive copypasta
 impl MyDisplay for ObjKey {
     fn is_null(&self) -> bool {
         self == &ObjKey::Null
@@ -2518,7 +2530,7 @@ pub enum Expr {
     FloatLit(f64),
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
-    FormatString(Rc<String>),
+    FormatString(Rc<Vec<Result<char, (Expr, MyFmtFlags)>>>),
     Ident(String),
     Backref(usize),
     Call(Box<Expr>, Vec<Box<Expr>>),
@@ -3088,7 +3100,7 @@ impl Parser {
                 Token::FormatString(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(Expr::FormatString(s))
+                    Ok(Expr::FormatString(Rc::new(parse_format_string(&s)?)))
                 }
                 Token::Ident(s) => {
                     let s = s.clone();
@@ -3763,16 +3775,16 @@ fn assign_all(
     let mut splat = None;
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
-            EvaluatedLvalue::Splat(inner) => {
-                match splat {
-                    Some(_) => return Err(NErr::syntax_error(format!(
+            EvaluatedLvalue::Splat(inner) => match splat {
+                Some(_) => {
+                    return Err(NErr::syntax_error(format!(
                         "Can't have two splats in same sequence on left-hand side of assignment"
-                    ))),
-                    None => {
-                        splat = Some((i, inner));
-                    }
+                    )))
                 }
-            }
+                None => {
+                    splat = Some((i, inner));
+                }
+            },
             _ => {}
         }
     }
@@ -3993,32 +4005,20 @@ fn modify_existing_index(
                 (Obj::Seq(Seq::Dict(v, def)), EvaluatedIndexOrSlice::Index(kk)) => {
                     let k = to_key(kk.clone())?;
                     let mut_d = Rc::make_mut(v);
-                    // FIXME improve
-                    if !mut_d.contains_key(&k) {
-                        match def {
-                            Some(d) => {
-                                mut_d.insert(k.clone(), (&**d).clone());
-                            }
+                    match mut_d.entry(k) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            modify_existing_index(e.get_mut(), rest, f)
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => match def {
+                            Some(d) => modify_existing_index(e.insert((&**d).clone()), rest, f),
                             None => {
                                 return Err(NErr::key_error(format!(
                                     "nothing at key {:?} {:?}",
-                                    mut_d, k
+                                    mut_d, kk
                                 )))
                             }
-                        }
-                    }
-                    modify_existing_index(
-                        match mut_d.get_mut(&k) {
-                            Some(vvv) => vvv,
-                            // shouldn't happen:
-                            None => Err(NErr::key_error(format!(
-                                "nothing at key {:?} {:?}",
-                                mut_d, k
-                            )))?,
                         },
-                        rest,
-                        f,
-                    )
+                    }
                 }
                 // TODO everything
                 (lhs2, ii) => Err(NErr::type_error(format!(
@@ -4063,32 +4063,22 @@ fn modify_every_existing_index(
                 (Obj::Seq(Seq::Dict(v, def)), EvaluatedIndexOrSlice::Index(kk)) => {
                     let k = to_key(kk.clone())?;
                     let mut_d = Rc::make_mut(v);
-                    // FIXME improve
-                    if !mut_d.contains_key(&k) {
-                        match def {
+                    match mut_d.entry(k) {
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            modify_every_existing_index(e.get_mut(), rest, f)
+                        }
+                        std::collections::hash_map::Entry::Vacant(e) => match def {
                             Some(d) => {
-                                mut_d.insert(k.clone(), (&**d).clone());
+                                modify_every_existing_index(e.insert((&**d).clone()), rest, f)
                             }
                             None => {
                                 return Err(NErr::key_error(format!(
                                     "nothing at key {:?} {:?}",
-                                    mut_d, k
+                                    mut_d, kk
                                 )))
                             }
-                        }
-                    }
-                    modify_every_existing_index(
-                        match mut_d.get_mut(&k) {
-                            Some(vvv) => vvv,
-                            // shouldn't happen:
-                            None => Err(NErr::key_error(format!(
-                                "nothing at key {:?} {:?}",
-                                mut_d, k
-                            )))?,
                         },
-                        rest,
-                        f,
-                    )
+                    }
                 }
                 // TODO everything
                 (lhs2, ii) => Err(NErr::type_error(format!(
@@ -4655,7 +4645,6 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 v, ii
             ))),
         },
-        // TODO other sequences
         (xr, ir) => Err(NErr::type_error(format!(
             "can't cyclically index {:?} {:?}",
             xr, ir
@@ -4899,6 +4888,99 @@ fn evaluate_for(
     }
 }
 
+fn parse_format_string(s: &str) -> Result<Vec<Result<char, (Expr, MyFmtFlags)>>, String> {
+    let mut nesting_level = 0;
+    let mut ret: Vec<Result<char, (Expr, MyFmtFlags)>> = Vec::new();
+    let mut expr_acc = String::new(); // accumulate
+    let mut p = s.chars().peekable();
+    while let Some(c) = p.next() {
+        match (nesting_level, c) {
+            (0, '{') => {
+                if p.peek() == Some(&'{') {
+                    p.next();
+                    ret.push(Ok('{'));
+                } else {
+                    nesting_level += 1;
+                }
+            }
+            (0, '}') => {
+                if p.peek() == Some(&'}') {
+                    p.next();
+                    ret.push(Ok('}'));
+                } else {
+                    return Err("format string: unmatched right brace".to_string());
+                }
+            }
+            (0, c) => {
+                ret.push(Ok(c));
+            }
+            (_, '{') => {
+                nesting_level += 1;
+                expr_acc.push('{');
+            }
+            (1, '}') => {
+                nesting_level -= 1;
+
+                let mut lexer = Lexer::new(&expr_acc);
+                lexer.lex();
+                let mut flags = MyFmtFlags::new();
+                if lexer.tokens.is_empty() {
+                    return Err("format string: empty format expr".to_string());
+                } else {
+                    for com in lexer.last_comment {
+                        for c in com.chars() {
+                            match c {
+                                'x' => {
+                                    flags.base = FmtBase::LowerHex;
+                                }
+                                'X' => {
+                                    flags.base = FmtBase::UpperHex;
+                                }
+                                'b' | 'B' => {
+                                    flags.base = FmtBase::Binary;
+                                }
+                                'o' | 'O' => {
+                                    flags.base = FmtBase::Octal;
+                                }
+                                // 'e' => { flags.base = FmtBase::LowerExp; }
+                                // 'E' => { flags.base = FmtBase::UpperExp; }
+                                'd' | 'D' => {
+                                    flags.base = FmtBase::Decimal;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    let mut p = Parser {
+                        tokens: lexer.tokens,
+                        i: 0,
+                    };
+                    let fex = p
+                        .expression()
+                        .map_err(|e| format!("format string: failed to parse expr: {}", e))?;
+                    if p.is_at_end() {
+                        ret.push(Err((fex, flags)));
+                    } else {
+                        return Err(
+                            "format string: couldn't finish parsing format expr".to_string()
+                        );
+                    }
+                }
+                expr_acc.clear();
+            }
+            (_, '}') => {
+                nesting_level -= 1;
+                expr_acc.push('}');
+            }
+            (_, c) => expr_acc.push(c),
+        }
+    }
+    if nesting_level != 0 {
+        return Err("format string: unmatched left brace".to_string());
+    }
+    Ok(ret)
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     match expr {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
@@ -4906,108 +4988,18 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
         Expr::FormatString(s) => {
-            // TODO: split this up? honestly idk
-            let mut nesting_level = 0;
-            let mut ret = String::new();
-            let mut expr_acc = String::new(); // accumulate
-            let mut p = s.chars().peekable();
-            while let Some(c) = p.next() {
-                match (nesting_level, c) {
-                    (0, '{') => {
-                        if p.peek() == Some(&'{') {
-                            p.next();
-                            ret.push('{');
-                        } else {
-                            nesting_level += 1;
-                        }
+            let mut acc = String::new();
+            for x in s.iter() {
+                match x {
+                    Ok(c) => acc.push(*c),
+                    Err((expr, flags)) => {
+                        evaluate(env, &expr)?
+                            .fmt_with(&mut acc, flags.clone())
+                            .map_err(|e| NErr::io_error(format!("format string issue: {}", e)))?
                     }
-                    (0, '}') => {
-                        if p.peek() == Some(&'}') {
-                            p.next();
-                            ret.push('}');
-                        } else {
-                            return Err(NErr::syntax_error(
-                                "format string: unmatched right brace".to_string(),
-                            ));
-                        }
-                    }
-                    (0, c) => {
-                        ret.push(c);
-                    }
-                    (_, '{') => {
-                        nesting_level += 1;
-                        expr_acc.push('{');
-                    }
-                    (1, '}') => {
-                        nesting_level -= 1;
-
-                        let mut lexer = Lexer::new(&expr_acc);
-                        lexer.lex();
-                        let mut flags = MyFmtFlags::new();
-                        if lexer.tokens.is_empty() {
-                            return Err(NErr::syntax_error(
-                                "format string: empty format expr".to_string(),
-                            ));
-                        } else {
-                            for com in lexer.last_comment {
-                                for c in com.chars() {
-                                    match c {
-                                        'x' => {
-                                            flags.base = FmtBase::LowerHex;
-                                        }
-                                        'X' => {
-                                            flags.base = FmtBase::UpperHex;
-                                        }
-                                        'b' | 'B' => {
-                                            flags.base = FmtBase::Binary;
-                                        }
-                                        'o' | 'O' => {
-                                            flags.base = FmtBase::Octal;
-                                        }
-                                        // 'e' => { flags.base = FmtBase::LowerExp; }
-                                        // 'E' => { flags.base = FmtBase::UpperExp; }
-                                        'd' | 'D' => {
-                                            flags.base = FmtBase::Decimal;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            let mut p = Parser {
-                                tokens: lexer.tokens,
-                                i: 0,
-                            };
-                            let fex = p.expression().map_err(|e| {
-                                NErr::syntax_error(format!(
-                                    "format string: failed to parse expr: {}",
-                                    e
-                                ))
-                            })?;
-                            if p.is_at_end() {
-                                // FIXME err?
-                                evaluate(env, &fex)?.fmt_with(&mut ret, flags).unwrap();
-                            } else {
-                                return Err(NErr::syntax_error(
-                                    "format string: couldn't finish parsing format expr"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                        expr_acc.clear();
-                    }
-                    (_, '}') => {
-                        nesting_level -= 1;
-                        expr_acc.push('}');
-                    }
-                    (_, c) => expr_acc.push(c),
                 }
             }
-            if nesting_level != 0 {
-                return Err(NErr::syntax_error(
-                    "format string: unmatched left brace".to_string(),
-                ));
-            }
-            Ok(Obj::from(ret))
+            Ok(Obj::from(acc))
         }
         Expr::Ident(s) => env.borrow_mut().get_var(s),
         Expr::Index(x, i) => {
@@ -5535,13 +5527,19 @@ pub fn initialize(env: &mut Env) {
     forward_f64!(acosh);
     forward_f64!(atan);
     forward_f64!(atanh);
-    // TODO: atan2
     forward_f64!(sqrt);
     forward_f64!(cbrt);
     forward_f64!(exp);
     forward_f64!(ln);
     forward_f64!(log10);
     forward_f64!(log2);
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "atan2".to_string(),
+        body: |a, b| match (a.to_f64(), b.to_f64()) {
+            (Some(a), Some(b)) => Ok(Obj::from(f64::atan2(a, b))),
+            (_, _) => Err(NErr::value_error("can't convert to float".to_string())),
+        },
+    });
     // forward_f64!(fract);
     // forward_f64!(exp_m1);
     // forward_f64!(ln_1p);
@@ -6056,7 +6054,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |env, args| {
             env.borrow_mut()
-                .mut_top_env(|t| {
+                .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
                         if started {
@@ -6065,9 +6063,25 @@ pub fn initialize(env: &mut Env) {
                         started = true;
                         write!(t.output, "{}", arg)?;
                     }
-                    writeln!(t.output, "")
+                    writeln!(t.output, "")?;
+                    Ok(())
                 })
-                .unwrap(); // TODO: propagate error
+                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
+            Ok(Obj::Null)
+        },
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "write".to_string(),
+        can_refer: false,
+        body: |env, args| {
+            env.borrow_mut()
+                .mut_top_env(|t| -> io::Result<()> {
+                    for arg in args.iter() {
+                        write!(t.output, "{}", arg)?;
+                    }
+                    Ok(())
+                })
+                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
             Ok(Obj::Null)
         },
     });
@@ -6076,7 +6090,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |env, args| {
             env.borrow_mut()
-                .mut_top_env(|t| {
+                .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
                         if started {
@@ -6085,9 +6099,9 @@ pub fn initialize(env: &mut Env) {
                         started = true;
                         write!(t.output, "{}", arg)?;
                     }
-                    write!(t.output, "") // FIXME >.<
+                    Ok(())
                 })
-                .unwrap(); // TODO: propagate error
+                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
             Ok(Obj::Null)
         },
     });
@@ -6096,7 +6110,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |env, args| {
             env.borrow_mut()
-                .mut_top_env(|t| {
+                .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
                         if started {
@@ -6105,9 +6119,9 @@ pub fn initialize(env: &mut Env) {
                         started = true;
                         write!(t.output, "{:?}", arg)?;
                     }
-                    writeln!(t.output, "")
+                    Ok(())
                 })
-                .unwrap(); // TODO: propagate error
+                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
             Ok(Obj::Null)
         },
     });
@@ -6674,7 +6688,6 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
-    // TODO safety, wasm version
     env.insert_builtin(BasicBuiltin {
         name: "input".to_string(),
         can_refer: false,
