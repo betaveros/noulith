@@ -21,6 +21,13 @@ use num::complex::Complex64;
 use num::Signed;
 use num::ToPrimitive;
 
+use chrono::prelude::*;
+
+use std::time::SystemTime;
+
+#[cfg(feature="request")]
+use reqwest;
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -706,6 +713,11 @@ forward_from!(Complex64);
 impl From<usize> for ObjKey {
     fn from(n: usize) -> Self {
         ObjKey::Num(NTotalNum(NNum::from(n)))
+    }
+}
+impl From<&str> for ObjKey {
+    fn from(n: &str) -> Self {
+        ObjKey::String(Rc::new(n.to_string()))
     }
 }
 
@@ -5331,6 +5343,23 @@ fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
     }
 }
 
+fn datetime_to_obj<Tz: TimeZone>(dt: DateTime<Tz>) -> Obj {
+    let m = vec![
+        ("year", Obj::from(BigInt::from(dt.year()))),
+        ("month", Obj::from(BigInt::from(dt.month()))),
+        ("day", Obj::from(BigInt::from(dt.day()))),
+        ("hour", Obj::from(BigInt::from(dt.hour()))),
+        ("minute", Obj::from(BigInt::from(dt.minute()))),
+        ("second", Obj::from(BigInt::from(dt.second()))),
+        ("nanosecond", Obj::from(BigInt::from(dt.nanosecond()))),
+    ]
+    .into_iter()
+    .map(|(s, t)| (ObjKey::from(s), t))
+    .collect::<HashMap<ObjKey, Obj>>();
+
+    Obj::Seq(Seq::Dict(Rc::new(m), None))
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("null".to_string(), ObjType::Null, Obj::Null);
     env.insert_builtin(OneArgBuiltin {
@@ -5395,7 +5424,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ComparisonOperator::of("<", |a, b| {
         Ok(ncmp(a, b)? == Ordering::Less)
     }));
-    env.insert_builtin(ComparisonOperator::of("<", |a, b| {
+    env.insert_builtin(ComparisonOperator::of(">", |a, b| {
         Ok(ncmp(a, b)? == Ordering::Greater)
     }));
     env.insert_builtin(ComparisonOperator::of("<=", |a, b| {
@@ -6738,6 +6767,40 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::generic_argument_error()),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "try_read_file".to_string(),
+        can_refer: false,
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => match fs::File::open(&*s) {
+                Ok(mut f) => {
+                    let mut contents = String::new();
+                    match f.read_to_string(&mut contents) {
+                        Ok(_) => Ok(Obj::from(contents)),
+                        Err(e) => Err(NErr::io_error(format!("{}", e))),
+                    }
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(Obj::Null)
+                    } else {
+                        Err(NErr::io_error(format!("{}", e)))
+                    }
+                }
+            },
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "write_file".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => match fs::write(f.as_str(), s.as_bytes()) {
+                Ok(()) => Ok(Obj::Null),
+                Err(e) => Err(NErr::io_error(format!("{}", e))),
+            },
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
 
     // this isn't a very good assert
     env.insert_builtin(OneArgBuiltin {
@@ -6749,6 +6812,38 @@ pub fn initialize(env: &mut Env) {
             } else {
                 Err(NErr::assert_error(format!("{}", a)))
             }
+        },
+    });
+
+    env.insert_builtin(BasicBuiltin {
+        name: "time".to_string(),
+        can_refer: false,
+        body: |_env, args| {
+            if args.is_empty() {
+                match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(d) => Ok(Obj::from(d.as_secs_f64())),
+                    Err(e) => Ok(Obj::from(-e.duration().as_secs_f64())),
+                }
+            } else {
+                Err(NErr::generic_argument_error())
+            }
+        },
+    });
+
+    env.insert_builtin(BasicBuiltin {
+        name: "now".to_string(),
+        can_refer: false,
+        body: |_env, args| match few(args) {
+            Few::Zero => Ok(datetime_to_obj(Local::now())),
+            Few::One(t) => match t {
+                Obj::Num(n) => {
+                    let now = Utc::now();
+                    let off = FixedOffset::east((to_f64_ok(&n)? * 3600.0) as i32);
+                    Ok(datetime_to_obj(now + off))
+                }
+                _ => Err(NErr::generic_argument_error()),
+            },
+            _ => Err(NErr::generic_argument_error()),
         },
     });
 
@@ -6772,6 +6867,47 @@ pub fn initialize(env: &mut Env) {
                 }?
             }
             Ok(ret)
+        },
+    });
+
+    #[cfg(feature="request")]
+    env.insert_builtin(BasicBuiltin {
+        name: "request".to_string(),
+        can_refer: false,
+        body: |_env, args| {
+            let resp = match few2(args) {
+                Few2::One(Obj::Seq(Seq::String(url))) => reqwest::blocking::get(&*url)
+                    .map_err(|e| NErr::io_error(format!("failed: {}", e))),
+                Few2::Two(Obj::Seq(Seq::String(url)), Obj::Seq(Seq::Dict(opts, _))) => {
+                    let client = reqwest::blocking::Client::new();
+                    let method = match opts.get(&ObjKey::from("method")) {
+                        Some(Obj::Seq(Seq::String(s))) => match reqwest::Method::from_bytes(s.as_bytes()) {
+                            Ok(m) => m,
+                            Err(e) => return Err(NErr::value_error(format!("bad method: {}", e))),
+                        }
+                        Some(k) => return Err(NErr::type_error(format!("bad method: {}", k))),
+                        None => reqwest::Method::GET,
+                    };
+                    let mut builder = client.request(method, &*url);
+                    match opts.get(&ObjKey::from("headers")) {
+                        Some(Obj::Seq(Seq::Dict(d, _))) => for (k, v) in d.iter() {
+                            builder = builder.header(format!("{}", k), format!("{}", v))
+                        }
+                        Some(k) => return Err(NErr::type_error(format!("bad headers: {}", k))),
+                        None => {}
+                    }
+                    // builder = builder.header(key, value);
+                    // builder = builder.query(&[(key, value)]);
+                    builder
+                        .send()
+                        .map_err(|e| NErr::io_error(format!("failed: {}", e)))
+                }
+                _ => Err(NErr::generic_argument_error()),
+            }?;
+            match resp.text() {
+                Ok(s) => Ok(Obj::from(s)),
+                Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
+            }
         },
     });
 

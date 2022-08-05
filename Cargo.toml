@@ -10,8 +10,14 @@ lazy_static = "1.4.0"
 num = "0.4.0"
 rand = "0.8.5"
 regex = "1"
-rustyline = "10.0.0"
-rustyline-derive = "0.7.0"
+rustyline = { version = "10.0.0", optional = true }
+rustyline-derive = { version = "0.7.0", optional = true }
+chrono = "0.4"
+reqwest = { version = "0.11", features = ["blocking"], optional = true }
+
+[features]
+cli = ["rustyline", "rustyline-derive"]
+request = ["reqwest"]
 
 [target.'cfg(target_arch="wasm32")'.dependencies]
 wasm-bindgen = "0.2.74"
