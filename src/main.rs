@@ -5,15 +5,17 @@ use std::io;
 use std::io::{BufReader, Read};
 use std::rc::Rc;
 
-#[cfg(feature="cli")]
+#[cfg(feature = "cli")]
 mod cli;
-#[cfg(not(feature="cli"))]
+#[cfg(not(feature = "cli"))]
 use std::io::Write;
-#[cfg(not(feature="cli"))]
+#[cfg(not(feature = "cli"))]
 fn prompt(input: &mut String) -> bool {
     input.clear();
     print!("noulith> ");
-    if io::stdout().flush().is_err() { return false }
+    if io::stdout().flush().is_err() {
+        return false;
+    }
 
     match io::stdin().read_line(input) {
         Ok(0) => false,
@@ -21,9 +23,13 @@ fn prompt(input: &mut String) -> bool {
         Err(_) => false,
     }
 }
-#[cfg(not(feature="cli"))]
+#[cfg(not(feature = "cli"))]
 fn repl() {
-    let mut env = Env::new(TopEnv { backrefs: Vec::new(), input: Box::new(BufReader::new(io::stdin())), output: Box::new(io::stdout()) });
+    let mut env = Env::new(TopEnv {
+        backrefs: Vec::new(),
+        input: Box::new(BufReader::new(io::stdin())),
+        output: Box::new(io::stdout()),
+    });
     initialize(&mut env);
     let e = Rc::new(RefCell::new(env));
 
@@ -37,14 +43,20 @@ fn repl() {
                         v.backrefs.push(x.clone());
                         v.backrefs.len()
                     });
-                    println!("\\{}: {}",
-                             refs_len,
-                             noulith::FlaggedObj(x, noulith::MyFmtFlags::budgeted_repr(64)));
+                    println!(
+                        "\\{}: {}",
+                        refs_len,
+                        noulith::FlaggedObj(x, noulith::MyFmtFlags::budgeted_repr(64))
+                    );
                 }
-                Err(e) => { println!("ERROR: {}", e); }
-            }
+                Err(e) => {
+                    println!("ERROR: {}", e);
+                }
+            },
             Ok(None) => {}
-            Err(e) => { println!("PARSE ERROR: {}", e); }
+            Err(e) => {
+                println!("PARSE ERROR: {}", e);
+            }
         }
     }
 }
@@ -52,9 +64,9 @@ fn repl() {
 fn main() {
     match std::env::args().collect::<Vec<String>>().as_slice() {
         [] | [_] => {
-            #[cfg(feature="cli")]
+            #[cfg(feature = "cli")]
             cli::repl();
-            #[cfg(not(feature="cli"))]
+            #[cfg(not(feature = "cli"))]
             repl();
         }
         [_, s] => match File::open(s) {

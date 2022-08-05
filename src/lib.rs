@@ -8,7 +8,7 @@ use std::io::{BufRead, Read, Write};
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -25,7 +25,7 @@ use chrono::prelude::*;
 
 use std::time::SystemTime;
 
-#[cfg(feature="request")]
+#[cfg(feature = "request")]
 use reqwest;
 
 #[cfg(target_arch = "wasm32")]
@@ -72,6 +72,26 @@ impl<T> Few<T> {
         }
     }
 }
+impl<T: Display> Display for Few<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Few::Zero => write!(formatter, "(0)"),
+            Few::One(x) => write!(formatter, "(1: {})", x),
+            Few::Many(xs) => {
+                write!(formatter, "(many: ")?;
+                let mut started = false;
+                for x in xs {
+                    if started {
+                        write!(formatter, ", ")?;
+                    }
+                    started = true;
+                    write!(formatter, "{}", x)?;
+                }
+                write!(formatter, ")")
+            }
+        }
+    }
+}
 #[derive(Debug)]
 enum Few2<T> {
     Zero,
@@ -94,6 +114,27 @@ impl<T> Few2<T> {
             Few2::One(..) => 1,
             Few2::Two(..) => 2,
             Few2::Many(x) => x.len(),
+        }
+    }
+}
+impl<T: Display> Display for Few2<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Few2::Zero => write!(formatter, "(0)"),
+            Few2::One(x) => write!(formatter, "(1: {})", x),
+            Few2::Two(x, y) => write!(formatter, "(2: {}, {})", x, y),
+            Few2::Many(xs) => {
+                write!(formatter, "(many: ")?;
+                let mut started = false;
+                for x in xs {
+                    if started {
+                        write!(formatter, ", ")?;
+                    }
+                    started = true;
+                    write!(formatter, "{}", x)?;
+                }
+                write!(formatter, ")")
+            }
         }
     }
 }
@@ -128,6 +169,28 @@ impl<T> Few3<T> {
     }
 }
 */
+impl<T: Display> Display for Few3<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Few3::Zero => write!(formatter, "(0)"),
+            Few3::One(x) => write!(formatter, "(1: {})", x),
+            Few3::Two(x, y) => write!(formatter, "(2: {}, {})", x, y),
+            Few3::Three(x, y, z) => write!(formatter, "(3: {}, {}, {})", x, y, z),
+            Few3::Many(xs) => {
+                write!(formatter, "(many: ")?;
+                let mut started = false;
+                for x in xs {
+                    if started {
+                        write!(formatter, ", ")?;
+                    }
+                    started = true;
+                    write!(formatter, "{}", x)?;
+                }
+                write!(formatter, ")")
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Obj {
@@ -442,6 +505,43 @@ impl Display for Combinations {
     }
 }
 impl Stream for Combinations {
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Subsequences(Rc<Vec<Obj>>, Option<Rc<Vec<bool>>>);
+impl Iterator for Subsequences {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let v = Rc::make_mut(self.1.as_mut()?);
+        let ret = Obj::list(
+            v.iter()
+                .zip(self.0.iter())
+                .filter_map(|(b, x)| if *b { Some(x.clone()) } else { None })
+                .collect(),
+        );
+
+        for i in (0..v.len()).rev() {
+            if !v[i] {
+                v[i] = true;
+                for j in i + 1..v.len() {
+                    v[j] = false;
+                }
+                return Some(ret);
+            }
+        }
+        self.1 = None;
+        Some(ret)
+    }
+}
+impl Display for Subsequences {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "Subsequences({:?}; {:?})", self.0, self.1)
+    }
+}
+impl Stream for Subsequences {
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -773,6 +873,10 @@ fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::value_error("bad number to int".to_string()))?.clone())
 }
 */
+fn to_usize_ok(n: &NNum) -> NRes<usize> {
+    n.to_usize()
+        .ok_or(NErr::value_error("bad number to usize".to_string()))
+}
 fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
     n.clamp_to_usize()
         .ok_or(NErr::value_error("bad number to usize".to_string()))
@@ -1473,6 +1577,8 @@ pub enum Func {
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
     PartialApp2(Box<Func>, Box<Obj>),
+    // partially applied last argument, opt-in for more complicated arity things
+    PartialAppLast(Box<Func>, Box<Obj>),
     // mathematical notation, first of second
     Composition(Box<Func>, Box<Func>),
     // (f on g)(a1, a2, ...) = f(g(a1), g(a2), ...)
@@ -1495,11 +1601,15 @@ impl Func {
             Func::Closure(c) => c.run(args),
             Func::PartialApp1(f, x) => match few(args) {
                 Few::One(arg) => f.run(env, vec![(**x).clone(), arg]),
-                _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
+                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, x, a)))
             }
             Func::PartialApp2(f, x) => match few(args) {
                 Few::One(arg) => f.run(env, vec![arg, (**x).clone()]),
-                _ => Err(NErr::argument_error("For now, partially applied functions can only be called with one more argument".to_string()))
+                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, x, a)))
+            }
+            Func::PartialAppLast(f, x) => {
+                args.push(*x.clone());
+                f.run(env, args)
             }
             Func::Composition(f, g) => f.run(env, vec![g.run(env, args)?]),
             Func::OnComposition(f, g) => {
@@ -1550,6 +1660,7 @@ impl Func {
             Func::Closure(_) => true,
             Func::PartialApp1(f, _) => f.can_refer(),
             Func::PartialApp2(f, _) => f.can_refer(),
+            Func::PartialAppLast(f, _) => f.can_refer(),
             Func::Composition(f, g) => f.can_refer() || g.can_refer(),
             Func::OnComposition(f, g) => f.can_refer() || g.can_refer(),
             Func::Parallel(fs) => fs.iter().any(|f| f.can_refer()),
@@ -1565,6 +1676,7 @@ impl Func {
             Func::Closure(_) => None,
             Func::PartialApp1(..) => None,
             Func::PartialApp2(..) => None,
+            Func::PartialAppLast(..) => None,
             Func::Composition(..) => None,
             Func::OnComposition(..) => None,
             Func::Parallel(_) => None,
@@ -1582,6 +1694,7 @@ impl Display for Func {
             Func::Closure(_) => write!(formatter, "Closure"),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
+            Func::PartialAppLast(f, x) => write!(formatter, "Partial({}(...?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
             Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
             // TODO
@@ -1662,6 +1775,13 @@ fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj {
     )
 }
 
+fn clone_and_part_app_last(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj {
+    Obj::Func(
+        Func::PartialAppLast(Box::new(Func::Builtin(Rc::new(f.clone()))), Box::new(arg)),
+        Precedence::zero(),
+    )
+}
+
 impl Builtin for ComparisonOperator {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
@@ -1726,8 +1846,130 @@ impl Builtin for ComparisonOperator {
     }
 }
 
+// min or max. conditional partial application
 #[derive(Debug, Clone)]
-struct TilBuiltin {}
+struct Extremum {
+    name: String,
+    bias: Ordering,
+}
+impl Builtin for Extremum {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::type_error(format!("{}: at least 1 arg", self.name))),
+            Few::One(Obj::Seq(mut s)) => {
+                let mut ret: Option<Obj> = None;
+                for b in mut_seq_into_iter(&mut s) {
+                    if match &ret {
+                        None => true,
+                        Some(r) => ncmp(&b, r)? == self.bias,
+                    } {
+                        ret = Some(b)
+                    }
+                }
+                Ok(ret
+                    .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
+                    .clone())
+            }
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few::Many(mut t) => {
+                let mut func = None;
+                for i in 0..t.len() {
+                    match (&t[i], &func) {
+                        (Obj::Func(..), None) => {
+                            func = Some(match t.remove(i) {
+                                Obj::Func(f, _) => f,
+                                _ => panic!("no way"),
+                            });
+                        }
+                        (Obj::Func(..), Some(_)) => {
+                            return Err(NErr::argument_error(format!(
+                                "{}: two functions",
+                                self.name
+                            )))
+                        }
+                        _ => {}
+                    }
+                }
+                match (func, few(t)) {
+                    (None, Few::One(mut a)) => {
+                        let mut ret: Option<Obj> = None;
+                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                            if match &ret {
+                                None => true,
+                                Some(r) => ncmp(&b, r)? == self.bias,
+                            } {
+                                ret = Some(b)
+                            }
+                        }
+                        Ok(ret
+                            .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
+                            .clone())
+                    }
+                    (None, Few::Many(a)) => {
+                        let mut ret: Option<Obj> = None;
+                        for b in a {
+                            if match &ret {
+                                None => true,
+                                Some(r) => ncmp(&b, r)? == self.bias,
+                            } {
+                                ret = Some(b)
+                            }
+                        }
+                        Ok(ret
+                            .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
+                            .clone())
+                    }
+                    (Some(f), Few::One(mut a)) => {
+                        let mut ret: Option<Obj> = None;
+                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                            if match &ret {
+                                None => true,
+                                Some(r) => {
+                                    ncmp(&f.run(env, vec![b.clone(), r.clone()])?, &Obj::from(0))?
+                                        == self.bias
+                                }
+                            } {
+                                ret = Some(b)
+                            }
+                        }
+                        Ok(ret
+                            .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
+                            .clone())
+                    }
+                    (Some(f), Few::Many(a)) => {
+                        let mut ret: Option<Obj> = None;
+                        for b in a {
+                            if match &ret {
+                                None => true,
+                                Some(r) => {
+                                    ncmp(&f.run(env, vec![b.clone(), r.clone()])?, &Obj::from(0))?
+                                        == self.bias
+                                }
+                            } {
+                                ret = Some(b)
+                            }
+                        }
+                        Ok(ret
+                            .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
+                            .clone())
+                    }
+                    _ => Err(NErr::empty_error(format!("{}: empty", self.name))),
+                }
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TilBuiltin;
 
 impl Builtin for TilBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -1768,7 +2010,7 @@ impl Builtin for TilBuiltin {
 }
 
 #[derive(Debug, Clone)]
-struct ToBuiltin {}
+struct ToBuiltin;
 
 impl Builtin for ToBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -1819,13 +2061,13 @@ impl Builtin for ToBuiltin {
 
 // self-chainable
 #[derive(Debug, Clone)]
-struct Zip {}
+struct Zip;
 
 impl Builtin for Zip {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::Zero => Err(NErr::argument_error("zip: no args".to_string())),
-            Few::One(a) => Ok(clone_and_part_app_2(self, a)),
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
             Few::Many(mut args) => {
                 let mut func = None;
                 // I can't believe this works (type annotation for me not the compiler)
@@ -1873,7 +2115,75 @@ impl Builtin for Zip {
 
 // self-chainable
 #[derive(Debug, Clone)]
-struct CartesianProduct {}
+struct ZipLongest;
+
+impl Builtin for ZipLongest {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::argument_error("ziplongest: no args".to_string())),
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few::Many(mut args) => {
+                let mut func = None;
+                // I can't believe this works (type annotation for me not the compiler)
+                let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
+                for arg in args.iter_mut() {
+                    match (arg, &mut func) {
+                        (Obj::Func(f, _), None) => {
+                            func = Some(f.clone());
+                        }
+                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
+                            "ziplongest: more than one function".to_string(),
+                        ))?,
+                        (arg, _) => iterators.push(mut_obj_into_iter(arg, "ziplongest")?),
+                    }
+                }
+                if iterators.is_empty() {
+                    Err(NErr::argument_error(
+                        "ziplongest: zero iterables".to_string(),
+                    ))?
+                }
+                let mut ret = Vec::new();
+                loop {
+                    let mut batch = iterators.iter_mut().flat_map(|a| a.next());
+                    match batch.next() {
+                        None => return Ok(Obj::list(ret)),
+                        Some(mut x) => match &func {
+                            Some(f) => {
+                                for y in batch {
+                                    x = f.run(env, vec![x, y])?;
+                                }
+                                ret.push(x)
+                            }
+                            None => {
+                                let mut v = vec![x];
+                                v.extend(batch);
+                                ret.push(Obj::list(v))
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "ziplongest"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "ziplongest" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct CartesianProduct;
 
 // surprisingly rare function where we really can't consume the iterators
 fn cartesian_foreach(
@@ -1963,11 +2273,10 @@ impl Builtin for CartesianProduct {
 
 // takes an optional starting value
 #[derive(Debug, Clone)]
-struct Fold {}
+struct Fold;
 
 impl Builtin for Fold {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
-        // TODO partial app
         match few3(args) {
             Few3::Zero => Err(NErr::argument_error("fold: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
@@ -2019,9 +2328,144 @@ impl Builtin for Fold {
     }
 }
 
+// takes an optional starting value
+#[derive(Debug, Clone)]
+struct Scan;
+
+impl Builtin for Scan {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::Zero => Err(NErr::argument_error("scan: no args".to_string())),
+            Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
+            Few3::Two(mut s, f) => {
+                let mut it = mut_obj_into_iter(&mut s, "scan")?;
+                match f {
+                    Obj::Func(f, _) => match it.next() {
+                        Some(mut cur) => {
+                            let mut acc = vec![cur.clone()];
+                            for e in it {
+                                cur = f.run(env, vec![cur, e])?;
+                                acc.push(cur.clone());
+                            }
+                            Ok(Obj::list(acc))
+                        }
+                        None => Ok(Obj::list(Vec::new())),
+                    },
+                    _ => Err(NErr::type_error("fold: not callable".to_string())),
+                }
+            }
+            Few3::Three(mut s, f, mut cur) => {
+                let it = mut_obj_into_iter(&mut s, "scan")?;
+                match f {
+                    Obj::Func(f, _) => {
+                        let mut acc = vec![cur.clone()];
+                        for e in it {
+                            cur = f.run(env, vec![cur, e])?;
+                            acc.push(cur.clone());
+                        }
+                        Ok(Obj::list(acc))
+                    }
+                    _ => Err(NErr::type_error("fold: not callable".to_string())),
+                }
+            }
+            Few3::Many(_) => Err(NErr::argument_error("fold: too many args".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "scan"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "from" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
+struct Merge;
+
+impl Builtin for Merge {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::argument_error("merge: no args".to_string())),
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few::Many(args) => {
+                let mut func = None;
+                let mut dicts: Vec<Rc<HashMap<ObjKey, Obj>>> = Vec::new();
+                let mut first_def = None;
+                for arg in args {
+                    match (arg, &mut func) {
+                        (Obj::Func(f, _), None) => {
+                            func = Some(f);
+                        }
+                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
+                            "merge: more than one function".to_string(),
+                        ))?,
+                        (Obj::Seq(Seq::Dict(d, def)), _) => {
+                            dicts.push(d);
+                            if first_def == None {
+                                first_def = Some(def)
+                            }
+                        }
+                        _ => {
+                            return Err(NErr::argument_error(
+                                "merge: neither func nor dict".to_string(),
+                            ))
+                        }
+                    }
+                }
+                let mut ret = HashMap::<ObjKey, Obj>::new();
+                for dict in dicts {
+                    let dict = match Rc::try_unwrap(dict) {
+                        Ok(d) => d,
+                        Err(e) => (*e).clone(),
+                    };
+                    for (k, v) in dict {
+                        match ret.entry(k) {
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(v);
+                            }
+                            std::collections::hash_map::Entry::Occupied(mut e) => match &func {
+                                None => *e.get_mut() = v,
+                                Some(f) => {
+                                    let slot = e.get_mut();
+                                    *slot =
+                                        f.run(env, vec![std::mem::replace(slot, Obj::Null), v])?;
+                                }
+                            },
+                        }
+                    }
+                }
+                Ok(Obj::Seq(Seq::Dict(Rc::new(ret), first_def.flatten())))
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "merge"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "merge" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 // it's just "with" lmao
 #[derive(Debug, Clone)]
-struct Replace {}
+struct Replace;
 
 impl Builtin for Replace {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -2059,7 +2503,7 @@ impl Builtin for Replace {
 
 // self-chainable
 #[derive(Debug, Clone)]
-struct Parallel {}
+struct Parallel;
 
 impl Builtin for Parallel {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -2090,7 +2534,7 @@ impl Builtin for Parallel {
 
 // self-chainable
 #[derive(Debug, Clone)]
-struct Fanout {}
+struct Fanout;
 
 impl Builtin for Fanout {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -2116,6 +2560,80 @@ impl Builtin for Fanout {
             },
             _ => None,
         }
+    }
+}
+
+// not actually chainable, but conditional partial application, and also I want aliases
+#[derive(Debug, Clone)]
+pub struct Group;
+
+fn group_by(mut seq: Seq, mut f: impl FnMut(&Obj, &Obj) -> NRes<bool>) -> NRes<Obj> {
+    let mut it = mut_seq_into_iter(&mut seq);
+    let mut acc = Vec::new();
+    let mut group: Vec<Obj> = Vec::new();
+    loop {
+        match it.next() {
+            Some(obj) => {
+                match group.last() {
+                    None => {}
+                    Some(prev) => {
+                        if !f(prev, &obj)? {
+                            acc.push(Obj::list(std::mem::take(&mut group)))
+                        }
+                    }
+                }
+                group.push(obj)
+            }
+            None => {
+                if !group.is_empty() {
+                    acc.push(Obj::list(group))
+                }
+                return Ok(Obj::list(acc));
+            }
+        }
+    }
+}
+
+impl Builtin for Group {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(Obj::Seq(s)) => group_by(s, |a, b| Ok(a == b)),
+            // TODO: tighter type?
+            Few2::One(a) => Ok(clone_and_part_app_2(self, a)),
+            Few2::Two(mut s, Obj::Num(n)) => match to_usize_ok(&n)? {
+                0 => Err(NErr::value_error("can't group into 0".to_string())),
+                n => {
+                    let mut it = mut_obj_into_iter(&mut s, "group")?;
+                    let mut acc = Vec::new();
+                    let mut group = Vec::new();
+                    loop {
+                        for _ in 0..n {
+                            match it.next() {
+                                Some(obj) => group.push(obj),
+                                None => {
+                                    if !group.is_empty() {
+                                        acc.push(Obj::list(group));
+                                    }
+                                    return Ok(Obj::list(acc));
+                                }
+                            }
+                        }
+                        acc.push(Obj::list(std::mem::take(&mut group)));
+                    }
+                }
+            },
+            Few2::Two(Obj::Seq(s), Obj::Func(f, _)) => group_by(s, |a, b| {
+                f.run(env, vec![a.clone(), b.clone()]).map(|x| x.truthy())
+            }),
+            _ => Err(NErr::type_error("not number or func".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "group"
+    }
+    fn can_refer(&self) -> bool {
+        true
     }
 }
 
@@ -2514,6 +3032,7 @@ pub enum Token {
     Remove,
     Swap,
     Every,
+    Underscore,
     // Newline,
 }
 
@@ -2544,6 +3063,7 @@ pub enum Expr {
     StringLit(Rc<String>),
     FormatString(Rc<Vec<Result<char, (Expr, MyFmtFlags)>>>),
     Ident(String),
+    Underscore,
     Backref(usize),
     Call(Box<Expr>, Vec<Box<Expr>>),
     List(Vec<Box<Expr>>),
@@ -2581,6 +3101,7 @@ pub enum Expr {
 
 #[derive(Debug)]
 pub enum Lvalue {
+    Underscore,
     Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Box<Expr>>),
@@ -2592,6 +3113,7 @@ pub enum Lvalue {
 impl Lvalue {
     fn any_literals(&self) -> bool {
         match self {
+            Lvalue::Underscore => false,
             Lvalue::Literal(_) => true,
             Lvalue::IndexedIdent(..) => false,
             Lvalue::Annotation(x, _) => x.any_literals(),
@@ -2610,6 +3132,7 @@ enum EvaluatedIndexOrSlice {
 
 #[derive(Debug)]
 enum EvaluatedLvalue {
+    Underscore,
     IndexedIdent(String, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
     Unannotation(Box<EvaluatedLvalue>),
@@ -2621,6 +3144,7 @@ enum EvaluatedLvalue {
 fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
     match expr {
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
+        Expr::Underscore => Ok(Lvalue::Underscore),
         Expr::Index(e, i) => match to_lvalue(*e)? {
             Lvalue::IndexedIdent(idn, mut ixs) => {
                 ixs.push(i);
@@ -2918,7 +3442,7 @@ impl<'a> Lexer<'a> {
                                 _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
                             }
                         }
-                    } else if c.is_alphabetic() {
+                    } else if c.is_alphabetic() || c == '_' {
                         let mut acc = c.to_string();
 
                         while let Some(cc) =
@@ -2986,6 +3510,7 @@ impl<'a> Lexer<'a> {
                                 "remove" => Token::Remove,
                                 "swap" => Token::Swap,
                                 "every" => Token::Every,
+                                "_" => Token::Underscore,
                                 _ => Token::Ident(acc),
                             })
                         }
@@ -3114,6 +3639,10 @@ impl Parser {
                     self.advance();
                     Ok(Expr::FormatString(Rc::new(parse_format_string(&s)?)))
                 }
+                Token::Underscore => {
+                    self.advance();
+                    Ok(Expr::Underscore)
+                }
                 Token::Ident(s) => {
                     let s = s.clone();
                     self.advance();
@@ -3148,6 +3677,7 @@ impl Parser {
                     Ok(Expr::Continue)
                 }
                 Token::Return => {
+                    self.advance();
                     if self.peek_csc_stopper() {
                         Ok(Expr::Return(None))
                     } else {
@@ -4140,6 +4670,7 @@ fn assign_respecting_type(
 
 fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
+        EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
             Some(ty) => {
                 // declaration
@@ -4189,6 +4720,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
 
 fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
+        EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
             Some(ty) => {
                 // declaration
@@ -4239,6 +4771,7 @@ fn modify_every(
     rhs: &mut impl FnMut(Obj) -> NRes<Obj>,
 ) -> NRes<()> {
     match lhs {
+        EvaluatedLvalue::Underscore => Err(NErr::type_error(format!("Can't modify underscore"))),
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             // drop borrow immediately
             let mut old: Obj = env.borrow_mut().get_var(s)?;
@@ -4429,6 +4962,7 @@ fn eval_index_or_slice(env: &Rc<RefCell<Env>>, expr: &IndexOrSlice) -> NRes<Eval
 
 fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     match expr {
+        Lvalue::Underscore => Ok(EvaluatedLvalue::Underscore),
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
             s.to_string(),
             v.iter()
@@ -4783,6 +5317,9 @@ fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
 
 fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
     match expr {
+        Lvalue::Underscore => Err(NErr::syntax_error(
+            "Can't evaluate underscore on LHS of assignment??".to_string(),
+        )),
         Lvalue::IndexedIdent(s, v) => {
             let mut sr = env.borrow_mut().get_var(s)?;
             for ix in v {
@@ -5014,6 +5551,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             Ok(Obj::from(acc))
         }
         Expr::Ident(s) => env.borrow_mut().get_var(s),
+        Expr::Underscore => Err(NErr::syntax_error("Can't evaluate underscore".to_string())),
         Expr::Index(x, i) => {
             let xr = evaluate(env, x)?;
             let ir = eval_index_or_slice(env, i)?;
@@ -5584,8 +6122,8 @@ pub fn initialize(env: &mut Env) {
             ))
         },
     });
-    env.insert_builtin(TilBuiltin {});
-    env.insert_builtin(ToBuiltin {});
+    env.insert_builtin(TilBuiltin);
+    env.insert_builtin(ToBuiltin);
     env.insert_builtin(OneArgBuiltin {
         name: "ord".to_string(),
         can_refer: false,
@@ -5753,6 +6291,15 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "subsequences".to_string(),
+        can_refer: false,
+        body: |a| {
+            let v = to_rc_vec_obj(a)?;
+            let iv = Rc::new(vec![false; v.len()]);
+            Ok(Obj::Seq(Seq::Stream(Rc::new(Subsequences(v, Some(iv))))))
+        },
+    });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "each".to_string(),
         can_refer: true,
@@ -5870,9 +6417,33 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(Zip {});
-    env.insert_builtin(Parallel {});
-    env.insert_builtin(Fanout {});
+    env.insert_builtin(Zip);
+    env.insert_builtin(ZipLongest);
+    env.insert_builtin(Parallel);
+    env.insert_builtin(Fanout);
+    env.insert_builtin(EnvOneArgBuiltin {
+        name: "transpose".to_string(),
+        can_refer: false,
+        body: |_env, a| {
+            let mut v = to_rc_vec_obj(a)?;
+            let v = Rc::make_mut(&mut v);
+            let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
+            for arg in v.iter_mut() {
+                iterators.push(mut_obj_into_iter(arg, "zip")?)
+            }
+            let mut ret = Vec::new();
+            loop {
+                let batch = iterators
+                    .iter_mut()
+                    .flat_map(|a| a.next())
+                    .collect::<Vec<Obj>>();
+                if batch.is_empty() {
+                    return Ok(Obj::list(ret));
+                }
+                ret.push(Obj::list(batch))
+            }
+        },
+    });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
         can_refer: true,
@@ -5975,6 +6546,38 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(c))
         },
     });
+    env.insert_builtin(Group);
+    env.insert_builtin(Merge);
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "window".to_string(),
+        can_refer: true,
+        body: |_env, mut a, b| {
+            let mut it = mut_obj_into_iter(&mut a, "window")?;
+            match b {
+                Obj::Num(n) => match to_usize_ok(&n)? {
+                    0 => Err(NErr::value_error("can't window 0".to_string())),
+                    n => {
+                        let mut window = VecDeque::new();
+                        window.reserve_exact(n);
+                        for _ in 0..n {
+                            match it.next() {
+                                Some(obj) => window.push_back(obj),
+                                None => return Ok(Obj::list(Vec::new())),
+                            }
+                        }
+                        let mut acc = vec![Obj::list(window.iter().cloned().collect())];
+                        while let Some(next) = it.next() {
+                            window.pop_front();
+                            window.push_back(next);
+                            acc.push(Obj::list(window.iter().cloned().collect()));
+                        }
+                        Ok(Obj::list(acc))
+                    }
+                },
+                _ => Err(NErr::value_error("not number".to_string())),
+            }
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "frequencies".to_string(),
         can_refer: true,
@@ -5990,7 +6593,8 @@ pub fn initialize(env: &mut Env) {
             )))
         },
     });
-    env.insert_builtin(Fold {});
+    env.insert_builtin(Fold);
+    env.insert_builtin(Scan);
     env.insert_builtin(TwoArgBuiltin {
         name: "append".to_string(),
         can_refer: false,
@@ -6012,71 +6616,23 @@ pub fn initialize(env: &mut Env) {
             Err(e) => Err(e),
         },
     });
-    env.insert_builtin(BasicBuiltin {
-        name: "max".to_string(),
+    env.insert_builtin(TwoArgBuiltin {
+        name: ">=<".to_string(),
         can_refer: false,
-        body: |_env, args| match few(args) {
-            Few::Zero => Err(NErr::argument_error("max: at least 1 arg".to_string())),
-            Few::One(mut s) => {
-                let mut ret: Option<Obj> = None;
-                for b in mut_obj_into_iter(&mut s, "max")? {
-                    if match &ret {
-                        None => true,
-                        Some(r) => ncmp(&b, r)? == Ordering::Greater,
-                    } {
-                        ret = Some(b)
-                    }
-                }
-                Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
-            }
-            Few::Many(t) => {
-                let mut ret: Option<Obj> = None;
-                for b in t {
-                    if match &ret {
-                        None => true,
-                        Some(r) => ncmp(&b, r)? == Ordering::Greater,
-                    } {
-                        ret = Some(b)
-                    }
-                }
-                Ok(ret.ok_or(NErr::empty_error("empty".to_string()))?.clone())
-            }
+        body: |a, b| match ncmp(&a, &b) {
+            Ok(Ordering::Less) => Ok(Obj::Num(NNum::from(1))),
+            Ok(Ordering::Equal) => Ok(Obj::Num(NNum::from(0))),
+            Ok(Ordering::Greater) => Ok(Obj::Num(-NNum::from(1))),
+            Err(e) => Err(e),
         },
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(Extremum {
+        name: "max".to_string(),
+        bias: Ordering::Greater,
+    });
+    env.insert_builtin(Extremum {
         name: "min".to_string(),
-        can_refer: false,
-        body: |_env, args| match few(args) {
-            Few::Zero => Err(NErr::type_error("min: at least 1 arg".to_string())),
-            Few::One(mut s) => {
-                let mut ret: Option<Obj> = None;
-                for b in mut_obj_into_iter(&mut s, "min")? {
-                    if match &ret {
-                        None => true,
-                        Some(r) => ncmp(&b, r)? == Ordering::Less,
-                    } {
-                        ret = Some(b)
-                    }
-                }
-                Ok(ret
-                    .ok_or(NErr::empty_error("min: empty".to_string()))?
-                    .clone())
-            }
-            Few::Many(t) => {
-                let mut ret: Option<Obj> = None;
-                for b in t {
-                    if match &ret {
-                        None => true,
-                        Some(r) => ncmp(&b, r)? == Ordering::Less,
-                    } {
-                        ret = Some(b)
-                    }
-                }
-                Ok(ret
-                    .ok_or(NErr::empty_error("min: empty".to_string()))?
-                    .clone())
-            }
-        },
+        bias: Ordering::Less,
     });
     env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
@@ -6452,7 +7008,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?])),
     });
-    env.insert_builtin(CartesianProduct {});
+    env.insert_builtin(CartesianProduct);
     env.insert_builtin(OneArgBuiltin {
         name: "id".to_string(),
         can_refer: false,
@@ -6794,10 +7350,12 @@ pub fn initialize(env: &mut Env) {
         name: "write_file".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => match fs::write(f.as_str(), s.as_bytes()) {
-                Ok(()) => Ok(Obj::Null),
-                Err(e) => Err(NErr::io_error(format!("{}", e))),
-            },
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
+                match fs::write(f.as_str(), s.as_bytes()) {
+                    Ok(()) => Ok(Obj::Null),
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
             _ => Err(NErr::generic_argument_error()),
         },
     });
@@ -6870,7 +7428,7 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
-    #[cfg(feature="request")]
+    #[cfg(feature = "request")]
     env.insert_builtin(BasicBuiltin {
         name: "request".to_string(),
         can_refer: false,
@@ -6881,17 +7439,23 @@ pub fn initialize(env: &mut Env) {
                 Few2::Two(Obj::Seq(Seq::String(url)), Obj::Seq(Seq::Dict(opts, _))) => {
                     let client = reqwest::blocking::Client::new();
                     let method = match opts.get(&ObjKey::from("method")) {
-                        Some(Obj::Seq(Seq::String(s))) => match reqwest::Method::from_bytes(s.as_bytes()) {
-                            Ok(m) => m,
-                            Err(e) => return Err(NErr::value_error(format!("bad method: {}", e))),
+                        Some(Obj::Seq(Seq::String(s))) => {
+                            match reqwest::Method::from_bytes(s.as_bytes()) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    return Err(NErr::value_error(format!("bad method: {}", e)))
+                                }
+                            }
                         }
                         Some(k) => return Err(NErr::type_error(format!("bad method: {}", k))),
                         None => reqwest::Method::GET,
                     };
                     let mut builder = client.request(method, &*url);
                     match opts.get(&ObjKey::from("headers")) {
-                        Some(Obj::Seq(Seq::Dict(d, _))) => for (k, v) in d.iter() {
-                            builder = builder.header(format!("{}", k), format!("{}", v))
+                        Some(Obj::Seq(Seq::Dict(d, _))) => {
+                            for (k, v) in d.iter() {
+                                builder = builder.header(format!("{}", k), format!("{}", v))
+                            }
                         }
                         Some(k) => return Err(NErr::type_error(format!("bad headers: {}", k))),
                         None => {}

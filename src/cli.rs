@@ -1,9 +1,9 @@
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::io;
 use std::io::BufReader;
+use std::rc::Rc;
 
-use noulith::{lex, initialize, evaluate, parse, Env, type_of, Obj, Token, TopEnv};
+use noulith::{evaluate, initialize, lex, parse, type_of, Env, Obj, Token, TopEnv};
 
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
