@@ -547,6 +547,44 @@ impl Stream for Subsequences {
     }
 }
 
+// very illegal
+#[derive(Clone)]
+struct Iterate(Option<(Obj, Func, REnv)>);
+// directly debug-printing env can easily recurse infinitely
+impl Debug for Iterate {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(fmt, "Iterate???")
+    }
+}
+impl Iterator for Iterate {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        eprintln!("iterate next");
+        let (obj, func, renv) = self.0.as_mut()?;
+        let ret = obj.clone();
+        let cur = std::mem::replace(obj, Obj::Null);
+        match func.run(&renv, vec![cur]) {
+            Ok(nxt) => {
+                *obj = nxt;
+            }
+            Err(_) => {
+                self.0 = None;
+            }
+        }
+        Some(ret)
+    }
+}
+impl Display for Iterate {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "Iterate???")
+    }
+}
+impl Stream for Iterate {
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Seq {
     String(Rc<String>),
@@ -3070,7 +3108,8 @@ pub enum Expr {
     Dict(Option<Box<Expr>>, Vec<(Box<Expr>, Option<Box<Expr>>)>),
     Vector(Vec<Box<Expr>>),
     Index(Box<Expr>, IndexOrSlice),
-    Chain(Box<Expr>, Vec<(String, Box<Expr>)>),
+    Frozen(Obj),
+    Chain(Box<Expr>, Vec<(Box<Expr>, Box<Expr>)>),
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
     Coalesce(Box<Expr>, Box<Expr>),
@@ -3120,6 +3159,18 @@ impl Lvalue {
             Lvalue::Unannotation(x) => x.any_literals(),
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
+        }
+    }
+
+    fn collect_identifiers(&self) -> HashSet<String> {
+        match self {
+            Lvalue::Underscore => HashSet::new(),
+            Lvalue::Literal(_) => HashSet::new(),
+            Lvalue::IndexedIdent(x, _) => HashSet::from([x.clone()]),
+            Lvalue::Annotation(x, _) => x.collect_identifiers(),
+            Lvalue::Unannotation(x) => x.collect_identifiers(),
+            Lvalue::CommaSeq(x) => x.iter().flat_map(|e| e.collect_identifiers()).collect(),
+            Lvalue::Splat(x) => x.collect_identifiers(),
         }
     }
 }
@@ -3975,12 +4026,12 @@ impl Parser {
                     if self.peek_chain_stopper() {
                         Ok(Expr::Call(Box::new(op1), vec![Box::new(Expr::Ident(op))]))
                     } else {
-                        let mut ops = vec![(op.to_string(), Box::new(self.operand()?))];
+                        let mut ops = vec![(Box::new(Expr::Ident(op)), Box::new(self.operand()?))];
 
                         while let Some(Token::Ident(op)) = self.peek() {
                             let op = op.to_string();
                             self.advance();
-                            ops.push((op, Box::new(self.operand()?)));
+                            ops.push((Box::new(Expr::Ident(op)), Box::new(self.operand()?)));
                         }
                         Ok(Expr::Chain(Box::new(op1), ops))
                     }
@@ -4224,6 +4275,14 @@ impl Env {
             vars: HashMap::new(),
             parent: Err(top),
         }
+    }
+    // ???
+    fn empty() -> Env {
+        Env::new(TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(io::empty()),
+            output: Box::new(io::sink()),
+        })
     }
     fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
@@ -5536,6 +5595,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
         Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
+        Expr::Frozen(x) => Ok(x.clone()),
         Expr::FormatString(s) => {
             let mut acc = String::new();
             for x in s.iter() {
@@ -5560,8 +5620,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Chain(op1, ops) => {
             let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
             for (oper, opd) in ops {
-                // make sure this borrow_mut goes out of scope
-                let oprr = env.borrow_mut().get_var(oper)?;
+                let oprr = evaluate(env, oper)?;
                 if let Obj::Func(b, prec) = oprr {
                     let oprd = evaluate(env, opd)?;
                     ev.give(env, b, prec, oprd)?;
@@ -5848,12 +5907,187 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
     }
 }
 
+fn vec_box_freeze(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    expr: &Vec<Box<Expr>>,
+) -> NRes<Vec<Box<Expr>>> {
+    expr.iter().map(|x| box_freeze(bound, env, x)).collect()
+}
+fn box_freeze(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    expr: &Box<Expr>,
+) -> NRes<Box<Expr>> {
+    Ok(Box::new(freeze(bound, env, expr)?))
+}
+fn opt_box_freeze(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    expr: &Option<Box<Expr>>,
+) -> NRes<Option<Box<Expr>>> {
+    match expr {
+        Some(x) => Ok(Some(Box::new(freeze(bound, env, x)?))),
+        None => Ok(None),
+    }
+}
+
+fn box_freeze_lvalue(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    lvalue: &Box<Lvalue>,
+) -> NRes<Box<Lvalue>> {
+    Ok(Box::new(freeze_lvalue(bound, env, lvalue)?))
+}
+
+fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalue) -> NRes<Lvalue> {
+    match lvalue {
+        Lvalue::Underscore => Ok(Lvalue::Underscore),
+        Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
+        Lvalue::IndexedIdent(s, ioses) => {
+            if bound.contains(s) {
+                Ok(Lvalue::IndexedIdent(
+                    s.clone(),
+                    ioses
+                        .iter()
+                        .map(|ios| freeze_ios(bound, env, ios))
+                        .collect::<NRes<Vec<IndexOrSlice>>>()?,
+                ))
+            } else {
+                Err(NErr::name_error(format!(
+                    "ident in lvalue not bound: {}",
+                    s
+                )))
+            }
+        }
+        Lvalue::Annotation(x, e) => Ok(Lvalue::Annotation(
+            box_freeze_lvalue(bound, env, x)?,
+            opt_box_freeze(bound, env, e)?,
+        )),
+        Lvalue::Unannotation(x) => Ok(Lvalue::Unannotation(box_freeze_lvalue(bound, env, x)?)),
+        Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
+            x.iter()
+                .map(|e| box_freeze_lvalue(bound, env, e))
+                .collect::<NRes<Vec<Box<Lvalue>>>>()?,
+        )),
+        Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(bound, env, x)?)),
+    }
+}
+
+fn freeze_ios(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    ios: &IndexOrSlice,
+) -> NRes<IndexOrSlice> {
+    match ios {
+        IndexOrSlice::Index(i) => Ok(IndexOrSlice::Index(box_freeze(bound, env, i)?)),
+        IndexOrSlice::Slice(i, j) => Ok(IndexOrSlice::Slice(
+            opt_box_freeze(bound, env, i)?,
+            opt_box_freeze(bound, env, j)?,
+        )),
+    }
+}
+
+fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Expr> {
+    match expr {
+        Expr::IntLit(x) => Ok(Expr::IntLit(x.clone())),
+        Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
+        Expr::ImaginaryFloatLit(x) => Ok(Expr::ImaginaryFloatLit(x.clone())),
+        Expr::StringLit(x) => Ok(Expr::StringLit(x.clone())),
+        Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
+        Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
+
+        Expr::FormatString(s) => todo!(),
+        Expr::Ident(s) => {
+            if bound.contains(s) {
+                Ok(Expr::Ident(s.clone()))
+            } else {
+                Ok(Expr::Frozen(env.borrow().get_var(s)?))
+            }
+        }
+        Expr::Underscore => Err(NErr::syntax_error("Can't freeze underscore".to_string())),
+        Expr::Index(x, ios) => Ok(Expr::Index(
+            box_freeze(bound, env, x)?,
+            freeze_ios(bound, env, ios)?,
+        )),
+        Expr::Chain(op1, ops) => Ok(Expr::Chain(
+            box_freeze(bound, env, op1)?,
+            ops.iter()
+                .map(|(op, d)| Ok((box_freeze(bound, env, op)?, box_freeze(bound, env, d)?)))
+                .collect::<NRes<Vec<(Box<Expr>, Box<Expr>)>>>()?,
+        )),
+        Expr::And(lhs, rhs) => Ok(Expr::And(
+            box_freeze(bound, env, lhs)?,
+            box_freeze(bound, env, rhs)?,
+        )),
+        Expr::Or(lhs, rhs) => Ok(Expr::Or(
+            box_freeze(bound, env, lhs)?,
+            box_freeze(bound, env, rhs)?,
+        )),
+        Expr::Coalesce(lhs, rhs) => Ok(Expr::Coalesce(
+            box_freeze(bound, env, lhs)?,
+            box_freeze(bound, env, rhs)?,
+        )),
+        Expr::Assign(_every, _pat, _rhs) => {
+            Err(NErr::type_error(format!("assign not implemented")))
+        }
+        Expr::Annotation(s, t) => Ok(Expr::Annotation(
+            box_freeze(bound, env, s)?,
+            opt_box_freeze(bound, env, t)?,
+        )),
+        Expr::Pop(pat) => Ok(Expr::Pop(box_freeze_lvalue(bound, env, pat)?)),
+        Expr::Remove(pat) => Ok(Expr::Remove(box_freeze_lvalue(bound, env, pat)?)),
+        Expr::Swap(a, b) => Ok(Expr::Swap(
+            box_freeze_lvalue(bound, env, a)?,
+            box_freeze_lvalue(bound, env, b)?,
+        )),
+        Expr::OpAssign(..) => Err(NErr::type_error(format!("opassign not implemented"))),
+        Expr::Call(f, args) => Ok(Expr::Call(
+            box_freeze(bound, env, f)?,
+            vec_box_freeze(bound, env, args)?,
+        )),
+        Expr::CommaSeq(_) => Err(NErr::syntax_error(
+            "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
+        )),
+        Expr::Splat(_) => Err(NErr::syntax_error(
+            "Splats only allowed on an assignment-related place or in call or list (?)".to_string(),
+        )),
+        Expr::List(xs) => Ok(Expr::List(vec_box_freeze(bound, env, xs)?)),
+        Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(bound, env, xs)?)),
+        Expr::Dict(def, xs) => Err(NErr::syntax_error("dict not implemented".to_string())),
+        Expr::Sequence(xs) => Ok(Expr::Vector(vec_box_freeze(bound, env, xs)?)),
+        Expr::If(a, b, c) => Ok(Expr::If(
+            box_freeze(bound, env, a)?,
+            box_freeze(bound, env, b)?,
+            opt_box_freeze(bound, env, c)?,
+        )),
+        Expr::For(iteratees, do_yield, body) => todo!(),
+        Expr::While(cond, body) => Ok(Expr::While(
+            box_freeze(bound, env, cond)?,
+            box_freeze(bound, env, body)?,
+        )),
+        Expr::Switch(scrutinee, arms) => todo!(),
+        Expr::Lambda(params, body) => {
+            let mut bound2 = params
+                .iter()
+                .flat_map(|x| x.collect_identifiers())
+                .collect::<HashSet<String>>();
+            bound2.extend(bound.iter().cloned());
+            Ok(Expr::Lambda(
+                params.clone(),
+                Rc::new(freeze(&bound2, env, body)?),
+            ))
+        }
+
+        Expr::Paren(p) => Ok(Expr::Paren(box_freeze(bound, env, p)?)),
+        Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(bound, env, e)?)),
+        Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(bound, env, e)?)),
+        Expr::Continue => Ok(Expr::Continue),
+    }
+}
+
 pub fn simple_eval(code: &str) -> Obj {
-    let mut env = Env::new(TopEnv {
-        backrefs: Vec::new(),
-        input: Box::new(io::empty()),
-        output: Box::new(io::sink()),
-    });
+    let mut env = Env::empty();
     initialize(&mut env);
 
     let e = Rc::new(RefCell::new(env));
@@ -6298,6 +6532,18 @@ pub fn initialize(env: &mut Env) {
             let v = to_rc_vec_obj(a)?;
             let iv = Rc::new(vec![false; v.len()]);
             Ok(Obj::Seq(Seq::Stream(Rc::new(Subsequences(v, Some(iv))))))
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "iterate".to_string(),
+        can_refer: true,
+        body: |env, a, f| match f {
+            Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Rc::new(Iterate(Some((
+                a,
+                f,
+                env.clone(),
+            ))))))),
+            _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -7472,6 +7718,31 @@ pub fn initialize(env: &mut Env) {
                 Ok(s) => Ok(Obj::from(s)),
                 Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
             }
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "freeze".to_string(),
+        can_refer: true,
+        body: |a| match a {
+            Obj::Func(Func::Closure(c), p) => {
+                let bound = c
+                    .params
+                    .iter()
+                    .flat_map(|x| x.collect_identifiers())
+                    .collect::<HashSet<String>>();
+                let b = freeze(&bound, &c.env, &c.body)?;
+                // FIXME
+                Ok(Obj::Func(
+                    Func::Closure(Closure {
+                        params: c.params,
+                        body: Rc::new(b),
+                        env: Rc::new(RefCell::new(Env::empty())),
+                    }),
+                    p,
+                ))
+            }
+            _ => Err(NErr::generic_argument_error()),
         },
     });
 
