@@ -31,18 +31,15 @@ use reqwest;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
+pub mod few;
 mod gamma;
+mod iter;
 pub mod nnum;
+use crate::few::*;
+use crate::iter::*;
 
 use crate::nnum::NNum;
 use crate::nnum::NTotalNum;
-
-fn unwrap_or_clone<T: Clone>(x: Rc<T>) -> T {
-    match Rc::try_unwrap(x) {
-        Ok(x) => x,
-        Err(x) => (*x).clone(),
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Assoc {
@@ -54,148 +51,6 @@ pub struct Precedence(f64, Assoc);
 impl Precedence {
     fn zero() -> Self {
         Precedence(0.0, Assoc::Left)
-    }
-}
-
-#[derive(Debug)]
-enum Few<T> {
-    Zero,
-    One(T),
-    Many(Vec<T>),
-}
-fn few<T>(mut xs: Vec<T>) -> Few<T> {
-    match xs.len() {
-        0 => Few::Zero,
-        1 => Few::One(xs.remove(0)),
-        _ => Few::Many(xs),
-    }
-}
-impl<T> Few<T> {
-    fn len(&self) -> usize {
-        match self {
-            Few::Zero => 0,
-            Few::One(..) => 1,
-            Few::Many(x) => x.len(),
-        }
-    }
-}
-impl<T: Display> Display for Few<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Few::Zero => write!(formatter, "(0)"),
-            Few::One(x) => write!(formatter, "(1: {})", x),
-            Few::Many(xs) => {
-                write!(formatter, "(many: ")?;
-                let mut started = false;
-                for x in xs {
-                    if started {
-                        write!(formatter, ", ")?;
-                    }
-                    started = true;
-                    write!(formatter, "{}", x)?;
-                }
-                write!(formatter, ")")
-            }
-        }
-    }
-}
-#[derive(Debug)]
-enum Few2<T> {
-    Zero,
-    One(T),
-    Two(T, T),
-    Many(Vec<T>),
-}
-fn few2<T>(mut xs: Vec<T>) -> Few2<T> {
-    match xs.len() {
-        0 => Few2::Zero,
-        1 => Few2::One(xs.remove(0)),
-        2 => Few2::Two(xs.remove(0), xs.pop().unwrap()),
-        _ => Few2::Many(xs),
-    }
-}
-impl<T> Few2<T> {
-    fn len(&self) -> usize {
-        match self {
-            Few2::Zero => 0,
-            Few2::One(..) => 1,
-            Few2::Two(..) => 2,
-            Few2::Many(x) => x.len(),
-        }
-    }
-}
-impl<T: Display> Display for Few2<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Few2::Zero => write!(formatter, "(0)"),
-            Few2::One(x) => write!(formatter, "(1: {})", x),
-            Few2::Two(x, y) => write!(formatter, "(2: {}, {})", x, y),
-            Few2::Many(xs) => {
-                write!(formatter, "(many: ")?;
-                let mut started = false;
-                for x in xs {
-                    if started {
-                        write!(formatter, ", ")?;
-                    }
-                    started = true;
-                    write!(formatter, "{}", x)?;
-                }
-                write!(formatter, ")")
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-enum Few3<T> {
-    Zero,
-    One(T),
-    Two(T, T),
-    Three(T, T, T),
-    Many(Vec<T>),
-}
-fn few3<T>(mut xs: Vec<T>) -> Few3<T> {
-    match xs.len() {
-        0 => Few3::Zero,
-        1 => Few3::One(xs.remove(0)),
-        2 => Few3::Two(xs.remove(0), xs.pop().unwrap()),
-        3 => Few3::Three(xs.remove(0), xs.remove(0), xs.pop().unwrap()),
-        _ => Few3::Many(xs),
-    }
-}
-/*
-impl<T> Few3<T> {
-    fn len(&self) -> usize {
-        match self {
-            Few3::Zero => 0,
-            Few3::One(..) => 1,
-            Few3::Two(..) => 2,
-            Few3::Three(..) => 3,
-            Few3::Many(x) => x.len(),
-        }
-    }
-}
-*/
-impl<T: Display> Display for Few3<T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Few3::Zero => write!(formatter, "(0)"),
-            Few3::One(x) => write!(formatter, "(1: {})", x),
-            Few3::Two(x, y) => write!(formatter, "(2: {}, {})", x, y),
-            Few3::Three(x, y, z) => write!(formatter, "(3: {}, {}, {})", x, y, z),
-            Few3::Many(xs) => {
-                write!(formatter, "(many: ")?;
-                let mut started = false;
-                for x in xs {
-                    if started {
-                        write!(formatter, ", ")?;
-                    }
-                    started = true;
-                    write!(formatter, "{}", x)?;
-                }
-                write!(formatter, ")")
-            }
-        }
     }
 }
 
@@ -212,6 +67,7 @@ pub enum Obj {
 //
 // more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
 pub trait Stream: Iterator<Item = Obj> + Display + Debug {
+    fn peek(&self) -> Option<Obj>;
     fn clone_box(&self) -> Box<dyn Stream>;
     // for now this means length or infinity, not sure yet
     fn len(&self) -> Option<usize> {
@@ -301,6 +157,9 @@ impl Display for Repeat {
     }
 }
 impl Stream for Repeat {
+    fn peek(&self) -> Option<Obj> {
+        Some(self.0.clone())
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -363,6 +222,9 @@ impl Display for Cycle {
     }
 }
 impl Stream for Cycle {
+    fn peek(&self) -> Option<Obj> {
+        Some(self.0[self.1].clone())
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -385,17 +247,23 @@ impl Stream for Cycle {
 }
 #[derive(Debug, Clone)]
 struct Range(BigInt, Option<BigInt>, BigInt);
-impl Iterator for Range {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+impl Range {
+    fn empty(&self) -> bool {
         let Range(start, end, step) = self;
-        if match (step.sign(), end) {
+        match (step.sign(), end) {
             (_, None) => false,
             (Sign::Minus, Some(end)) => start <= end,
             (Sign::NoSign | Sign::Plus, Some(end)) => start >= end,
-        } {
+        }
+    }
+}
+impl Iterator for Range {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        if self.empty() {
             None
         } else {
+            let Range(start, _end, step) = self;
             let ret = start.clone();
             *start += &*step;
             Some(Obj::from(ret))
@@ -411,6 +279,13 @@ impl Display for Range {
     }
 }
 impl Stream for Range {
+    fn peek(&self) -> Option<Obj> {
+        if self.empty() {
+            None
+        } else {
+            Some(Obj::from(self.0.clone()))
+        }
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -487,6 +362,15 @@ impl Display for Permutations {
     }
 }
 impl Stream for Permutations {
+    fn peek(&self) -> Option<Obj> {
+        Some(Obj::list(
+            self.1
+                .as_ref()?
+                .iter()
+                .map(|i| self.0[*i].clone())
+                .collect(),
+        ))
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -532,6 +416,15 @@ impl Display for Combinations {
     }
 }
 impl Stream for Combinations {
+    fn peek(&self) -> Option<Obj> {
+        Some(Obj::list(
+            self.1
+                .as_ref()?
+                .iter()
+                .map(|i| self.0[*i].clone())
+                .collect(),
+        ))
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -579,6 +472,16 @@ impl Display for Subsequences {
     }
 }
 impl Stream for Subsequences {
+    fn peek(&self) -> Option<Obj> {
+        Some(Obj::list(
+            self.1
+                .as_ref()?
+                .iter()
+                .zip(self.0.iter())
+                .filter_map(|(b, x)| if *b { Some(x.clone()) } else { None })
+                .collect(),
+        ))
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -616,6 +519,9 @@ impl Display for Iterate {
     }
 }
 impl Stream for Iterate {
+    fn peek(&self) -> Option<Obj> {
+        Some(self.0.as_ref()?.0.clone())
+    }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
@@ -998,12 +904,12 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(x))),
         Obj::Seq(Seq::String(x)) => Ok(ObjKey::String(x)),
         Obj::Seq(Seq::List(mut xs)) => Ok(ObjKey::List(Rc::new(
-            mut_rc_vec_into_iter(&mut xs)
+            RcVecIter::of(&mut xs)
                 .map(|e| to_key(e))
                 .collect::<NRes<Vec<ObjKey>>>()?,
         ))),
         Obj::Seq(Seq::Dict(mut d, _)) => {
-            let mut pairs = mut_rc_hash_map_into_iter(&mut d)
+            let mut pairs = RcHashMapIter::of(&mut d)
                 .map(|(k, v)| Ok((k, to_key(v)?)))
                 .collect::<NRes<Vec<(ObjKey, ObjKey)>>>()?;
             pairs.sort();
@@ -1032,12 +938,12 @@ fn key_to_obj(key: ObjKey) -> Obj {
         ObjKey::Num(NTotalNum(x)) => Obj::Num(x),
         ObjKey::String(x) => Obj::Seq(Seq::String(x)),
         ObjKey::List(mut xs) => Obj::list(
-            mut_rc_vec_into_iter(&mut xs)
+            RcVecIter::of(&mut xs)
                 .map(|e| key_to_obj(e.clone()))
                 .collect::<Vec<Obj>>(),
         ),
         ObjKey::Dict(mut d) => Obj::dict(
-            mut_rc_vec_into_iter(&mut d)
+            RcVecIter::of(&mut d)
                 .map(|(k, v)| (k, key_to_obj(v)))
                 .collect::<HashMap<ObjKey, Obj>>(),
             None,
@@ -1317,71 +1223,6 @@ impl ObjKey {
     }
 }
 
-pub enum RcVecIter<'a, T> {
-    Draining(std::vec::Drain<'a, T>),
-    Cloning(std::slice::Iter<'a, T>),
-}
-
-// Say we have an Rc<Vec>. If it has refcount 1, we can drain it, so we can lazily move out each
-// element; but if it has has refcount >1, we lazily clone each element. At least, that's the
-// theory.
-//
-// Alternatively, consuming the object and either going IntoIter or handrolling a (Rc<Vec>, usize)
-// would also work fine for lists, but dictionaries don't have an easy handrollable self-owning
-// iterator, I think?
-fn mut_rc_vec_into_iter<T>(v: &mut Rc<Vec<T>>) -> RcVecIter<'_, T> {
-    // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop it in
-    // the None branch and we can't access v again even though we should be able to. If I switch to
-    // nightly I can probably use #![feature(nll)]
-    if Rc::get_mut(v).is_some() {
-        match Rc::get_mut(v) {
-            Some(v) => RcVecIter::Draining(v.drain(..)),
-            None => panic!("non-lexical lifetime issue"),
-        }
-    } else {
-        RcVecIter::Cloning(v.iter())
-    }
-}
-
-impl<T: Clone> Iterator for RcVecIter<'_, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<T> {
-        match self {
-            RcVecIter::Draining(it) => it.next(),
-            RcVecIter::Cloning(it) => it.next().cloned(),
-        }
-    }
-}
-
-pub enum RcHashMapIter<'a, K, V> {
-    Draining(std::collections::hash_map::Drain<'a, K, V>),
-    Cloning(std::collections::hash_map::Iter<'a, K, V>),
-}
-
-fn mut_rc_hash_map_into_iter<K, V>(v: &mut Rc<HashMap<K, V>>) -> RcHashMapIter<'_, K, V> {
-    // Same non-lexical lifetime stuff
-    if Rc::get_mut(v).is_some() {
-        match Rc::get_mut(v) {
-            Some(v) => RcHashMapIter::Draining(v.drain()),
-            None => panic!("non-lexical lifetime issue"),
-        }
-    } else {
-        RcHashMapIter::Cloning(v.iter())
-    }
-}
-
-impl<K: Clone, V: Clone> Iterator for RcHashMapIter<'_, K, V> {
-    type Item = (K, V);
-
-    fn next(&mut self) -> Option<(K, V)> {
-        match self {
-            RcHashMapIter::Draining(it) => it.next(),
-            RcHashMapIter::Cloning(it) => it.next().map(|(k, v)| (k.clone(), v.clone())),
-        }
-    }
-}
-
 pub enum ObjToCloningIter<'a> {
     List(std::slice::Iter<'a, Obj>),
     Dict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
@@ -1428,7 +1269,7 @@ impl Iterator for ObjToCloningIter<'_> {
 pub enum MutObjIntoIter<'a> {
     List(RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
-    String(std::str::Chars<'a>),
+    String(RcStringIter<'a>),
     Vector(RcVecIter<'a, NNum>),
     Bytes(RcVecIter<'a, u8>),
     Stream(Box<dyn Stream>),
@@ -1438,7 +1279,7 @@ pub enum MutObjIntoIter<'a> {
 pub enum MutObjIntoIterPairs<'a> {
     List(usize, RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
-    String(usize, std::str::Chars<'a>),
+    String(usize, RcStringIter<'a>),
     Vector(usize, RcVecIter<'a, NNum>),
     Bytes(usize, RcVecIter<'a, u8>),
     Stream(usize, Box<dyn Stream>),
@@ -1446,11 +1287,11 @@ pub enum MutObjIntoIterPairs<'a> {
 
 fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     match seq {
-        Seq::List(v) => MutObjIntoIter::List(mut_rc_vec_into_iter(v)),
-        Seq::Dict(v, _) => MutObjIntoIter::Dict(mut_rc_hash_map_into_iter(v)),
-        Seq::String(s) => MutObjIntoIter::String(s.chars()),
-        Seq::Vector(v) => MutObjIntoIter::Vector(mut_rc_vec_into_iter(v)),
-        Seq::Bytes(v) => MutObjIntoIter::Bytes(mut_rc_vec_into_iter(v)),
+        Seq::List(v) => MutObjIntoIter::List(RcVecIter::of(v)),
+        Seq::Dict(v, _) => MutObjIntoIter::Dict(RcHashMapIter::of(v)),
+        Seq::String(s) => MutObjIntoIter::String(RcStringIter::of(s)),
+        Seq::Vector(v) => MutObjIntoIter::Vector(RcVecIter::of(v)),
+        Seq::Bytes(v) => MutObjIntoIter::Bytes(RcVecIter::of(v)),
         Seq::Stream(v) => MutObjIntoIter::Stream(v.clone_box()),
     }
 }
@@ -1482,11 +1323,11 @@ impl Iterator for MutObjIntoIter<'_> {
 
 fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
     match seq {
-        Seq::List(v) => MutObjIntoIterPairs::List(0, mut_rc_vec_into_iter(v)),
-        Seq::Dict(v, _) => MutObjIntoIterPairs::Dict(mut_rc_hash_map_into_iter(v)),
-        Seq::String(s) => MutObjIntoIterPairs::String(0, s.chars()),
-        Seq::Vector(v) => MutObjIntoIterPairs::Vector(0, mut_rc_vec_into_iter(v)),
-        Seq::Bytes(v) => MutObjIntoIterPairs::Bytes(0, mut_rc_vec_into_iter(v)),
+        Seq::List(v) => MutObjIntoIterPairs::List(0, RcVecIter::of(v)),
+        Seq::Dict(v, _) => MutObjIntoIterPairs::Dict(RcHashMapIter::of(v)),
+        Seq::String(s) => MutObjIntoIterPairs::String(0, RcStringIter::of(s)),
+        Seq::Vector(v) => MutObjIntoIterPairs::Vector(0, RcVecIter::of(v)),
+        Seq::Bytes(v) => MutObjIntoIterPairs::Bytes(0, RcVecIter::of(v)),
         Seq::Stream(v) => MutObjIntoIterPairs::Stream(0, v.clone_box()),
     }
 }
@@ -1837,12 +1678,12 @@ impl Display for Func {
             Func::PartialAppLast(f, x) => write!(formatter, "Partial({}(...?, {}))", f, x),
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
             Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
-            // TODO
             Func::Parallel(fs) => {
                 write!(formatter, "Parallel({})", CommaSeparated(fs))
             }
             Func::Fanout(fs) => write!(formatter, "Fanout({})", CommaSeparated(fs)),
             Func::Flip(f) => write!(formatter, "Flip({})", f),
+            // TODO
             Func::ListSection(xs) => write!(formatter, "ListSection({:?})", xs),
             Func::ChainSection(xs, ys) => write!(formatter, "ChainSection({:?} {:?})", xs, ys),
             Func::IndexSection(x, i) => write!(formatter, "IndexSection({:?} {:?})", x, i),
@@ -2367,7 +2208,7 @@ impl Builtin for CartesianProduct {
                         Obj::Num(n) => match scalar {
                             None => scalar = Some(into_bigint_ok(n)?),
                             Some(_) => Err(NErr::argument_error(
-                                "cartesian product: more than one integer".to_string(),
+                                "cartesian product: more than one integer (^ is exponentiation)".to_string(),
                             ))?,
                         },
                         _ => Err(NErr::argument_error(
@@ -2925,7 +2766,7 @@ fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
 fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj> {
     match a {
         Obj::Num(a) => body(a),
-        Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(mut_rc_vec_into_iter(&mut a).map(body)),
+        Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(RcVecIter::of(&mut a).map(body)),
         x => Err(NErr::argument_error(format!(
             "only accepts numbers, got {:?}",
             x
@@ -2996,16 +2837,16 @@ fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj
     match (a, b) {
         (Obj::Num(a), Obj::Num(b)) => body(a, b),
         (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => {
-            to_obj_vector(mut_rc_vec_into_iter(&mut b).map(|e| body(a.clone(), e)))
+            to_obj_vector(RcVecIter::of(&mut b).map(|e| body(a.clone(), e)))
         }
         (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => {
-            to_obj_vector(mut_rc_vec_into_iter(&mut a).map(|e| body(e, b.clone())))
+            to_obj_vector(RcVecIter::of(&mut a).map(|e| body(e, b.clone())))
         }
         (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
             if a.len() == b.len() {
                 to_obj_vector(
-                    mut_rc_vec_into_iter(&mut a)
-                        .zip(mut_rc_vec_into_iter(&mut b))
+                    RcVecIter::of(&mut a)
+                        .zip(RcVecIter::of(&mut b))
                         .map(|(a, b)| body(a, b)),
                 )
             } else {
@@ -4959,11 +4800,12 @@ fn default_precedence(name: &str) -> f64 {
             if c.is_alphanumeric() || c == '_' {
                 DEFAULT_PRECEDENCE
             } else {
+                // to decide: '@'
                 match c {
-                    '=' | '<' | '>' | '~' => COMPARISON_PRECEDENCE,
+                    '=' | '<' | '>' => COMPARISON_PRECEDENCE,
                     '$' => STRING_PRECEDENCE,
                     '|' => OR_PRECEDENCE,
-                    '+' | '-' | '@' => PLUS_PRECEDENCE,
+                    '+' | '-' | '~' => PLUS_PRECEDENCE,
                     '*' | '/' | '%' | '&' => MULTIPLY_PRECEDENCE,
                     '^' => EXPONENT_PRECEDENCE,
                     '!' | '?' => INDEX_PRECEDENCE,
@@ -6486,6 +6328,121 @@ fn windowed<T: Clone>(mut it: impl Iterator<Item = T>, n: usize) -> Vec<Vec<T>> 
     acc
 }
 
+fn take_while_inner<T: Clone + Into<Obj>>(
+    mut it: impl Iterator<Item = T>,
+    env: &REnv,
+    f: Func,
+) -> NRes<Vec<T>> {
+    let mut acc = Vec::new();
+    while let Some(x) = it.next() {
+        if f.run(env, vec![x.clone().into()])?.truthy() {
+            acc.push(x)
+        } else {
+            return Ok(acc)
+        }
+    }
+    Ok(acc)
+}
+
+// weird lil guy that doesn't fit
+fn take_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
+    match s {
+        Seq::List(mut s) => Ok(Obj::list(
+            take_while_inner(RcVecIter::of(&mut s), env, f)?,
+        )),
+        Seq::String(mut s) => Ok(Obj::from(
+            take_while_inner(RcStringIter::of(&mut s), env, f)?
+                .into_iter()
+                .collect::<String>(),
+        )),
+        Seq::Dict(mut s, _def) => Ok(Obj::list(
+            take_while_inner(
+                RcHashMapIter::of(&mut s).map(|(k, _v)| key_to_obj(k)),
+                env,
+                f,
+            )?,
+        )),
+        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+            take_while_inner(RcVecIter::of(&mut s), env, f)?,
+        )))),
+        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+            take_while_inner(RcVecIter::of(&mut s), env, f)?,
+        )))),
+        Seq::Stream(s) => Ok(Obj::list(take_while_inner(s.clone_box(), env, f)?)),
+    }
+}
+
+fn drop_while_inner<T: Clone + Into<Obj>>(
+    it: impl Iterator<Item = T>,
+    env: &REnv,
+    f: Func,
+) -> NRes<impl Iterator<Item = T>> {
+    let mut it = it.peekable();
+    while let Some(x) = it.peek() {
+        if f.run(env, vec![x.clone().into()])?.truthy() {
+            it.next();
+        } else {
+            return Ok(it)
+        }
+    }
+    Ok(it)
+}
+
+fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
+    match s {
+        Seq::List(mut s) => Ok(Obj::list(
+            drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
+        )),
+        Seq::String(mut s) => Ok(Obj::from(
+            drop_while_inner(RcStringIter::of(&mut s), env, f)?
+                .collect::<String>(),
+        )),
+        Seq::Dict(mut s, _def) => Ok(Obj::list(
+            drop_while_inner(
+                RcHashMapIter::of(&mut s).map(|(k, _v)| key_to_obj(k)),
+                env,
+                f,
+            )?.collect()
+        )),
+        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+            drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
+        )))),
+        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+            drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
+        )))),
+        Seq::Stream(s) => {
+            let mut t = s.clone_box();
+            while let Some(x) = t.peek() {
+                if f.run(env, vec![x.clone()])?.truthy() {
+                    t.next();
+                }
+            }
+            Ok(Obj::Seq(Seq::Stream(Rc::from(t))))
+        }
+    }
+}
+
+fn prefixes<T: Clone>(mut it: impl Iterator<Item = T>) -> Vec<Vec<T>> {
+    let mut prefix = Vec::new();
+    let mut acc = vec![Vec::new()];
+    while let Some(obj) = it.next() {
+        prefix.push(obj);
+        acc.push(prefix.clone());
+    }
+    acc
+}
+fn reversed_prefixes<T: Clone>(mut it: impl Iterator<Item = T>) -> Vec<Vec<T>> {
+    let mut prefix = Vec::new();
+    let mut acc = vec![Vec::new()];
+    while let Some(obj) = it.next() {
+        prefix.push(obj);
+        let mut p = prefix.clone();
+        p.reverse();
+        acc.push(p);
+    }
+    acc
+}
+
 // just return Vec<Obj>
 macro_rules! multimulti {
     ($name:ident, $expr:expr) => {
@@ -6543,6 +6500,13 @@ fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
 fn multi_window(v: Seq, n: usize) -> NRes<Vec<Obj>> {
     multimulti!(v, Ok(windowed(v, n)))
 }
+fn multi_prefixes(v: Seq) -> NRes<Vec<Obj>> {
+    multimulti!(v, Ok(prefixes(v)))
+}
+fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
+    let v = multi_reverse(v)?;
+    multimulti!(v, Ok(reversed_prefixes(v)))
+}
 
 pub fn initialize(env: &mut Env) {
     env.insert("null".to_string(), ObjType::Null, Obj::Null);
@@ -6563,6 +6527,16 @@ pub fn initialize(env: &mut Env) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
             Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b),
+            Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
+        },
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "~".to_string(),
+        can_refer: false,
+        body: |_env, args| match few2(args) {
+            Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
+            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a ^ b)), a, b),
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         },
     });
@@ -7228,14 +7202,30 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(Group);
     env.insert_builtin(Merge);
-    env.insert_builtin(EnvTwoArgBuiltin {
+    env.insert_builtin(TwoArgBuiltin {
         name: "window".to_string(),
         can_refer: true,
-        body: |_env, a, b| match (a, b) {
+        body: |a, b| match (a, b) {
             (Obj::Seq(s), Obj::Num(n)) => match to_usize_ok(&n)? {
                 0 => Err(NErr::value_error("can't window 0".to_string())),
                 n => Ok(Obj::list(multi_window(s, n)?)),
             },
+            _ => Err(NErr::value_error("not number".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "prefixes".to_string(),
+        can_refer: true,
+        body: |a| match a {
+            Obj::Seq(s) => Ok(Obj::list(multi_prefixes(s)?)),
+            _ => Err(NErr::value_error("not number".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "suffixes".to_string(),
+        can_refer: true,
+        body: |a| match a {
+            Obj::Seq(s) => Ok(Obj::list(multi_suffixes(s)?)),
             _ => Err(NErr::value_error("not number".to_string())),
         },
     });
@@ -7435,22 +7425,26 @@ pub fn initialize(env: &mut Env) {
         },
     });
     // unlike python these are true on empty string. hmm...
-    env.insert_builtin(OneArgBuiltin {
-        name: "is_upper".to_string(),
-        can_refer: false,
-        body: |arg| match arg {
-            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_uppercase))),
-            _ => Err(NErr::type_error("expected string".to_string())),
-        },
-    });
-    env.insert_builtin(OneArgBuiltin {
-        name: "is_lower".to_string(),
-        can_refer: false,
-        body: |arg| match arg {
-            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all(char::is_lowercase))),
-            _ => Err(NErr::type_error("expected string".to_string())),
-        },
-    });
+    macro_rules! forward_char {
+        ($name:expr, $pred:expr) => {
+            env.insert_builtin(OneArgBuiltin {
+                name: $name.to_string(),
+                can_refer: false,
+                body: |arg| match arg {
+                    Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all($pred))),
+                    _ => Err(NErr::type_error("expected string".to_string())),
+                },
+            });
+        };
+    }
+    forward_char!("is_upper", char::is_uppercase);
+    forward_char!("is_alpha", char::is_alphabetic);
+    forward_char!("is_alnum", char::is_alphanumeric);
+    forward_char!("is_digit", char::is_numeric); // sketchy
+    forward_char!("is_space", char::is_whitespace);
+    forward_char!("is_lower", char::is_lowercase);
+    forward_char!("is_ascii", |c| char::is_ascii(&c));
+
     env.insert_builtin(TwoArgBuiltin {
         name: "join".to_string(),
         can_refer: false,
@@ -7819,38 +7813,16 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "take_while".to_string(),
         can_refer: true,
-        body: |env, mut a, b| match b {
-            Obj::Func(f, _) => {
-                let mut it = mut_obj_into_iter(&mut a, "take_while")?;
-                let mut acc = Vec::new();
-                while let Some(x) = it.next() {
-                    if f.run(env, vec![x.clone()])?.truthy() {
-                        acc.push(x);
-                    } else {
-                        break;
-                    }
-                }
-                Ok(Obj::list(acc))
-            }
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => take_while(s, f, env),
             _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "drop_while".to_string(),
         can_refer: true,
-        body: |env, mut a, b| match b {
-            Obj::Func(f, _) => {
-                // TODO: handle streams magically?
-                let mut it = mut_obj_into_iter(&mut a, "drop_while")?;
-                while let Some(x) = it.next() {
-                    if !f.run(env, vec![x.clone()])?.truthy() {
-                        let mut acc = vec![x];
-                        acc.extend(it);
-                        return Ok(Obj::list(acc));
-                    }
-                }
-                Ok(Obj::list(Vec::new()))
-            }
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => drop_while(s, f, env),
             _ => Err(NErr::generic_argument_error()),
         },
     });
