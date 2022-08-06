@@ -44,9 +44,12 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Else
                 | Token::Switch
                 | Token::Case
+                | Token::Try
+                | Token::Catch
                 | Token::Break
                 | Token::Continue
                 | Token::Return
+                | Token::Throw
                 | Token::Lambda
                 | Token::Bang
                 | Token::Colon
@@ -56,7 +59,8 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Pop
                 | Token::Remove
                 | Token::Swap
-                | Token::Every => Some("\x1b[1;34m"),
+                | Token::Every
+                | Token::Underscore => Some("\x1b[1;34m"),
                 _ => None,
             };
             match color {

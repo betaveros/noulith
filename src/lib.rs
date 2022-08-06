@@ -1397,53 +1397,56 @@ impl Seq {
 
 #[derive(Debug)]
 pub enum NErr {
-    Just(String),
+    Throw(Obj),
     Break(Obj),
     Return(Obj),
     Continue,
 }
 
 impl NErr {
+    fn throw(s: String) -> NErr {
+        NErr::Throw(Obj::from(s))
+    }
     fn argument_error(s: String) -> NErr {
-        NErr::Just(format!("argument error: {}", s))
+        NErr::throw(format!("argument error: {}", s))
     }
     fn index_error(s: String) -> NErr {
-        NErr::Just(format!("index error: {}", s))
+        NErr::throw(format!("index error: {}", s))
     }
     fn key_error(s: String) -> NErr {
-        NErr::Just(format!("key error: {}", s))
+        NErr::throw(format!("key error: {}", s))
     }
     fn empty_error(s: String) -> NErr {
-        NErr::Just(format!("empty error: {}", s))
+        NErr::throw(format!("empty error: {}", s))
     }
     fn name_error(s: String) -> NErr {
-        NErr::Just(format!("name error: {}", s))
+        NErr::throw(format!("name error: {}", s))
     }
     fn syntax_error(s: String) -> NErr {
-        NErr::Just(format!("syntax error: {}", s))
+        NErr::throw(format!("syntax error: {}", s))
     }
     fn type_error(s: String) -> NErr {
-        NErr::Just(format!("type error: {}", s))
+        NErr::throw(format!("type error: {}", s))
     }
     fn value_error(s: String) -> NErr {
-        NErr::Just(format!("value error: {}", s))
+        NErr::throw(format!("value error: {}", s))
     }
     fn io_error(s: String) -> NErr {
-        NErr::Just(format!("io error: {}", s))
+        NErr::throw(format!("io error: {}", s))
     }
     fn assert_error(s: String) -> NErr {
-        NErr::Just(format!("assert error: {}", s))
+        NErr::throw(format!("assert error: {}", s))
     }
 
     fn generic_argument_error() -> NErr {
-        NErr::Just("unrecognized argument types".to_string())
+        NErr::throw("unrecognized argument types".to_string())
     }
 }
 
 fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
     match res {
         Ok(x) => Ok(x),
-        Err(NErr::Just(msg)) => Err(NErr::Just(format!("{}: {}", s, msg))),
+        Err(NErr::Throw(msg)) => Err(NErr::throw(format!("{}: {}", s, msg))),
         Err(NErr::Break(e)) => Err(NErr::Break(e)),
         Err(NErr::Return(e)) => Err(NErr::Return(e)),
         Err(NErr::Continue) => Err(NErr::Continue),
@@ -1453,7 +1456,7 @@ fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
 impl fmt::Display for NErr {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            NErr::Just(s) => write!(formatter, "{}", s),
+            NErr::Throw(e) => write!(formatter, "{}", e),
             NErr::Break(e) => write!(formatter, "break {}", e),
             NErr::Continue => write!(formatter, "continue"),
             NErr::Return(e) => write!(formatter, "return {}", e),
@@ -2955,9 +2958,12 @@ pub enum Token {
     Else,
     Switch,
     Case,
+    Try,
+    Catch,
     Break,
     Continue,
     Return,
+    Throw,
     Bang,
     Colon,
     DoubleColon,
@@ -3024,9 +3030,11 @@ pub enum Expr {
     For(Vec<ForIteration>, bool /* yield */, Box<Expr>),
     While(Box<Expr>, Box<Expr>),
     Switch(Box<Expr>, Vec<(Box<Lvalue>, Box<Expr>)>),
+    Try(Box<Expr>, Box<Lvalue>, Box<Expr>),
     Break(Option<Box<Expr>>),
     Continue,
     Return(Option<Box<Expr>>),
+    Throw(Box<Expr>),
     Sequence(Vec<Box<Expr>>, bool), // semicolon ending to swallow nulls
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<Expr>),
@@ -3455,6 +3463,9 @@ impl<'a> Lexer<'a> {
                                 "or" => Token::Or,
                                 "coalesce" => Token::Coalesce,
                                 "break" => Token::Break,
+                                "try" => Token::Try,
+                                "catch" => Token::Catch,
+                                "throw" => Token::Throw,
                                 "continue" => Token::Continue,
                                 "return" => Token::Return,
                                 "pop" => Token::Pop,
@@ -3623,6 +3634,10 @@ impl Parser {
                         Ok(Expr::Break(Some(Box::new(self.single("break")?))))
                     }
                 }
+                Token::Throw => {
+                    self.advance();
+                    Ok(Expr::Throw(Box::new(self.single("throw")?)))
+                }
                 Token::Continue => {
                     self.advance();
                     Ok(Expr::Continue)
@@ -3776,6 +3791,15 @@ impl Parser {
                     }
                     Ok(Expr::Switch(Box::new(scrutinee), v))
                 }
+                Token::Try => {
+                    self.advance();
+                    let body = self.expression()?;
+                    self.require(Token::Catch, "try end".to_string())?;
+                    let pat = to_lvalue(self.pattern()?)?;
+                    self.require(Token::Colon, "catch mid".to_string())?;
+                    let catcher = self.single("catch body")?;
+                    Ok(Expr::Try(Box::new(body), Box::new(pat), Box::new(catcher)))
+                }
                 _ => Err(format!("atom: Unexpected {}", self.peek_err())),
             }
         } else {
@@ -3891,6 +3915,7 @@ impl Parser {
             Some(Token::RightBrace) => true,
             Some(Token::Else) => true,
             Some(Token::Case) => true,
+            Some(Token::Catch) => true,
             None => true,
             _ => false,
         }
@@ -5872,6 +5897,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             // error??
             Ok(Obj::Null)
         }
+        Expr::Try(body, pat, catcher) => {
+            match evaluate(env, body) {
+                x @ (Ok(_) | Err(NErr::Break(_) | NErr::Continue | NErr::Return(_))) => x,
+                Err(NErr::Throw(e)) => {
+                    // see questinability above
+                    let ee = Env::with_parent(env);
+                    let p = eval_lvalue(&ee, pat)?;
+                    // drop asap
+                    let ret = assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &e);
+                    match ret {
+                        Ok(()) => evaluate(&ee, catcher),
+                        Err(_) => Err(NErr::Throw(e)),
+                    }
+                }
+            }
+        }
+        Expr::Throw(body) => Err(NErr::Throw(evaluate(&env, body)?)),
         Expr::Lambda(params, body) => Ok(Obj::Func(
             Func::Closure(Closure {
                 params: Rc::clone(params),
@@ -6099,6 +6141,11 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<
                 })
                 .collect::<NRes<Vec<(Box<Lvalue>, Box<Expr>)>>>()?,
         )),
+        Expr::Try(a, b, c) => Ok(Expr::Try(
+            box_freeze(bound, env, a)?,
+            box_freeze_lvalue(bound, env, b)?,
+            box_freeze(bound, env, c)?,
+        )),
         Expr::Lambda(params, body) => {
             let mut bound2 = params
                 .iter()
@@ -6114,6 +6161,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<
         Expr::Paren(p) => Ok(Expr::Paren(box_freeze(bound, env, p)?)),
         Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(bound, env, e)?)),
         Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(bound, env, e)?)),
+        Expr::Throw(e) => Ok(Expr::Throw(box_freeze(bound, env, e)?)),
         Expr::Continue => Ok(Expr::Continue),
     }
 }
@@ -6628,11 +6676,19 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
-        body: |a, b| Ok(Obj::Num(a.div_floor(&b))),
+        body: |a, b| if b.is_nonzero() {
+            Ok(Obj::Num(a.div_floor(&b)))
+        } else {
+            Err(NErr::value_error("division by zero".to_string()))
+        },
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
-        body: |a, b| Ok(Obj::Num(a.mod_floor(&b))),
+        body: |a, b| if b.is_nonzero() {
+            Ok(Obj::Num(a.mod_floor(&b)))
+        } else {
+            Err(NErr::value_error("division by zero".to_string()))
+        },
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
