@@ -359,7 +359,7 @@ impl Iterator for Cycle {
 }
 impl Display for Cycle {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "cycle({:?})", self.0)
+        write!(formatter, "cycle({})", CommaSeparated(&**self.0))
     }
 }
 impl Stream for Cycle {
@@ -473,7 +473,17 @@ impl Iterator for Permutations {
 }
 impl Display for Permutations {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "permutations({:?}; {:?})", self.0, self.1)
+        match &self.1 {
+            Some(x) => {
+                write!(
+                    formatter,
+                    "permutations({} @ {})",
+                    CommaSeparated(&**self.0),
+                    CommaSeparated(&**x)
+                )
+            }
+            None => write!(formatter, "permutations(done)"),
+        }
     }
 }
 impl Stream for Permutations {
@@ -508,7 +518,17 @@ impl Iterator for Combinations {
 }
 impl Display for Combinations {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "combinations({:?}; {:?})", self.0, self.1)
+        match &self.1 {
+            Some(x) => {
+                write!(
+                    formatter,
+                    "combinations({} @ {})",
+                    CommaSeparated(&**self.0),
+                    CommaSeparated(&**x)
+                )
+            }
+            None => write!(formatter, "combinations(done)"),
+        }
     }
 }
 impl Stream for Combinations {
@@ -545,7 +565,17 @@ impl Iterator for Subsequences {
 }
 impl Display for Subsequences {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "Subsequences({:?}; {:?})", self.0, self.1)
+        match &self.1 {
+            Some(x) => {
+                write!(
+                    formatter,
+                    "subsequences({} @ {})",
+                    CommaSeparated(&**self.0),
+                    CommaSeparated(&**x)
+                )
+            }
+            None => write!(formatter, "subsequences(done)"),
+        }
     }
 }
 impl Stream for Subsequences {
@@ -1217,8 +1247,7 @@ impl MyDisplay for Obj {
                 write!(formatter, ")")
             }
             Obj::Seq(Seq::Stream(x)) => {
-                // FIXME
-                write!(formatter, "Stream({})", x)
+                write!(formatter, "{}", x)
             }
             Obj::Seq(Seq::Bytes(xs)) => write_bytes(xs.as_slice(), formatter, flags),
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
@@ -1809,8 +1838,10 @@ impl Display for Func {
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
             Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
             // TODO
-            Func::Parallel(fs) => write!(formatter, "Parallel({:?})", fs),
-            Func::Fanout(fs) => write!(formatter, "Fanout({:?})", fs),
+            Func::Parallel(fs) => {
+                write!(formatter, "Parallel({})", CommaSeparated(fs))
+            }
+            Func::Fanout(fs) => write!(formatter, "Fanout({})", CommaSeparated(fs)),
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             Func::ListSection(xs) => write!(formatter, "ListSection({:?})", xs),
             Func::ChainSection(xs, ys) => write!(formatter, "ChainSection({:?} {:?})", xs, ys),
@@ -2685,7 +2716,6 @@ impl Builtin for Group {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             Few2::One(Obj::Seq(s)) => Ok(Obj::list(multi_group_by_eq(s)?)),
-            // TODO: tighter type?
             Few2::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few2::Two(Obj::Seq(s), Obj::Num(n)) => match to_usize_ok(&n)? {
                 0 => Err(NErr::value_error("can't group into 0".to_string())),
@@ -5019,12 +5049,8 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
     for x in exprs {
         match &**x {
             Expr::Splat(inner) => {
-                let res = evaluate(env, inner)?;
-                match res {
-                    // FIXME
-                    Obj::Seq(Seq::List(mut xx)) => acc.append(Rc::make_mut(&mut xx)),
-                    _ => Err(NErr::type_error(format!("Can't splat non-list {:?}", res)))?,
-                }
+                let mut res = evaluate(env, inner)?;
+                acc.extend(mut_obj_into_iter(&mut res, "splat")?);
             }
             _ => acc.push(evaluate(env, x)?),
         }
@@ -6242,6 +6268,22 @@ pub fn simple_eval(code: &str) -> Obj {
 
     let e = Rc::new(RefCell::new(env));
     evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
+}
+
+struct CommaSeparated<'a, T>(&'a [T]);
+
+impl<'a, T: Display> Display for CommaSeparated<'a, T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let mut started = false;
+        for t in self.0 {
+            if started {
+                write!(formatter, ", ")?;
+            }
+            started = true;
+            write!(formatter, "{}", t)?;
+        }
+        Ok(())
+    }
 }
 
 fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
