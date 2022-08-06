@@ -554,6 +554,7 @@ pub enum ObjType {
     Func,
     Type,
     Any,
+    Satisfying(REnv, Box<Func>),
 }
 
 impl ObjType {
@@ -573,6 +574,7 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
+            ObjType::Satisfying(..) => "satisfying(???)",
         }
         .to_string()
     }
@@ -608,6 +610,11 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::Func, Obj::Func(..)) => true,
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
+        // FIXME I feel like this should lead to a runtime borrow conflict and panic...
+        (ObjType::Satisfying(renv, func), x) => match func.run(renv, vec![x.clone()]) {
+            Ok(res) => res.truthy(),
+            Err(_) => false, // FIXME yikes
+        }
         _ => false,
     }
 }
@@ -4626,7 +4633,9 @@ fn modify_every_existing_index(
 }
 
 fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
-    if env.insert(s.to_string(), ty, rhs).is_some() {
+    if !is_type(&ty, &rhs) {
+        Err(NErr::name_error(format!("Declaring/assigning variable of incorrect type: {} is not of type {:?}", rhs, ty)))
+    } else if env.insert(s.to_string(), ty, rhs).is_some() {
         Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
     } else {
         Ok(())
@@ -7470,6 +7479,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_type(ObjType::Func);
     env.insert_type(ObjType::Type);
     env.insert_type(ObjType::Any);
+    env.insert_builtin(EnvOneArgBuiltin {
+        name: "satisfying".to_string(),
+        can_refer: false,
+        body: |env, arg| match arg {
+            Obj::Func(f, _) => Ok(Obj::Func(Func::Type(ObjType::Satisfying(env.clone(), Box::new(f))), Precedence::zero())),
+            _ => Err(NErr::type_error("expected func".to_string())),
+        },
+    });
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
         can_refer: false,
