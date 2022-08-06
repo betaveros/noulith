@@ -3027,7 +3027,7 @@ pub enum Expr {
     Break(Option<Box<Expr>>),
     Continue,
     Return(Option<Box<Expr>>),
-    Sequence(Vec<Box<Expr>>),
+    Sequence(Vec<Box<Expr>>, bool), // semicolon ending to swallow nulls
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<Expr>),
     // meaningful in lvalues
@@ -3884,18 +3884,25 @@ impl Parser {
         }
     }
 
-    fn peek_csc_stopper(&self) -> bool {
+    fn peek_hard_stopper(&self) -> bool {
         match self.peek() {
             Some(Token::RightParen) => true,
             Some(Token::RightBracket) => true,
             Some(Token::RightBrace) => true,
+            Some(Token::Else) => true,
+            Some(Token::Case) => true,
+            None => true,
+            _ => false,
+        }
+    }
+
+    fn peek_csc_stopper(&self) -> bool {
+        self.peek_hard_stopper() ||
+        match self.peek() {
             Some(Token::Assign) => true,
             Some(Token::Colon) => true,
             Some(Token::DoubleColon) => true,
             Some(Token::Semicolon) => true,
-            Some(Token::Else) => true,
-            Some(Token::Case) => true,
-            None => true,
             _ => false,
         }
     }
@@ -4087,19 +4094,21 @@ impl Parser {
 
     fn expression(&mut self) -> Result<Expr, String> {
         let mut ags = vec![Box::new(self.assignment()?)];
-        let mut semicolon = false;
+        let mut ending_semicolon = false;
 
         while self.try_consume(&Token::Semicolon) {
-            semicolon = true;
-            if self.peek() != None {
+            if self.peek_hard_stopper() {
+                ending_semicolon = true;
+                break;
+            } else {
                 ags.push(Box::new(self.assignment()?));
             }
         }
 
-        Ok(if ags.len() == 1 && !semicolon {
+        Ok(if ags.len() == 1 && !ending_semicolon {
             *ags.remove(0)
         } else {
-            Expr::Sequence(ags)
+            Expr::Sequence(ags, ending_semicolon)
         })
     }
 
@@ -5796,11 +5805,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
             Ok(Obj::dict(acc, dv))
         }
-        Expr::Sequence(xs) => {
+        Expr::Sequence(xs, ending_semicolon) => {
             for x in &xs[..xs.len() - 1] {
                 evaluate(env, x)?;
             }
-            evaluate(env, xs.last().unwrap())
+            let ret = evaluate(env, xs.last().unwrap())?;
+            if *ending_semicolon {
+                Ok(Obj::Null)
+            } else {
+                Ok(ret)
+            }
         }
         Expr::If(cond, if_body, else_body) => {
             let cr = evaluate(env, cond)?;
@@ -6047,7 +6061,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<
                 .map(|(k, v)| Ok((box_freeze(bound, env, k)?, opt_box_freeze(bound, env, v)?)))
                 .collect::<NRes<Vec<(Box<Expr>, Option<Box<Expr>>)>>>()?,
         )),
-        Expr::Sequence(xs) => Ok(Expr::Vector(vec_box_freeze(bound, env, xs)?)),
+        Expr::Sequence(xs, es) => Ok(Expr::Sequence(vec_box_freeze(bound, env, xs)?, *es)),
         Expr::If(a, b, c) => Ok(Expr::If(
             box_freeze(bound, env, a)?,
             box_freeze(bound, env, b)?,
@@ -6261,6 +6275,19 @@ fn sorted_by<T: Clone + Into<Obj>>(env: &REnv, f: Func, mut v: Vec<T>) -> NRes<V
 }
 fn multi_sort_by(env: &REnv, f: Func, v: Seq) -> NRes<Seq> {
     multi!(v, sorted_by(env, f, v))
+}
+fn uniqued<T: Clone + Into<Obj>>(v: Vec<T>) -> NRes<Vec<T>> {
+    let mut seen = HashSet::new();
+    let mut ret = Vec::new();
+    for x in v {
+        if seen.insert(to_key(x.clone().into())?) {
+            ret.push(x)
+        }
+    }
+    Ok(ret)
+}
+fn multi_unique(v: Seq) -> NRes<Seq> {
+    multi!(v, uniqued(v))
 }
 
 fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize) -> Vec<Vec<T>> {
@@ -7202,6 +7229,14 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(Group);
     env.insert_builtin(Merge);
+    env.insert_builtin(OneArgBuiltin {
+        name: "unique".to_string(),
+        can_refer: true,
+        body: |a| match a {
+            Obj::Seq(s) => Ok(Obj::Seq(multi_unique(s)?)),
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "window".to_string(),
         can_refer: true,
@@ -7664,6 +7699,23 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?])),
     });
     env.insert_builtin(CartesianProduct);
+    env.insert_builtin(TwoArgBuiltin {
+        name: "^^".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Num(n)) => {
+                let mut acc = Vec::new();
+                let mut ret = Vec::new();
+                let mut f = |k: &Vec<Obj>| {
+                    ret.push(Obj::list(k.clone()));
+                    Ok(())
+                };
+                cartesian_foreach(&mut acc, vec![s; to_usize_ok(&n)?].as_slice(), &mut f)?;
+                Ok(Obj::list(ret))
+            }
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "id".to_string(),
         can_refer: false,
