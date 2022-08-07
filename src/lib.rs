@@ -501,7 +501,7 @@ impl Iterator for Iterate {
     fn next(&mut self) -> Option<Obj> {
         let (obj, func, renv) = self.0.as_mut()?;
         let ret = obj.clone();
-        let cur = std::mem::replace(obj, Obj::Null);
+        let cur = std::mem::take(obj);
         match func.run(&renv, vec![cur]) {
             Ok(nxt) => {
                 *obj = nxt;
@@ -628,7 +628,10 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
 fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     match ty {
         ObjType::Int => match arg {
-            Obj::Num(n) => Ok(Obj::Num(n.trunc())), // FIXME wat
+            Obj::Num(n) => Ok(Obj::Num(
+                n.trunc()
+                    .ok_or(NErr::value_error("can't coerce to int".to_string()))?,
+            )),
             Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
                 Ok(x) => Ok(Obj::from(x)),
                 Err(s) => Err(NErr::value_error(format!("can't parse: {}", s))),
@@ -695,9 +698,8 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             mut arg => Ok(Obj::dict(
                 mut_obj_into_iter(&mut arg, "dict conversion")?
                     .map(|p| match p {
-                        // TODO not taking but blech
-                        Obj::Seq(Seq::List(xs)) => match xs.as_slice() {
-                            [k, v] => Ok((to_key(k.clone())?, v.clone())),
+                        Obj::Seq(Seq::List(xs)) => match few2(unwrap_or_clone(xs)) {
+                            Few2::Two(k, v) => Ok((to_key(k)?, v)),
                             _ => Err(NErr::type_error("dict conversion: not pair".to_string())),
                         },
                         _ => Err(NErr::type_error("dict conversion: not list".to_string())),
@@ -769,6 +771,12 @@ impl Obj {
     }
     fn one() -> Self {
         Obj::Num(NNum::Int(BigInt::from(1)))
+    }
+}
+
+impl Default for Obj {
+    fn default() -> Obj {
+        Obj::Null
     }
 }
 
@@ -1153,7 +1161,9 @@ impl MyDisplay for Obj {
                         v.fmt_with_mut(formatter, flags)?;
                         flags.repr = old_repr;
                         write!(formatter, ")")?;
-                        // TODO: spacing considerations, pain
+                        if !xs.is_empty() {
+                            write!(formatter, ", ")?;
+                        }
                     }
                     None => {}
                 }
@@ -1396,7 +1406,7 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 }
 
 impl Seq {
-    fn len(self) -> Option<usize> {
+    fn len(&self) -> Option<usize> {
         match self {
             Seq::List(d) => Some(d.len()),
             Seq::String(d) => Some(d.len()),
@@ -1544,14 +1554,28 @@ impl Func {
             }
             Func::Parallel(fs) => {
                 let mut res = Vec::new();
-                if args.len() == 1 {
-                    // TODO check lengths
-                    for (f, a) in fs.iter().zip(mut_obj_into_iter(&mut args.remove(0), "parallel")?) {
-                        res.push(f.run(env, vec![a])?);
+                match few(args) {
+                    Few::One(Obj::Seq(mut seq)) => {
+                        match seq.len() {
+                            Some(n) if n == fs.len() => {
+                                for (f, a) in fs.iter().zip(mut_seq_into_iter(&mut seq)) {
+                                    res.push(f.run(env, vec![a])?);
+                                }
+                            }
+                            Some(n) => return Err(NErr::type_error(format!("Parallel argument seq has wrong length {}: {:?}", n, seq))),
+                            None => return Err(NErr::type_error(format!("Parallel argument seq has infinite length?: {:?}", seq)))
+                        }
                     }
-                } else if args.len() == fs.len() {
-                    for (f, a) in fs.iter().zip(args) {
-                        res.push(f.run(env, vec![a])?);
+                    Few::Zero => {
+                        return Err(NErr::argument_error(format!("can't call Parallel with no args")))
+                    }
+                    Few::One(x) => {
+                        return Err(NErr::type_error(format!("can't call Parallel with one non-seq {}", x)))
+                    }
+                    Few::Many(args) => {
+                        for (f, a) in fs.iter().zip(args) {
+                            res.push(f.run(env, vec![a])?);
+                        }
                     }
                 }
                 Ok(Obj::list(res))
@@ -2439,8 +2463,7 @@ impl Builtin for Merge {
                                 None => *e.get_mut() = v,
                                 Some(f) => {
                                     let slot = e.get_mut();
-                                    *slot =
-                                        f.run(env, vec![std::mem::replace(slot, Obj::Null), v])?;
+                                    *slot = f.run(env, vec![std::mem::take(slot), v])?;
                                 }
                             },
                         }
@@ -2953,6 +2976,7 @@ pub enum Token {
     FloatLit(f64),
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
+    BytesLit(Rc<Vec<u8>>),
     FormatString(Rc<String>),
     Ident(String),
     LeftParen,
@@ -3022,6 +3046,7 @@ pub enum Expr {
     FloatLit(f64),
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
+    BytesLit(Rc<Vec<u8>>),
     FormatString(Rc<Vec<Result<char, (Expr, MyFmtFlags)>>>),
     Ident(String),
     Underscore,
@@ -3138,6 +3163,7 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
         Expr::Paren(p) => Ok(Lvalue::Unannotation(Box::new(to_lvalue(*p)?))),
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
+        Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
         // TODO: special case for negative literals????
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
@@ -3217,6 +3243,25 @@ impl<'a> Lexer<'a> {
         self.tokens.push(LocToken {
             token,
             start: self.start,
+            end: self.cur,
+        });
+        self.start = self.cur;
+    }
+
+    fn emit_but_last(&mut self, token1: Token, token2: Token) {
+        let cur_but_last = CodeLoc {
+            line: self.cur.line,
+            col: self.cur.col - 1,
+            index: self.cur.index - 1,
+        };
+        self.tokens.push(LocToken {
+            token: token1,
+            start: self.start,
+            end: cur_but_last,
+        });
+        self.tokens.push(LocToken {
+            token: token2,
+            start: cur_but_last,
             end: self.cur,
         });
         self.start = self.cur;
@@ -3322,7 +3367,41 @@ impl<'a> Lexer<'a> {
                 '}' => self.emit(Token::RightBrace),
                 '\\' => self.emit(Token::Lambda),
                 ',' => self.emit(Token::Comma),
-                ';' => self.emit(Token::Semicolon),
+                ';' => {
+                    let mut semis = 1;
+                    while self.peek() == Some(&';') {
+                        self.next();
+                        semis += 1;
+                    }
+                    if semis == 1 {
+                        self.emit(Token::Semicolon)
+                    } else {
+                        let mut comm = String::new();
+                        let mut cur = 0;
+                        loop {
+                            match self.next() {
+                                Some(';') => {
+                                    comm.push(c);
+                                    cur += 1;
+
+                                    if cur == semis {
+                                        comm.truncate(comm.len() - semis);
+                                        self.emit(Token::Comment(comm));
+                                        break;
+                                    }
+                                }
+                                Some(c) => {
+                                    comm.push(c);
+                                    cur = 0;
+                                }
+                                None => {
+                                    self.emit(Token::Invalid("range comment: EOF".to_string()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 ':' => {
                     if self.peek() == Some(&':') {
                         self.next();
@@ -3434,13 +3513,33 @@ impl<'a> Lexer<'a> {
                     } else if c.is_alphabetic() || c == '_' {
                         let mut acc = c.to_string();
 
-                        while let Some(cc) =
-                            self.peek().filter(|c| c.is_alphanumeric() || **c == '_')
+                        while let Some(cc) = self
+                            .peek()
+                            .filter(|c| c.is_alphanumeric() || **c == '_' || **c == '\'')
                         {
+                            if c.is_uppercase() && acc.len() == 1 && *cc == '\'' {
+                                // F', R', etc. start strings
+                                break;
+                            }
                             acc.push(*cc);
                             self.next();
                         }
-                        if acc == "F" {
+                        if acc == "B" {
+                            match self.next() {
+                                Some(delim @ ('\'' | '"')) => {
+                                    // TODO this isn't how it works we need to deal with hex
+                                    // escapes differently at least
+                                    let s = self.lex_simple_string_after_start(delim);
+                                    self.emit(Token::BytesLit(Rc::new(s.into_bytes())))
+                                }
+                                Some('[') => self.emit(Token::Invalid(
+                                    "lexing: bytes: literal is TODO".to_string(),
+                                )),
+                                _ => {
+                                    self.emit(Token::Invalid("lexing: bytes: no quote".to_string()))
+                                }
+                            }
+                        } else if acc == "F" {
                             // wow
                             // i guess we lex and parse at evaluation?? idk
                             match self.next() {
@@ -3525,39 +3624,7 @@ impl<'a> Lexer<'a> {
                             }
                             ("", '=') => self.emit(Token::Assign),
                             (_, '=') => {
-                                if acc.chars().all(|c| c == '=') {
-                                    let eqs = acc.len() + 1;
-                                    let mut comm = String::new();
-                                    let mut cur = 0;
-                                    self.next();
-                                    loop {
-                                        match self.next() {
-                                            Some('=') => {
-                                                comm.push(c);
-                                                cur += 1;
-
-                                                if cur == eqs {
-                                                    comm.truncate(comm.len() - eqs);
-                                                    self.emit(Token::Comment(acc));
-                                                    break;
-                                                }
-                                            }
-                                            Some(c) => {
-                                                comm.push(c);
-                                                cur = 0;
-                                            }
-                                            None => {
-                                                self.emit(Token::Invalid(
-                                                    "range comment: EOF".to_string(),
-                                                ));
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    self.emit(Token::Ident(acc));
-                                    self.emit(Token::Assign)
-                                }
+                                self.emit_but_last(Token::Ident(acc), Token::Assign);
                             }
                             (_, _) => {
                                 acc.push(last);
@@ -3668,6 +3735,11 @@ impl Parser {
                     let s = s.clone();
                     self.advance();
                     Ok(Expr::StringLit(s))
+                }
+                Token::BytesLit(s) => {
+                    let s = s.clone();
+                    self.advance();
+                    Ok(Expr::BytesLit(s))
                 }
                 Token::FormatString(s) => {
                     let s = s.clone();
@@ -4922,8 +4994,7 @@ fn modify_every(
                     )))?
             } else {
                 modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
-                    // TODO take??
-                    *x = rhs(x.clone())?;
+                    *x = rhs(std::mem::take(x))?;
                     Ok(())
                 })?;
                 assign_respecting_type(env, s, &[], &old, false /* every */)
@@ -5214,6 +5285,19 @@ fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     }
 }
 
+fn soft_from_utf8(bs: Vec<u8>) -> Obj {
+    match String::from_utf8(bs) {
+        Ok(s) => Obj::from(s),
+        Err(e) => Obj::Seq(Seq::Bytes(Rc::new(e.into_bytes()))),
+    }
+}
+
+// caller has done as_bytes and any pythonic index calculations
+// weird semantics but fine I guess
+fn weird_string_as_bytes_index(s: &[u8], i: usize) -> Obj {
+    soft_from_utf8(s[i..i + 1].to_vec())
+}
+
 fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
     match xr {
         Seq::List(xx) => Ok(xx[pythonic_index_isize(&xx, i)?].clone()),
@@ -5222,11 +5306,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
         Seq::String(s) => {
             let bs = s.as_bytes();
             let i = pythonic_index_isize(bs, i)?;
-            // TODO this was the path of least resistance; idk what good semantics actually are
-            // TODO copypasta
-            Ok(Obj::from(
-                String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
-            ))
+            Ok(soft_from_utf8(bs[i..i + 1].to_vec()))
         }
         Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!(
             "Can't index stream {:?} {:?}",
@@ -5245,10 +5325,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             Seq::String(s) => {
                 let bs = s.as_bytes();
                 let i = pythonic_index(bs, &ii)?;
-                // TODO this was the path of least resistance; idk what good semantics actually are
-                Ok(Obj::from(
-                    String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
-                ))
+                Ok(weird_string_as_bytes_index(bs, i))
             }
             Seq::Dict(xx, def) => {
                 let k = to_key(ii)?;
@@ -5297,10 +5374,7 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
             Seq::String(s) => {
                 let bs = s.as_bytes();
                 let i = cyclic_index(bs, &ii)?;
-                // TODO this was the path of least resistance; idk what good semantics actually are
-                Ok(Obj::from(
-                    String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
-                ))
+                Ok(weird_string_as_bytes_index(bs, i))
             }
             Seq::Dict(..) => Err(NErr::type_error(format!(
                 "can't cyclically index {:?} {:?}",
@@ -5329,8 +5403,7 @@ fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
         (Obj::Seq(Seq::String(s)), lo, hi) => {
             let bs = s.as_bytes();
             let (lo, hi) = pythonic_slice_obj(bs, lo.as_ref(), hi.as_ref())?;
-            // TODO this was the path of least resistance; idk what good semantics actually are
-            Ok(Obj::from(String::from_utf8_lossy(&bs[lo..hi]).into_owned()))
+            Ok(soft_from_utf8(bs[lo..hi].to_vec()))
         }
         (Obj::Seq(Seq::Vector(s)), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(s, lo.as_ref(), hi.as_ref())?;
@@ -5367,11 +5440,8 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
         (Obj::Seq(s), ii) => match s {
             Seq::String(s) => {
                 let bs = s.as_bytes();
-                // TODO above
                 match pythonic_index(bs, ii) {
-                    Ok(i) => Ok(Obj::from(
-                        String::from_utf8_lossy(&bs[i..i + 1]).into_owned(),
-                    )),
+                    Ok(i) => Ok(weird_string_as_bytes_index(bs, i)),
                     Err(_) => Ok(Obj::Null),
                 }
             }
@@ -5664,6 +5734,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
         Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
+        Expr::BytesLit(s) => Ok(Obj::Seq(Seq::Bytes(Rc::clone(s)))),
         Expr::Frozen(x) => Ok(x.clone()),
         Expr::FormatString(s) => {
             let mut acc = String::new();
@@ -6178,6 +6249,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<
         Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
         Expr::ImaginaryFloatLit(x) => Ok(Expr::ImaginaryFloatLit(x.clone())),
         Expr::StringLit(x) => Ok(Expr::StringLit(x.clone())),
+        Expr::BytesLit(x) => Ok(Expr::BytesLit(x.clone())),
         Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
         Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
 
@@ -6885,11 +6957,27 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneNumBuiltin {
         name: "floor".to_string(),
-        body: |a| Ok(Obj::Num(a.floor())),
+        body: |a| {
+            Ok(Obj::Num(a.floor().ok_or(NErr::value_error(
+                "can't coerce to int".to_string(),
+            ))?))
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "ceil".to_string(),
-        body: |a| Ok(Obj::Num(a.ceil())),
+        body: |a| {
+            Ok(Obj::Num(a.ceil().ok_or(NErr::value_error(
+                "can't coerce to int".to_string(),
+            ))?))
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "round".to_string(),
+        body: |a| {
+            Ok(Obj::Num(a.round().ok_or(NErr::value_error(
+                "can't coerce to int".to_string(),
+            ))?))
+        },
     });
     env.insert_builtin(OneNumBuiltin {
         name: "signum".to_string(),
@@ -8039,12 +8127,11 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::generic_argument_error()),
         },
     });
-    // TODO: substring?
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "index".to_string(),
         can_refer: true,
-        body: |env, mut a, b| match b {
-            Obj::Func(f, _) => {
+        body: |env, a, b| match (a, b) {
+            (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "index")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
@@ -8053,7 +8140,14 @@ pub fn initialize(env: &mut Env) {
                 }
                 Err(NErr::value_error("didn't find".to_string()))
             }
-            b => {
+            (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                match a.find(&*b) {
+                    // this is the byte index! shrug
+                    Some(i) => Ok(Obj::from(i)),
+                    None => Err(NErr::value_error("didn't find".to_string())),
+                }
+            }
+            (mut a, b) => {
                 let mut it = mut_obj_into_iter(&mut a, "index")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x == b {
@@ -8067,8 +8161,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "try_index".to_string(),
         can_refer: true,
-        body: |env, mut a, b| match b {
-            Obj::Func(f, _) => {
+        body: |env, a, b| match (a, b) {
+            (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "try_index")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
@@ -8077,7 +8171,14 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::Null)
             }
-            b => {
+            (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                match a.find(&*b) {
+                    // this is the byte index! shrug
+                    Some(i) => Ok(Obj::from(i)),
+                    None => Ok(Obj::Null),
+                }
+            }
+            (mut a, b) => {
                 let mut it = mut_obj_into_iter(&mut a, "try_index")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x == b {
@@ -8178,15 +8279,17 @@ pub fn initialize(env: &mut Env) {
         name: "insert".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::List(b))) => match b.as_slice() {
-                [k, v] => {
-                    // TODO could take b theoretically, but, pain
-                    // TODO maybe fail if key exists? have |.. = "upsert"?
-                    Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
-                    Ok(Obj::Seq(Seq::Dict(a, d)))
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(mut s)) => {
+                let mut it = mut_seq_into_iter(&mut s);
+                match (it.next(), it.next(), it.next()) {
+                    (Some(k), Some(v), None) => {
+                        // TODO maybe fail if key exists? have |.. = "upsert"?
+                        Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
+                        Ok(Obj::Seq(Seq::Dict(a, d)))
+                    }
+                    _ => Err(NErr::argument_error("RHS must be pair".to_string())),
                 }
-                _ => Err(NErr::argument_error("RHS must be pair".to_string())),
-            },
+            }
             _ => Err(NErr::generic_argument_error()),
         },
     });
@@ -8194,14 +8297,16 @@ pub fn initialize(env: &mut Env) {
         name: "|..".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::List(b))) => match b.as_slice() {
-                [k, v] => {
-                    // TODO could take b theoretically, but, pain
-                    Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
-                    Ok(Obj::Seq(Seq::Dict(a, d)))
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(mut s)) => {
+                let mut it = mut_seq_into_iter(&mut s);
+                match (it.next(), it.next(), it.next()) {
+                    (Some(k), Some(v), None) => {
+                        Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
+                        Ok(Obj::Seq(Seq::Dict(a, d)))
+                    }
+                    _ => Err(NErr::argument_error("RHS must be pair".to_string())),
                 }
-                _ => Err(NErr::argument_error("RHS must be pair".to_string())),
-            },
+            }
             _ => Err(NErr::generic_argument_error()),
         },
     });
@@ -8228,16 +8333,18 @@ pub fn initialize(env: &mut Env) {
             ))
         },
     });
-    // TODO
     env.insert_builtin(OneArgBuiltin {
         name: "items".to_string(),
         can_refer: false,
-        body: |mut a| {
-            Ok(Obj::list(
-                mut_obj_into_iter_pairs(&mut a, "items conversion")?
-                    .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
-                    .collect(),
-            ))
+        body: |a| match a {
+            Obj::Seq(mut s @ Seq::Dict(..)) => {
+                Ok(Obj::list(
+                    mut_seq_into_iter_pairs(&mut s)
+                        .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
+                        .collect()
+                ))
+            }
+            _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -8245,8 +8352,9 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |mut a| {
             Ok(Obj::list(
-                mut_obj_into_iter_pairs(&mut a, "enumerate conversion")?
-                    .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
+                mut_obj_into_iter(&mut a, "enumerate conversion")?
+                .enumerate()
+                    .map(|(k, v)| Obj::list(vec![Obj::from(k), v]))
                     .collect(),
             ))
         },

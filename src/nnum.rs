@@ -154,11 +154,11 @@ fn bigint_to_f64_or_inf(i: &BigInt) -> f64 {
 
 macro_rules! forward_int_coercion {
     ($method:ident) => {
-        pub fn $method(&self) -> NNum {
+        pub fn $method(&self) -> Option<NNum> {
             match self {
-                NNum::Int(_) => self.clone(),
-                NNum::Float(f) => f.$method().to_bigint().map_or(self.clone(), NNum::Int),
-                NNum::Complex(z) => z.re.$method().to_bigint().map_or(self.clone(), NNum::Int),
+                NNum::Int(_) => Some(self.clone()),
+                NNum::Float(f) => Some(f.$method().to_bigint().map_or(self.clone(), NNum::Int)),
+                NNum::Complex(_) => None,
             }
         }
     };

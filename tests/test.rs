@@ -77,7 +77,7 @@ fn math() {
 fn bitwise() {
     assert_eq!(simple_eval("7 & 4"), i(4));
     assert_eq!(simple_eval("7 | 4"), i(7));
-    assert_eq!(simple_eval("7 @ 4"), i(3));
+    assert_eq!(simple_eval("7 ~ 4"), i(3));
     assert_eq!(simple_eval("7 << 4"), i(112));
     assert_eq!(simple_eval("7 >> 4"), i(0));
 }
