@@ -506,7 +506,8 @@ impl Iterator for Iterate {
             Ok(nxt) => {
                 *obj = nxt;
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("INTERNAL ERROR: iterate function failed! {} terminating...", e);
                 self.0 = None;
             }
         }
@@ -610,10 +611,12 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::Func, Obj::Func(..)) => true,
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
-        // FIXME I feel like this should lead to a runtime borrow conflict and panic...
         (ObjType::Satisfying(renv, func), x) => match func.run(renv, vec![x.clone()]) {
             Ok(res) => res.truthy(),
-            Err(_) => false, // FIXME yikes
+            Err(e) => {
+                eprintln!("INTERNAL ERROR: running the predicate for a 'satisfying'-type-check failed with; {}! trudging on...", e);
+                false // FIXME yikes
+            }
         }
         _ => false,
     }
@@ -2931,7 +2934,7 @@ impl Closure {
             .iter()
             .map(|e| Ok(Box::new(eval_lvalue(&ee, e)?)))
             .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
-        assign_all(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &args)?;
+        assign_all(&ee, &p, Some(&ObjType::Any), &args)?;
         match evaluate(&ee, &self.body) {
             Err(NErr::Return(k)) => Ok(k),
             x => x,
@@ -4238,13 +4241,16 @@ impl Env {
         }
     }
 
-    fn get_var(&self, s: &str) -> NRes<Obj> {
-        match self.vars.get(s) {
-            Some(v) => Ok(v.1.clone()),
-            None => match &self.parent {
-                Ok(p) => p.borrow().get_var(s),
-                Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
-            },
+    fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
+        match env.try_borrow() {
+            Ok(r) => match r.vars.get(s) {
+                Some(v) => Ok(v.1.clone()),
+                None => match &r.parent {
+                    Ok(p) => Env::try_borrow_get_var(p, s),
+                    Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
+                },
+            }
+            Err(b) => Err(NErr::io_error(format!("internal borrow error: {}", b))),
         }
     }
 
@@ -4287,7 +4293,7 @@ impl Env {
 // the ObjType is provided iff it's a declaration
 
 fn assign_all_basic(
-    env: &mut Env,
+    env: &REnv,
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs: &[Obj],
@@ -4309,7 +4315,7 @@ fn assign_all_basic(
 }
 
 fn assign_all(
-    env: &mut Env,
+    env: &REnv,
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs: &[Obj],
@@ -4632,10 +4638,10 @@ fn modify_every_existing_index(
     }
 }
 
-fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
+fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     if !is_type(&ty, &rhs) {
         Err(NErr::name_error(format!("Declaring/assigning variable of incorrect type: {} is not of type {:?}", rhs, ty)))
-    } else if env.insert(s.to_string(), ty, rhs).is_some() {
+    } else if env.borrow_mut().insert(s.to_string(), ty, rhs).is_some() {
         Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
     } else {
         Ok(())
@@ -4643,15 +4649,16 @@ fn insert_declare(env: &mut Env, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
 }
 
 fn assign_respecting_type(
-    env: &mut Env,
+    env: &REnv,
     s: &str,
     ixs: &[EvaluatedIndexOrSlice],
     rhs: &Obj,
     every: bool,
 ) -> NRes<()> {
-    env.modify_existing_var(s, |(ty, v)| {
+    env.borrow_mut().modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
+        // FIXME here's the double borrow
         if ixs.is_empty() && !is_type(ty, rhs) {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
         }
@@ -4670,7 +4677,7 @@ fn assign_respecting_type(
     }))?
 }
 
-fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
+fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
@@ -4720,7 +4727,7 @@ fn assign(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj)
     }
 }
 
-fn assign_every(env: &mut Env, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
+fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
@@ -4776,12 +4783,13 @@ fn modify_every(
         EvaluatedLvalue::Underscore => Err(NErr::type_error(format!("Can't modify underscore"))),
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             // drop borrow immediately
-            let mut old: Obj = env.borrow_mut().get_var(s)?;
+            let mut old: Obj = Env::try_borrow_get_var(env, s)?;
 
             if ixs.is_empty() {
                 let new = rhs(old)?;
                 env.borrow_mut()
                     .modify_existing_var(s, |(ty, old)| {
+                        // FIXME here's another double borrow
                         if is_type(ty, &new) {
                             *old = new.clone();
                             Ok(())
@@ -5328,7 +5336,7 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
             "Can't evaluate underscore on LHS of assignment??".to_string(),
         )),
         Lvalue::IndexedIdent(s, v) => {
-            let mut sr = env.borrow_mut().get_var(s)?;
+            let mut sr = Env::try_borrow_get_var(env, s)?;
             for ix in v {
                 sr = index_or_slice(sr, eval_index_or_slice(env, ix)?)?.clone();
             }
@@ -5404,7 +5412,7 @@ fn evaluate_for(
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &x)?;
+                        assign(&ee, &p, Some(&ObjType::Any), &x)?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
@@ -5415,7 +5423,7 @@ fn evaluate_for(
 
                         // should assign take x
                         assign(
-                            &mut ee.borrow_mut(),
+                            &ee,
                             &p,
                             Some(&ObjType::Any),
                             &Obj::list(vec![key_to_obj(k), v]),
@@ -5426,7 +5434,7 @@ fn evaluate_for(
                 ForIterationType::Declare => {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, lvalue)?;
-                    assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &itr)?;
+                    assign(&ee, &p, Some(&ObjType::Any), &itr)?;
 
                     evaluate_for(&ee, rest, body, callback)?;
                 }
@@ -5558,7 +5566,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
             Ok(Obj::from(acc))
         }
-        Expr::Ident(s) => env.borrow_mut().get_var(s),
+        Expr::Ident(s) => Env::try_borrow_get_var(env, s),
         Expr::Underscore => Err(NErr::syntax_error("Can't evaluate underscore".to_string())),
         Expr::Index(x, i) => match (&**x, i) {
             (Expr::Underscore, IndexOrSlice::Index(i)) => match &**i {
@@ -5658,9 +5666,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 _ => evaluate(env, rhs),
             }?;
             if *every {
-                assign_every(&mut env.borrow_mut(), &p, None, &res)?;
+                assign_every(&env, &p, None, &res)?;
             } else {
-                assign(&mut env.borrow_mut(), &p, None, &res)?;
+                assign(&env, &p, None, &res)?;
             }
             Ok(Obj::Null)
         }
@@ -5723,8 +5731,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             let bl = eval_lvalue(env, b)?;
             let ao = eval_lvalue_as_obj(env, a)?;
             let bo = eval_lvalue_as_obj(env, b)?;
-            assign(&mut env.borrow_mut(), &al, None, &bo)?;
-            assign(&mut env.borrow_mut(), &bl, None, &ao)?;
+            assign(&env, &al, None, &bo)?;
+            assign(&env, &bl, None, &ao)?;
             Ok(Obj::Null)
         }
         Expr::OpAssign(every, pat, op, rhs) => {
@@ -5755,10 +5763,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         }?;
                         if !ff.can_refer() {
                             // Drop the Rc from the lvalue so that pure functions can try to consume it
-                            assign(&mut env.borrow_mut(), &p, None, &Obj::Null)?;
+                            assign(&env, &p, None, &Obj::Null)?;
                         }
                         let fres = ff.run(env, vec![pv, res])?;
-                        assign(&mut env.borrow_mut(), &p, None, &fres)?;
+                        assign(&env, &p, None, &fres)?;
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!(
@@ -5897,7 +5905,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                 // this can assign to random live variables lol
                 let p = eval_lvalue(&ee, pat)?;
                 // drop asap
-                let ret = assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &s);
+                let ret = assign(&ee, &p, Some(&ObjType::Any), &s);
                 match ret {
                     Ok(()) => return evaluate(&ee, body),
                     Err(_) => continue,
@@ -5914,7 +5922,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, pat)?;
                     // drop asap
-                    let ret = assign(&mut ee.borrow_mut(), &p, Some(&ObjType::Any), &e);
+                    let ret = assign(&ee, &p, Some(&ObjType::Any), &e);
                     match ret {
                         Ok(()) => evaluate(&ee, catcher),
                         Err(_) => Err(NErr::Throw(e)),
@@ -6054,7 +6062,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<
             if bound.contains(s) {
                 Ok(Expr::Ident(s.clone()))
             } else {
-                Ok(Expr::Frozen(env.borrow().get_var(s)?))
+                Ok(Expr::Frozen(Env::try_borrow_get_var(env, s)?))
             }
         }
         Expr::Underscore => Err(NErr::syntax_error("Can't freeze underscore".to_string())),
