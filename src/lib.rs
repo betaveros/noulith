@@ -507,7 +507,10 @@ impl Iterator for Iterate {
                 *obj = nxt;
             }
             Err(e) => {
-                eprintln!("INTERNAL ERROR: iterate function failed! {} terminating...", e);
+                eprintln!(
+                    "INTERNAL ERROR: iterate function failed! {} terminating...",
+                    e
+                );
                 self.0 = None;
             }
         }
@@ -617,7 +620,7 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
                 eprintln!("INTERNAL ERROR: running the predicate for a 'satisfying'-type-check failed with; {}! trudging on...", e);
                 false // FIXME yikes
             }
-        }
+        },
         _ => false,
     }
 }
@@ -2221,7 +2224,8 @@ impl Builtin for CartesianProduct {
                         Obj::Num(n) => match scalar {
                             None => scalar = Some(into_bigint_ok(n)?),
                             Some(_) => Err(NErr::argument_error(
-                                "cartesian product: more than one integer (^ is exponentiation)".to_string(),
+                                "cartesian product: more than one integer (^ is exponentiation)"
+                                    .to_string(),
                             ))?,
                         },
                         _ => Err(NErr::argument_error(
@@ -3932,14 +3936,14 @@ impl Parser {
     }
 
     fn peek_csc_stopper(&self) -> bool {
-        self.peek_hard_stopper() ||
-        match self.peek() {
-            Some(Token::Assign) => true,
-            Some(Token::Colon) => true,
-            Some(Token::DoubleColon) => true,
-            Some(Token::Semicolon) => true,
-            _ => false,
-        }
+        self.peek_hard_stopper()
+            || match self.peek() {
+                Some(Token::Assign) => true,
+                Some(Token::Colon) => true,
+                Some(Token::DoubleColon) => true,
+                Some(Token::Semicolon) => true,
+                _ => false,
+            }
     }
 
     fn peek_chain_stopper(&self) -> bool {
@@ -4208,9 +4212,36 @@ impl Debug for TopEnv {
     }
 }
 
+fn try_borrow_nres<'a, T>(
+    r: &'a RefCell<T>,
+    msg1: &str,
+    msg2: &str,
+) -> NRes<std::cell::Ref<'a, T>> {
+    match r.try_borrow() {
+        Ok(r) => Ok(r),
+        Err(b) => Err(NErr::io_error(format!(
+            "internal borrow error: {}: {}: {}",
+            msg1, msg2, b
+        ))),
+    }
+}
+fn try_borrow_mut_nres<'a, T>(
+    r: &'a RefCell<T>,
+    msg1: &str,
+    msg2: &str,
+) -> NRes<std::cell::RefMut<'a, T>> {
+    match r.try_borrow_mut() {
+        Ok(r) => Ok(r),
+        Err(b) => Err(NErr::io_error(format!(
+            "internal borrow mut error: {}: {}: {}",
+            msg1, msg2, b
+        ))),
+    }
+}
+
 #[derive(Debug)]
 pub struct Env {
-    pub vars: HashMap<String, (ObjType, Obj)>,
+    pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, TopEnv>,
 }
 impl Env {
@@ -4242,51 +4273,59 @@ impl Env {
     }
 
     fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
-        match env.try_borrow() {
-            Ok(r) => match r.vars.get(s) {
-                Some(v) => Ok(v.1.clone()),
-                None => match &r.parent {
-                    Ok(p) => Env::try_borrow_get_var(p, s),
-                    Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
-                },
-            }
-            Err(b) => Err(NErr::io_error(format!("internal borrow error: {}", b))),
+        let r = try_borrow_nres(env, "env", s)?;
+        match r.vars.get(s) {
+            Some(v) => Ok(try_borrow_nres(&*v.1, "variable", s)?.clone()),
+            None => match &r.parent {
+                Ok(p) => Env::try_borrow_get_var(p, s),
+                Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
+            },
         }
     }
 
     fn modify_existing_var<T>(
-        &mut self,
+        &self,
         key: &str,
-        f: impl FnOnce(&mut (ObjType, Obj)) -> T,
+        f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
     ) -> Option<T> {
-        match self.vars.get_mut(key) {
+        match self.vars.get(key) {
             Some(target) => Some(f(target)),
             None => match &self.parent {
-                Ok(p) => p.borrow_mut().modify_existing_var(key, f),
+                Ok(p) => p.borrow().modify_existing_var(key, f),
                 Err(_) => None,
             },
         }
     }
-    fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> Option<Obj> {
-        self.vars.insert(key, (ty, val)).map(|x| x.1)
+    fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
+        match self.vars.entry(key) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+                Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert((ty, Box::new(RefCell::new(val))));
+                Ok(())
+            }
+        }
     }
     fn insert_type(&mut self, b: ObjType) {
         self.insert(
             b.name(),
             ObjType::Any,
             Obj::Func(Func::Type(b), Precedence::zero()),
-        );
+        )
+        .unwrap()
     }
     fn insert_builtin_with_precedence(&mut self, b: impl Builtin + 'static, p: Precedence) {
         self.insert(
             b.builtin_name().to_string(),
             ObjType::Any,
             Obj::Func(Func::Builtin(Rc::new(b)), p),
-        );
+        )
+        .unwrap()
     }
     fn insert_builtin(&mut self, b: impl Builtin + 'static) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
-        self.insert_builtin_with_precedence(b, p);
+        self.insert_builtin_with_precedence(b, p)
     }
 }
 
@@ -4640,11 +4679,12 @@ fn modify_every_existing_index(
 
 fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     if !is_type(&ty, &rhs) {
-        Err(NErr::name_error(format!("Declaring/assigning variable of incorrect type: {} is not of type {:?}", rhs, ty)))
-    } else if env.borrow_mut().insert(s.to_string(), ty, rhs).is_some() {
-        Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", s)))
+        Err(NErr::name_error(format!(
+            "Declaring/assigning variable of incorrect type: {} is not of type {:?}",
+            rhs, ty
+        )))
     } else {
-        Ok(())
+        try_borrow_mut_nres(env, "variable declaration", s)?.insert(s.to_string(), ty, rhs)
     }
 }
 
@@ -4655,17 +4695,17 @@ fn assign_respecting_type(
     rhs: &Obj,
     every: bool,
 ) -> NRes<()> {
-    env.borrow_mut().modify_existing_var(s, |(ty, v)| {
+    try_borrow_nres(env, "env for assigning", s)?.modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
-        // FIXME here's the double borrow
+        // FIXME double borrow?
         if ixs.is_empty() && !is_type(ty, rhs) {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
         }
-        set_index(v, ixs, rhs.clone(), every)?;
+        set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, rhs.clone(), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
-        if !ixs.is_empty() && !is_type(ty, &v) {
+        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
             Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, rhs, ty.name())))
         } else {
             Ok(())
@@ -4787,11 +4827,11 @@ fn modify_every(
 
             if ixs.is_empty() {
                 let new = rhs(old)?;
-                env.borrow_mut()
+                try_borrow_nres(env, "env for modify every", s)?
                     .modify_existing_var(s, |(ty, old)| {
                         // FIXME here's another double borrow
                         if is_type(ty, &new) {
-                            *old = new.clone();
+                            *try_borrow_mut_nres(old, "var for modify every", s)? = new.clone();
                             Ok(())
                         } else {
                             Err(NErr::name_error(format!(
@@ -5674,10 +5714,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         }
         Expr::Annotation(s, _) => evaluate(env, s),
         Expr::Pop(pat) => match eval_lvalue(env, pat)? {
-            EvaluatedLvalue::IndexedIdent(s, ixs) => env
-                .borrow_mut()
+            EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
                 .modify_existing_var(&s, |(_type, vv)| {
-                    modify_existing_index(vv, &ixs, |x| match x {
+                    modify_existing_index(&mut *try_borrow_mut_nres(vv, "var for pop", &s)?, &ixs, |x| match x {
                         Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
                             .pop()
                             .ok_or(NErr::name_error("can't pop empty".to_string())),
@@ -5694,31 +5733,44 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                         "can't remove flat identifier".to_string(),
                     )),
                     [rest @ .., last_i] => {
-                        env.borrow_mut()
+                        try_borrow_nres(env, "env for remove", &s)?
                             .modify_existing_var(&s, |(_type, vv)| {
-                                modify_existing_index(vv, &rest, |x| match (x, last_i) {
-                                    (Obj::Seq(Seq::List(xs)), EvaluatedIndexOrSlice::Index(i)) => {
-                                        let ii = pythonic_index(xs, i)?;
-                                        Ok(Rc::make_mut(xs).remove(ii))
-                                    }
-                                    (
-                                        Obj::Seq(Seq::List(xs)),
-                                        EvaluatedIndexOrSlice::Slice(i, j),
-                                    ) => {
-                                        let (lo, hi) =
-                                            pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
-                                        Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
-                                    }
-                                    (
-                                        Obj::Seq(Seq::Dict(xs, _)),
-                                        EvaluatedIndexOrSlice::Index(i),
-                                    ) => Rc::make_mut(xs).remove(&to_key(i.clone())?).ok_or(
-                                        NErr::key_error("key not found in dict".to_string()),
-                                    ),
-                                    // TODO: remove parts of strings...
-                                    // TODO: vecs, bytes...
-                                    _ => Err(NErr::type_error("can't remove".to_string())),
-                                })
+                                modify_existing_index(
+                                    &mut *try_borrow_mut_nres(vv, "var for remove", &s)?,
+                                    &rest,
+                                    |x| {
+                                        match (x, last_i) {
+                                            (
+                                                Obj::Seq(Seq::List(xs)),
+                                                EvaluatedIndexOrSlice::Index(i),
+                                            ) => {
+                                                let ii = pythonic_index(xs, i)?;
+                                                Ok(Rc::make_mut(xs).remove(ii))
+                                            }
+                                            (
+                                                Obj::Seq(Seq::List(xs)),
+                                                EvaluatedIndexOrSlice::Slice(i, j),
+                                            ) => {
+                                                let (lo, hi) =
+                                                    pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
+                                                Ok(Obj::list(
+                                                    Rc::make_mut(xs).drain(lo..hi).collect(),
+                                                ))
+                                            }
+                                            (
+                                                Obj::Seq(Seq::Dict(xs, _)),
+                                                EvaluatedIndexOrSlice::Index(i),
+                                            ) => Rc::make_mut(xs)
+                                                .remove(&to_key(i.clone())?)
+                                                .ok_or(NErr::key_error(
+                                                    "key not found in dict".to_string(),
+                                                )),
+                                            // TODO: remove parts of strings...
+                                            // TODO: vecs, bytes...
+                                            _ => Err(NErr::type_error("can't remove".to_string())),
+                                        }
+                                    },
+                                )
                             })
                             .ok_or(NErr::name_error("var not found to remove".to_string()))?
                     }
@@ -6430,7 +6482,7 @@ fn take_while_inner<T: Clone + Into<Obj>>(
         if f.run(env, vec![x.clone().into()])?.truthy() {
             acc.push(x)
         } else {
-            return Ok(acc)
+            return Ok(acc);
         }
     }
     Ok(acc)
@@ -6439,27 +6491,27 @@ fn take_while_inner<T: Clone + Into<Obj>>(
 // weird lil guy that doesn't fit
 fn take_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
     match s {
-        Seq::List(mut s) => Ok(Obj::list(
-            take_while_inner(RcVecIter::of(&mut s), env, f)?,
-        )),
+        Seq::List(mut s) => Ok(Obj::list(take_while_inner(RcVecIter::of(&mut s), env, f)?)),
         Seq::String(mut s) => Ok(Obj::from(
             take_while_inner(RcStringIter::of(&mut s), env, f)?
                 .into_iter()
                 .collect::<String>(),
         )),
-        Seq::Dict(mut s, _def) => Ok(Obj::list(
-            take_while_inner(
-                RcHashMapIter::of(&mut s).map(|(k, _v)| key_to_obj(k)),
-                env,
-                f,
-            )?,
-        )),
-        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(
-            take_while_inner(RcVecIter::of(&mut s), env, f)?,
-        )))),
-        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
-            take_while_inner(RcVecIter::of(&mut s), env, f)?,
-        )))),
+        Seq::Dict(mut s, _def) => Ok(Obj::list(take_while_inner(
+            RcHashMapIter::of(&mut s).map(|(k, _v)| key_to_obj(k)),
+            env,
+            f,
+        )?)),
+        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(take_while_inner(
+            RcVecIter::of(&mut s),
+            env,
+            f,
+        )?)))),
+        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(take_while_inner(
+            RcVecIter::of(&mut s),
+            env,
+            f,
+        )?)))),
         Seq::Stream(s) => Ok(Obj::list(take_while_inner(s.clone_box(), env, f)?)),
     }
 }
@@ -6474,7 +6526,7 @@ fn drop_while_inner<T: Clone + Into<Obj>>(
         if f.run(env, vec![x.clone().into()])?.truthy() {
             it.next();
         } else {
-            return Ok(it)
+            return Ok(it);
         }
     }
     Ok(it)
@@ -6486,15 +6538,15 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
             drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
         )),
         Seq::String(mut s) => Ok(Obj::from(
-            drop_while_inner(RcStringIter::of(&mut s), env, f)?
-                .collect::<String>(),
+            drop_while_inner(RcStringIter::of(&mut s), env, f)?.collect::<String>(),
         )),
         Seq::Dict(mut s, _def) => Ok(Obj::list(
             drop_while_inner(
                 RcHashMapIter::of(&mut s).map(|(k, _v)| key_to_obj(k)),
                 env,
                 f,
-            )?.collect()
+            )?
+            .collect(),
         )),
         Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(
             drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
@@ -6601,7 +6653,8 @@ fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
 }
 
 pub fn initialize(env: &mut Env) {
-    env.insert("null".to_string(), ObjType::Null, Obj::Null);
+    env.insert("null".to_string(), ObjType::Null, Obj::Null)
+        .unwrap();
     env.insert_builtin(OneArgBuiltin {
         name: "not".to_string(),
         can_refer: false,
@@ -6693,18 +6746,22 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
-        body: |a, b| if b.is_nonzero() {
-            Ok(Obj::Num(a.div_floor(&b)))
-        } else {
-            Err(NErr::value_error("division by zero".to_string()))
+        body: |a, b| {
+            if b.is_nonzero() {
+                Ok(Obj::Num(a.div_floor(&b)))
+            } else {
+                Err(NErr::value_error("division by zero".to_string()))
+            }
         },
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "%%".to_string(),
-        body: |a, b| if b.is_nonzero() {
-            Ok(Obj::Num(a.mod_floor(&b)))
-        } else {
-            Err(NErr::value_error("division by zero".to_string()))
+        body: |a, b| {
+            if b.is_nonzero() {
+                Ok(Obj::Num(a.mod_floor(&b)))
+            } else {
+                Err(NErr::value_error("division by zero".to_string()))
+            }
         },
     });
     env.insert_builtin(TwoNumsBuiltin {
@@ -7491,7 +7548,10 @@ pub fn initialize(env: &mut Env) {
         name: "satisfying".to_string(),
         can_refer: false,
         body: |env, arg| match arg {
-            Obj::Func(f, _) => Ok(Obj::Func(Func::Type(ObjType::Satisfying(env.clone(), Box::new(f))), Precedence::zero())),
+            Obj::Func(f, _) => Ok(Obj::Func(
+                Func::Type(ObjType::Satisfying(env.clone(), Box::new(f))),
+                Precedence::zero(),
+            )),
             _ => Err(NErr::type_error("expected func".to_string())),
         },
     });
@@ -8353,11 +8413,16 @@ pub fn initialize(env: &mut Env) {
         body: |env, _args| {
             Ok(Obj::Seq(Seq::Dict(
                 Rc::new(
-                    env.borrow()
+                    try_borrow_nres(env, "vars", "vars")?
                         .vars
                         .iter()
-                        .map(|(k, (_t, v))| (ObjKey::String(Rc::new(k.clone())), v.clone()))
-                        .collect::<HashMap<ObjKey, Obj>>(),
+                        .map(|(k, (_t, v))| {
+                            Ok((
+                                ObjKey::String(Rc::new(k.clone())),
+                                try_borrow_nres(v, "vars", k)?.clone(),
+                            ))
+                        })
+                        .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                 ),
                 None,
             )))
