@@ -38,6 +38,7 @@ fn modifications() {
 fn weird_assignments() {
     assert_eq!(simple_eval("every x, y := 2; x + y"), i(4));
     assert_eq!(simple_eval("x := 1 to 10; every x[2:4] = -1; sum x"), i(46));
+    assert_eq!(simple_eval("x := 1 to 10; every x[2:4] -= 1; sum x"), i(53));
 }
 
 #[test]

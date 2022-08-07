@@ -2991,6 +2991,9 @@ pub enum Token {
     Swap,
     Every,
     Underscore,
+
+    // strip me before parsing
+    Comment(String),
     // Newline,
 }
 
@@ -3169,9 +3172,6 @@ struct Lexer<'a> {
     // maintained at what chars.next() would give
     cur: CodeLoc,
     tokens: Vec<LocToken>,
-
-    // the lightest hole I could punch in the abstractions to support format strings...
-    last_comment: Option<String>,
 }
 
 impl<'a> Lexer<'a> {
@@ -3189,7 +3189,6 @@ impl<'a> Lexer<'a> {
                 index: 0,
             },
             tokens: Vec::new(),
-            last_comment: None,
         }
     }
 
@@ -3289,6 +3288,23 @@ impl<'a> Lexer<'a> {
         self.emit(Token::IntLit(x))
     }
 
+    fn try_emit_imaginary_float(&mut self, acc: String) {
+        match acc.parse::<f64>() {
+            Ok(f) => self.emit(Token::ImaginaryFloatLit(f)),
+            Err(e) => self.emit(Token::Invalid(format!(
+                "lexing: invalid imaginary float: {}",
+                e
+            ))),
+        }
+    }
+
+    fn try_emit_float(&mut self, acc: String) {
+        match acc.parse::<f64>() {
+            Ok(f) => self.emit(Token::FloatLit(f)),
+            Err(e) => self.emit(Token::Invalid(format!("lexing: invalid float: {}", e))),
+        }
+    }
+
     fn lex(&mut self) {
         lazy_static! {
             static ref OPERATOR_SYMBOLS: HashSet<char> =
@@ -3324,7 +3340,7 @@ impl<'a> Lexer<'a> {
                             Some(c) => comment.push(c),
                         }
                     }
-                    self.last_comment = Some(comment);
+                    self.emit(Token::Comment(comment))
                 }
                 '\'' | '"' => {
                     let s = self.lex_simple_string_after_start(c);
@@ -3348,7 +3364,7 @@ impl<'a> Lexer<'a> {
                             match self.peek() {
                                 Some('i' | 'I' | 'j' | 'J') => {
                                     self.next();
-                                    self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
+                                    self.try_emit_imaginary_float(acc)
                                 }
                                 Some('e' | 'E') => {
                                     acc.push('e');
@@ -3361,9 +3377,9 @@ impl<'a> Lexer<'a> {
                                         acc.push(*cc);
                                         self.next();
                                     }
-                                    self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                                    self.try_emit_float(acc)
                                 }
-                                _ => self.emit(Token::FloatLit(acc.parse::<f64>().unwrap())),
+                                _ => self.try_emit_float(acc),
                             }
                         } else {
                             match (acc.as_str(), self.peek()) {
@@ -3397,7 +3413,7 @@ impl<'a> Lexer<'a> {
                                 }
                                 (_, Some('i' | 'I' | 'j' | 'J')) => {
                                     self.next();
-                                    self.emit(Token::ImaginaryFloatLit(acc.parse::<f64>().unwrap()))
+                                    self.try_emit_imaginary_float(acc)
                                 }
                                 (_, Some('e' | 'E')) => {
                                     acc.push('e');
@@ -3410,7 +3426,7 @@ impl<'a> Lexer<'a> {
                                         acc.push(*cc);
                                         self.next();
                                     }
-                                    self.emit(Token::FloatLit(acc.parse::<f64>().unwrap()))
+                                    self.try_emit_float(acc)
                                 }
                                 _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
                             }
@@ -3509,8 +3525,39 @@ impl<'a> Lexer<'a> {
                             }
                             ("", '=') => self.emit(Token::Assign),
                             (_, '=') => {
-                                self.emit(Token::Ident(acc));
-                                self.emit(Token::Assign)
+                                if acc.chars().all(|c| c == '=') {
+                                    let eqs = acc.len() + 1;
+                                    let mut comm = String::new();
+                                    let mut cur = 0;
+                                    self.next();
+                                    loop {
+                                        match self.next() {
+                                            Some('=') => {
+                                                comm.push(c);
+                                                cur += 1;
+
+                                                if cur == eqs {
+                                                    comm.truncate(comm.len() - eqs);
+                                                    self.emit(Token::Comment(acc));
+                                                    break;
+                                                }
+                                            }
+                                            Some(c) => {
+                                                comm.push(c);
+                                                cur = 0;
+                                            }
+                                            None => {
+                                                self.emit(Token::Invalid(
+                                                    "range comment: EOF".to_string(),
+                                                ));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    self.emit(Token::Ident(acc));
+                                    self.emit(Token::Assign)
+                                }
                             }
                             (_, _) => {
                                 acc.push(last);
@@ -3532,6 +3579,18 @@ pub fn lex(code: &str) -> Vec<LocToken> {
     let mut lexer = Lexer::new(code);
     lexer.lex();
     lexer.tokens
+}
+
+pub fn strip_comments(mut tokens: Vec<LocToken>) -> (Vec<LocToken>, Vec<String>) {
+    let mut comments = Vec::new();
+    tokens.retain_mut(|c| match &mut c.token {
+        Token::Comment(s) => {
+            comments.push(std::mem::take(s));
+            false
+        }
+        _ => true,
+    });
+    (tokens, comments)
 }
 
 struct Parser {
@@ -4158,7 +4217,7 @@ impl Parser {
 
 // allow the empty expression
 pub fn parse(code: &str) -> Result<Option<Expr>, String> {
-    let tokens = lex(code);
+    let (tokens, _) = strip_comments(lex(code));
     if tokens.is_empty() {
         Ok(None)
     } else {
@@ -4242,13 +4301,13 @@ fn try_borrow_mut_nres<'a, T>(
 #[derive(Debug)]
 pub struct Env {
     pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
-    pub parent: Result<Rc<RefCell<Env>>, TopEnv>,
+    pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
 }
 impl Env {
     pub fn new(top: TopEnv) -> Env {
         Env {
             vars: HashMap::new(),
-            parent: Err(top),
+            parent: Err(Rc::new(RefCell::new(top))),
         }
     }
     // ???
@@ -4265,10 +4324,10 @@ impl Env {
             parent: Ok(Rc::clone(&env)),
         }))
     }
-    pub fn mut_top_env<T>(&mut self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
-        match &mut self.parent {
-            Ok(v) => v.borrow_mut().mut_top_env(f),
-            Err(t) => f(t),
+    pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
+        match &self.parent {
+            Ok(v) => v.borrow().mut_top_env(f),
+            Err(t) => f(&mut t.borrow_mut()),
         }
     }
 
@@ -4643,7 +4702,7 @@ fn modify_every_existing_index(
                 (Obj::Seq(Seq::List(v)), EvaluatedIndexOrSlice::Slice(lo, hi)) => {
                     let (lo, hi) = pythonic_slice_obj(v, lo.as_ref(), hi.as_ref())?;
                     for m in &mut Rc::make_mut(v)[lo..hi] {
-                        modify_every_existing_index(m, rest, f)?
+                        modify_every_existing_index(m, rest, f)?;
                     }
                     Ok(())
                 }
@@ -4698,7 +4757,9 @@ fn assign_respecting_type(
     try_borrow_nres(env, "env for assigning", s)?.modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
-        // FIXME double borrow?
+        // FIXME is there possibly a double borrow here? maybe not because we only use immutable
+        // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
+        // constructed to mutably borrow the variable it's for?
         if ixs.is_empty() && !is_type(ty, rhs) {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
         }
@@ -4719,7 +4780,20 @@ fn assign_respecting_type(
 
 fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
     match lhs {
-        EvaluatedLvalue::Underscore => Ok(()),
+        EvaluatedLvalue::Underscore => {
+            match rt {
+                Some(ty) => {
+                    if !is_type(&ty, &rhs) {
+                        return Err(NErr::type_error(format!(
+                            "Assigning to underscore of incorrect type: {} is not of type {:?}",
+                            rhs, ty
+                        )));
+                    }
+                }
+                None => (),
+            }
+            Ok(())
+        }
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
             Some(ty) => {
                 // declaration
@@ -4829,7 +4903,7 @@ fn modify_every(
                 let new = rhs(old)?;
                 try_borrow_nres(env, "env for modify every", s)?
                     .modify_existing_var(s, |(ty, old)| {
-                        // FIXME here's another double borrow
+                        // FIXME is there possibly another double borrow here?
                         if is_type(ty, &new) {
                             *try_borrow_mut_nres(old, "var for modify every", s)? = new.clone();
                             Ok(())
@@ -4851,7 +4925,8 @@ fn modify_every(
                     // TODO take??
                     *x = rhs(x.clone())?;
                     Ok(())
-                })
+                })?;
+                assign_respecting_type(env, s, &[], &old, false /* every */)
             }
         }
         EvaluatedLvalue::CommaSeq(ss) => {
@@ -5528,10 +5603,11 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (Expr, MyFmtFlags)>>,
                 let mut lexer = Lexer::new(&expr_acc);
                 lexer.lex();
                 let mut flags = MyFmtFlags::new();
-                if lexer.tokens.is_empty() {
+                let (tokens, comments) = strip_comments(lexer.tokens);
+                if tokens.is_empty() {
                     return Err("format string: empty format expr".to_string());
                 } else {
-                    for com in lexer.last_comment {
+                    for com in comments {
                         for c in com.chars() {
                             match c {
                                 'x' => {
@@ -5555,10 +5631,7 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (Expr, MyFmtFlags)>>,
                             }
                         }
                     }
-                    let mut p = Parser {
-                        tokens: lexer.tokens,
-                        i: 0,
-                    };
+                    let mut p = Parser { tokens, i: 0 };
                     let fex = p
                         .expression()
                         .map_err(|e| format!("format string: failed to parse expr: {}", e))?;
@@ -5716,12 +5789,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::Pop(pat) => match eval_lvalue(env, pat)? {
             EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
                 .modify_existing_var(&s, |(_type, vv)| {
-                    modify_existing_index(&mut *try_borrow_mut_nres(vv, "var for pop", &s)?, &ixs, |x| match x {
-                        Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
-                            .pop()
-                            .ok_or(NErr::name_error("can't pop empty".to_string())),
-                        _ => Err(NErr::type_error("can't pop".to_string())),
-                    })
+                    modify_existing_index(
+                        &mut *try_borrow_mut_nres(vv, "var for pop", &s)?,
+                        &ixs,
+                        |x| match x {
+                            Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
+                                .pop()
+                                .ok_or(NErr::name_error("can't pop empty".to_string())),
+                            _ => Err(NErr::type_error("can't pop".to_string())),
+                        },
+                    )
                 })
                 .ok_or(NErr::type_error("failed to pop??".to_string()))?,
             _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
@@ -5790,7 +5867,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
         Expr::OpAssign(every, pat, op, rhs) => {
             if *every {
                 let p = eval_lvalue(env, pat)?;
-                match evaluate(env, rhs)? {
+                match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
                         let res = match &**rhs {
                             Expr::CommaSeq(xs) => Ok(Obj::list(eval_seq(env, xs)?)),
@@ -5991,16 +6068,18 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }),
             Precedence::zero(),
         )),
-        Expr::Backref(i) => env.borrow_mut().mut_top_env(|top| {
-            match if *i == 0 {
-                top.backrefs.last()
-            } else {
-                top.backrefs.get(i - 1)
-            } {
-                Some(x) => Ok(x.clone()),
-                None => Err(NErr::index_error("no such backref".to_string())),
-            }
-        }),
+        Expr::Backref(i) => {
+            try_borrow_nres(env, "backref", &format!("{}", i))?.mut_top_env(|top| {
+                match if *i == 0 {
+                    top.backrefs.last()
+                } else {
+                    top.backrefs.get(i - 1)
+                } {
+                    Some(x) => Ok(x.clone()),
+                    None => Err(NErr::index_error("no such backref".to_string())),
+                }
+            })
+        }
         Expr::Paren(p) => evaluate(env, &*p),
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
@@ -6691,6 +6770,10 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::Num(a - b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
+        name: "xor".to_string(),
+        body: |a, b| Ok(Obj::Num(a ^ b)),
+    });
+    env.insert_builtin(TwoNumsBuiltin {
         name: "*".to_string(),
         body: |a, b| Ok(Obj::Num(a * b)),
     });
@@ -6776,10 +6859,12 @@ pub fn initialize(env: &mut Env) {
         name: "|".to_string(),
         body: |a, b| Ok(Obj::Num(a | b)),
     });
+    /*
     env.insert_builtin(TwoNumsBuiltin {
         name: "@".to_string(),
         body: |a, b| Ok(Obj::Num(a ^ b)),
     });
+    */
     env.insert_builtin_with_precedence(
         TwoNumsBuiltin {
             name: "<<".to_string(),
@@ -7454,7 +7539,7 @@ pub fn initialize(env: &mut Env) {
         name: "print".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut()
+            try_borrow_nres(env, "print", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
@@ -7475,7 +7560,7 @@ pub fn initialize(env: &mut Env) {
         name: "write".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut()
+            try_borrow_nres(env, "write", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
                     for arg in args.iter() {
                         write!(t.output, "{}", arg)?;
@@ -7490,7 +7575,7 @@ pub fn initialize(env: &mut Env) {
         name: "echo".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut()
+            try_borrow_nres(env, "echo", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
@@ -7510,7 +7595,7 @@ pub fn initialize(env: &mut Env) {
         name: "debug".to_string(),
         can_refer: false,
         body: |env, args| {
-            env.borrow_mut()
+            try_borrow_nres(env, "debug", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
                     let mut started = false;
                     for arg in args.iter() {
@@ -8186,8 +8271,7 @@ pub fn initialize(env: &mut Env) {
         body: |env, args| {
             if args.is_empty() {
                 let mut input = String::new();
-                match env
-                    .borrow_mut()
+                match try_borrow_nres(env, "input", "")?
                     .mut_top_env(|t| t.input.read_line(&mut input))
                 {
                     Ok(_) => Ok(Obj::from(input)),
@@ -8205,8 +8289,7 @@ pub fn initialize(env: &mut Env) {
             if args.is_empty() {
                 let mut input = String::new();
                 // to EOF
-                match env
-                    .borrow_mut()
+                match try_borrow_nres(env, "read", "")?
                     .mut_top_env(|t| t.input.read_to_string(&mut input))
                 {
                     Ok(_) => Ok(Obj::from(input)),
