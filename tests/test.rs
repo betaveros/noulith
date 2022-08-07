@@ -78,6 +78,8 @@ fn bitwise() {
     assert_eq!(simple_eval("7 & 4"), i(4));
     assert_eq!(simple_eval("7 | 4"), i(7));
     assert_eq!(simple_eval("7 ~ 4"), i(3));
+    assert_eq!(simple_eval("7 ⊕ 4"), i(3));
+    assert_eq!(simple_eval("~4"), i(-5));
     assert_eq!(simple_eval("7 << 4"), i(112));
     assert_eq!(simple_eval("7 >> 4"), i(0));
 }
@@ -119,6 +121,10 @@ fn dicts() {
     assert_eq!(simple_eval("{1: 2, 3: 4}[1]"), i(2));
     assert_eq!(simple_eval("{:5, 1: 2, 3: 4}[1]"), i(2));
     assert_eq!(simple_eval("{:5, 1: 2, 3: 4}[2]"), i(5));
+    assert_eq!(simple_eval("1 ∈ {1: 2}"), i(1));
+    assert_eq!(simple_eval("1 ∉ {1: 2}"), i(0));
+    assert_eq!(simple_eval("2 ∈ {1: 2}"), i(0));
+    assert_eq!(simple_eval("2 ∉ {1: 2}"), i(1));
 }
 
 #[test]
@@ -135,14 +141,26 @@ fn fast_append_pop() {
 fn short_circuit() {
     assert_eq!(simple_eval("3 or x"), i(3));
     assert_eq!(simple_eval("0 and x"), i(0));
+    assert_eq!(simple_eval("3 ∨ x"), i(3));
+    assert_eq!(simple_eval("0 ∧ x"), i(0));
     assert_eq!(simple_eval("0 or 4"), i(4));
     assert_eq!(simple_eval("3 and 4"), i(4));
 }
 
 #[test]
 fn comparisons() {
+    assert_eq!(simple_eval("1 < 2"), i(1));
+    assert_eq!(simple_eval("1 > 2"), i(0));
+    assert_eq!(simple_eval("1 == 2"), i(0));
+    assert_eq!(simple_eval("1 != 2"), i(1));
+    assert_eq!(simple_eval("1 <= 2"), i(1));
+    assert_eq!(simple_eval("1 >= 2"), i(0));
+    assert_eq!(simple_eval("1 ≤ 2"), i(1));
+    assert_eq!(simple_eval("1 ≥ 2"), i(0));
     assert_eq!(simple_eval("1 == 1 == 1"), i(1));
     assert_eq!(simple_eval("0 == 0 == 1"), i(0));
+    assert_eq!(simple_eval("1 == 1 < 2 ≤ 3 <= 3 < 4 == 4"), i(1));
+    assert_eq!(simple_eval("1 == 1 > 0 ≥ (-1) >= (-2) > (-3) == (-3)"), i(1));
     assert_eq!(simple_eval("1 < 2 == 2"), i(1));
     assert_eq!(simple_eval("1 < (2 == 2)"), i(0));
     assert_eq!(simple_eval("(1 < 2) == 2"), i(0));

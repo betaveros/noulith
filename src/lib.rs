@@ -3353,7 +3353,7 @@ impl<'a> Lexer<'a> {
     fn lex(&mut self) {
         lazy_static! {
             static ref OPERATOR_SYMBOLS: HashSet<char> =
-                "!$%&*+-./<=>?@^|~".chars().collect::<HashSet<char>>();
+                "!$%&*+-./<=>?@^|~×∈∉∋∌∘∧∨≠≤≥⊕⧺".chars().collect::<HashSet<char>>();
         }
 
         // let mut chars = code.chars().peekable();
@@ -3425,6 +3425,8 @@ impl<'a> Lexer<'a> {
                     let s = self.lex_simple_string_after_start(c);
                     self.emit(Token::StringLit(Rc::new(s)))
                 }
+                '∧' => self.emit(Token::And),
+                '∨' => self.emit(Token::Or),
                 c => {
                     if c.is_digit(10) {
                         let mut acc = c.to_string();
@@ -4458,6 +4460,16 @@ impl Env {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b, p)
     }
+    fn insert_builtin_with_alias(&mut self, b: impl Builtin + 'static + Clone, alias: &str) {
+        let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
+        self.insert_builtin_with_precedence(b.clone(), p);
+        self.insert(
+            alias.to_string(),
+            ObjType::Any,
+            Obj::Func(Func::Builtin(Rc::new(b)), p),
+        )
+        .unwrap()
+    }
 }
 
 // the ObjType is provided iff it's a declaration
@@ -5039,11 +5051,11 @@ fn default_precedence(name: &str) -> f64 {
             } else {
                 // to decide: '@'
                 match c {
-                    '=' | '<' | '>' => COMPARISON_PRECEDENCE,
+                    '=' | '<' | '>' | '∘' | '∈' | '∉' | '∋' | '∌' | '≤' | '≥' => COMPARISON_PRECEDENCE,
                     '$' => STRING_PRECEDENCE,
                     '|' => OR_PRECEDENCE,
-                    '+' | '-' | '~' => PLUS_PRECEDENCE,
-                    '*' | '/' | '%' | '&' => MULTIPLY_PRECEDENCE,
+                    '+' | '-' | '~' | '⊕' | '⧺' => PLUS_PRECEDENCE,
+                    '*' | '/' | '%' | '&' | '×' => MULTIPLY_PRECEDENCE,
                     '^' => EXPONENT_PRECEDENCE,
                     '!' | '?' => INDEX_PRECEDENCE,
                     _ => DOT_PRECEDENCE, // particularly .
@@ -6846,6 +6858,10 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::Num(a ^ b)),
     });
     env.insert_builtin(TwoNumsBuiltin {
+        name: "⊕".to_string(),
+        body: |a, b| Ok(Obj::Num(a ^ b)),
+    });
+    env.insert_builtin(TwoNumsBuiltin {
         name: "*".to_string(),
         body: |a, b| Ok(Obj::Num(a * b)),
     });
@@ -6885,12 +6901,12 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ComparisonOperator::of(">", |a, b| {
         Ok(ncmp(a, b)? == Ordering::Greater)
     }));
-    env.insert_builtin(ComparisonOperator::of("<=", |a, b| {
+    env.insert_builtin_with_alias(ComparisonOperator::of("<=", |a, b| {
         Ok(ncmp(a, b)? != Ordering::Greater)
-    }));
-    env.insert_builtin(ComparisonOperator::of(">=", |a, b| {
+    }), "≤");
+    env.insert_builtin_with_alias(ComparisonOperator::of(">=", |a, b| {
         Ok(ncmp(a, b)? != Ordering::Less)
-    }));
+    }), "≥");
     env.insert_builtin(TwoNumsBuiltin {
         name: "/".to_string(),
         body: |a, b| Ok(Obj::Num(a / b)),
@@ -7136,7 +7152,17 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::from(obj_in(a, b)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
+        name: "∈".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(obj_in(a, b)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
         name: "not_in".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(!obj_in(a, b)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "∉".to_string(),
         can_refer: false,
         body: |a, b| Ok(Obj::from(!obj_in(a, b)?)),
     });
@@ -7144,6 +7170,16 @@ pub fn initialize(env: &mut Env) {
         name: "contains".to_string(),
         can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "∋".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "∌".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(!obj_in(b, a)?)),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: ".".to_string(),
@@ -7171,7 +7207,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("not function".to_string())),
         },
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin_with_alias(TwoArgBuiltin {
         name: "<<<".to_string(),
         can_refer: true,
         body: |a, b| match (a, b) {
@@ -7181,7 +7217,7 @@ pub fn initialize(env: &mut Env) {
             )),
             _ => Err(NErr::type_error("not function".to_string())),
         },
-    });
+    }, "∘");
     env.insert_builtin(TwoArgBuiltin {
         name: "on".to_string(),
         can_refer: true,
@@ -7959,7 +7995,7 @@ pub fn initialize(env: &mut Env) {
     });
 
     // Lists
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin_with_alias(TwoArgBuiltin {
         name: "++".to_string(),
         can_refer: false,
         body: |a, b| match (a, b) {
@@ -7969,7 +8005,7 @@ pub fn initialize(env: &mut Env) {
             }
             _ => Err(NErr::generic_argument_error()),
         },
-    });
+    }, "⧺");
     env.insert_builtin(TwoArgBuiltin {
         name: ".+".to_string(),
         can_refer: false,
@@ -8012,7 +8048,7 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a, b| Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?])),
     });
-    env.insert_builtin(CartesianProduct);
+    env.insert_builtin_with_alias(CartesianProduct, "×");
     env.insert_builtin(TwoArgBuiltin {
         name: "^^".to_string(),
         can_refer: false,
