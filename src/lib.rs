@@ -8357,6 +8357,17 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::generic_argument_error()),
         },
     });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "--".to_string(),
+        can_refer: false,
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
+                Rc::make_mut(&mut a).retain(|k, _| !b.contains_key(k));
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "set".to_string(),
         can_refer: false,
