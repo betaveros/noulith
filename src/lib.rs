@@ -6567,6 +6567,18 @@ fn sorted<T: PartialOrd>(mut v: Vec<T>) -> NRes<Vec<T>> {
 fn multi_sort(v: Seq) -> NRes<Seq> {
     multi!(v, sorted(v))
 }
+fn filtered<T: Clone + Into<Obj>>(env: &REnv, f: Func, v: Vec<T>, neg: bool) -> NRes<Vec<T>> {
+    let mut ret = Vec::new();
+    for x in v {
+        if f.run(env, vec![x.clone().into()])?.truthy() != neg {
+            ret.push(x)
+        }
+    }
+    Ok(ret)
+}
+fn multi_filter(env: &REnv, f: Func, v: Seq, neg: bool) -> NRes<Seq> {
+    multi!(v, filtered(env, f, v, neg))
+}
 fn sorted_by<T: Clone + Into<Obj>>(env: &REnv, f: Func, mut v: Vec<T>) -> NRes<Vec<T>> {
     let mut ret = Ok(());
     v.sort_by(|a, b| {
@@ -7482,39 +7494,21 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
         can_refer: true,
-        body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "filter")?;
-            match b {
-                Obj::Func(b, _) => {
-                    let mut acc = Vec::new();
-                    for e in it {
-                        if b.run(env, vec![e.clone()])?.truthy() {
-                            acc.push(e)
-                        }
-                    }
-                    Ok(Obj::list(acc))
-                }
-                _ => Err(NErr::type_error("list and func only".to_string())),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => {
+                Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
+            _ => Err(NErr::generic_argument_error())
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "reject".to_string(),
         can_refer: true,
-        body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "reject")?;
-            match b {
-                Obj::Func(b, _) => {
-                    let mut acc = Vec::new();
-                    for e in it {
-                        if !b.run(env, vec![e.clone()])?.truthy() {
-                            acc.push(e)
-                        }
-                    }
-                    Ok(Obj::list(acc))
-                }
-                _ => Err(NErr::type_error("seq and func only".to_string())),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => {
+                Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
+            _ => Err(NErr::generic_argument_error())
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
