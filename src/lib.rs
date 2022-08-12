@@ -2615,6 +2615,28 @@ impl Builtin for Group {
     }
 }
 
+// conditional partial application, and also I want aliases
+#[derive(Debug, Clone)]
+pub struct Sort;
+
+impl Builtin for Sort {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(Obj::Seq(s)) => Ok(Obj::Seq(multi_sort(s)?)),
+            Few2::One(f @ Obj::Func(..)) => Ok(clone_and_part_app_2(self, f)),
+            Few2::Two(Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::Seq(multi_sort_by(env, f, s)?)),
+            _ => Err(NErr::type_error("sort: not number or func".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "sort"
+    }
+    fn can_refer(&self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Preposition(String);
 
@@ -4409,9 +4431,24 @@ impl Env {
         let r = try_borrow_nres(env, "env", s)?;
         match r.vars.get(s) {
             Some(v) => Ok(try_borrow_nres(&*v.1, "variable", s)?.clone()),
-            None => match &r.parent {
-                Ok(p) => Env::try_borrow_get_var(p, s),
-                Err(_) => Err(NErr::name_error(format!("No such variable: {}", s))),
+            None => {
+                let inner = match &r.parent {
+                    Ok(p) => Env::try_borrow_get_var(p, s),
+                    Err(_) => Err(NErr::name_error(format!("No such variable: \"{}\".", s))),
+                };
+                match inner {
+                    Err(NErr::Throw(x)) => {
+                        let mut msg = format!("{}", x);
+                        if let Some(k) = r.vars.keys().filter(|k| {
+                            // TODO: better similarity comparison lol
+                            k.contains(s) || s.contains(&**k)
+                        }).min_by_key(|k| k.len().abs_diff(s.len())) {
+                            msg += &format!(" Did you mean: \"{}\"?", k);
+                        }
+                        Err(NErr::name_error(msg))
+                    }
+                    x => x,
+                }
             },
         }
     }
@@ -8121,15 +8158,21 @@ pub fn initialize(env: &mut Env) {
         can_refer: false,
         body: |a| slice(a, Some(Obj::one()), None),
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "take".to_string(),
-        can_refer: false,
-        body: |a, b| slice(a, None, Some(b)),
+        can_refer: true,
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => take_while(s, f, env),
+            (a, b) => slice(a, None, Some(b)),
+        }
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "drop".to_string(),
-        can_refer: false,
-        body: |a, b| slice(a, Some(b), None),
+        can_refer: true,
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => drop_while(s, f, env),
+            (a, b) => slice(a, Some(b), None),
+        }
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "find".to_string(),
@@ -8225,38 +8268,7 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(EnvTwoArgBuiltin {
-        name: "take_while".to_string(),
-        can_refer: true,
-        body: |env, a, b| match (a, b) {
-            (Obj::Seq(s), Obj::Func(f, _)) => take_while(s, f, env),
-            _ => Err(NErr::generic_argument_error()),
-        },
-    });
-    env.insert_builtin(EnvTwoArgBuiltin {
-        name: "drop_while".to_string(),
-        can_refer: true,
-        body: |env, a, b| match (a, b) {
-            (Obj::Seq(s), Obj::Func(f, _)) => drop_while(s, f, env),
-            _ => Err(NErr::generic_argument_error()),
-        },
-    });
-    env.insert_builtin(OneArgBuiltin {
-        name: "sort".to_string(),
-        can_refer: false,
-        body: |a| match a {
-            Obj::Seq(s) => Ok(Obj::Seq(multi_sort(s)?)),
-            _ => Err(NErr::generic_argument_error()),
-        },
-    });
-    env.insert_builtin(EnvTwoArgBuiltin {
-        name: "sort_by".to_string(),
-        can_refer: false,
-        body: |env, a, b| match (a, b) {
-            (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::Seq(multi_sort_by(env, f, s)?)),
-            _ => Err(NErr::generic_argument_error()),
-        },
-    });
+    env.insert_builtin(Sort);
     env.insert_builtin(OneArgBuiltin {
         name: "reverse".to_string(),
         can_refer: false,
