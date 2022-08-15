@@ -4124,7 +4124,14 @@ impl Parser {
             let second = self.atom()?;
             match second {
                 Expr::Ident(op) => {
-                    if self.peek_chain_stopper() {
+                    if self.try_consume(&Token::Bang) {
+                        let ret = Expr::Chain(Box::new(op1), vec![(Box::new(Expr::Ident(op)), Box::new(self.single("operator-bang operand")?))]);
+                        if self.peek() == Some(&Token::Comma) {
+                            Err("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string())
+                        } else {
+                            Ok(ret)
+                        }
+                    } else if self.peek_chain_stopper() {
                         Ok(Expr::Call(Box::new(op1), vec![Box::new(Expr::Ident(op))]))
                     } else {
                         let mut ops = vec![(Box::new(Expr::Ident(op)), Box::new(self.operand()?))];
@@ -4132,7 +4139,13 @@ impl Parser {
                         while let Some(Token::Ident(op)) = self.peek() {
                             let op = op.to_string();
                             self.advance();
-                            ops.push((Box::new(Expr::Ident(op)), Box::new(self.operand()?)));
+                            ops.push((Box::new(Expr::Ident(op)), Box::new(
+                            if self.try_consume(&Token::Bang) {
+                                self.single("operator-bang operand")?
+                            } else {
+                                self.operand()?
+                            }
+                            )));
                         }
                         Ok(Expr::Chain(Box::new(op1), ops))
                     }
