@@ -925,7 +925,10 @@ pub fn lazy_factorize(mut a: BigInt) -> Vec<(BigInt, usize)> {
         Sign::Plus => {}
     }
     let mut test = |f: &BigInt| -> bool {
-        if f * f > a {
+        if &(f * f) > &a {
+            if a > BigInt::from(1) {
+                acc.push((a.clone(), 1));
+            }
             return true;
         }
         let mut mult = 0usize;
