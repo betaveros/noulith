@@ -487,6 +487,57 @@ impl Stream for Subsequences {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CartesianPower(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
+impl Iterator for CartesianPower {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let v = Rc::make_mut(self.1.as_mut()?);
+        let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
+
+        // let mut last = self.0.len();
+        for i in (0..v.len()).rev() {
+            v[i] += 1;
+            if v[i] == self.0.len() {
+                v[i] = 0;
+            } else {
+                return Some(ret);
+            }
+        }
+        self.1 = None;
+        Some(ret)
+    }
+}
+impl Display for CartesianPower {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match &self.1 {
+            Some(x) => {
+                write!(
+                    formatter,
+                    "CartesianPower({} @ {})",
+                    CommaSeparated(&**self.0),
+                    CommaSeparated(&**x)
+                )
+            }
+            None => write!(formatter, "CartesianPower(done)"),
+        }
+    }
+}
+impl Stream for CartesianPower {
+    fn peek(&self) -> Option<Obj> {
+        Some(Obj::list(
+            self.1
+                .as_ref()?
+                .iter()
+                .map(|i| self.0[*i].clone())
+                .collect(),
+        ))
+    }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+}
+
 // very illegal
 #[derive(Clone)]
 struct Iterate(Option<(Obj, Func, REnv)>);
@@ -8096,18 +8147,17 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "^^".to_string(),
         can_refer: false,
-        body: |a, b| match (a, b) {
-            (Obj::Seq(s), Obj::Num(n)) => {
-                let mut acc = Vec::new();
-                let mut ret = Vec::new();
-                let mut f = |k: &Vec<Obj>| {
-                    ret.push(Obj::list(k.clone()));
-                    Ok(())
-                };
-                cartesian_foreach(&mut acc, vec![s; to_usize_ok(&n)?].as_slice(), &mut f)?;
-                Ok(Obj::list(ret))
+        body: |a, b| {
+            let v = to_rc_vec_obj(a)?;
+            match b {
+                Obj::Num(n) => {
+                    let u = n
+                        .to_usize()
+                        .ok_or(NErr::value_error("bad lazy pow".to_string()))?;
+                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(Rc::new(vec![0; u])))))))
+                }
+                _ => Err(NErr::generic_argument_error()),
             }
-            _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(OneArgBuiltin {
