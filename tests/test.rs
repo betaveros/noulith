@@ -160,7 +160,10 @@ fn comparisons() {
     assert_eq!(simple_eval("1 == 1 == 1"), i(1));
     assert_eq!(simple_eval("0 == 0 == 1"), i(0));
     assert_eq!(simple_eval("1 == 1 < 2 ≤ 3 <= 3 < 4 == 4"), i(1));
-    assert_eq!(simple_eval("1 == 1 > 0 ≥ (-1) >= (-2) > (-3) == (-3)"), i(1));
+    assert_eq!(
+        simple_eval("1 == 1 > 0 ≥ (-1) >= (-2) > (-3) == (-3)"),
+        i(1)
+    );
     assert_eq!(simple_eval("1 < 2 == 2"), i(1));
     assert_eq!(simple_eval("1 < (2 == 2)"), i(0));
     assert_eq!(simple_eval("(1 < 2) == 2"), i(0));

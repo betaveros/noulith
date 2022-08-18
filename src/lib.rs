@@ -3076,6 +3076,7 @@ pub enum Token {
     Return,
     Throw,
     Bang,
+    QuestionMark,
     Colon,
     DoubleColon,
     Semicolon,
@@ -3425,8 +3426,9 @@ impl<'a> Lexer<'a> {
 
     fn lex(&mut self) {
         lazy_static! {
-            static ref OPERATOR_SYMBOLS: HashSet<char> =
-                "!$%&*+-./<=>?@^|~×∈∉∋∌∘∧∨≠≤≥⊕⧺".chars().collect::<HashSet<char>>();
+            static ref OPERATOR_SYMBOLS: HashSet<char> = "!$%&*+-./<=>?@^|~×∈∉∋∌∘∧∨≠≤≥⊕⧺"
+                .chars()
+                .collect::<HashSet<char>>();
         }
 
         // let mut chars = code.chars().peekable();
@@ -3500,6 +3502,7 @@ impl<'a> Lexer<'a> {
                 }
                 '∧' => self.emit(Token::And),
                 '∨' => self.emit(Token::Or),
+                '?' => self.emit(Token::QuestionMark),
                 c => {
                     if c.is_digit(10) {
                         let mut acc = c.to_string();
@@ -3588,10 +3591,9 @@ impl<'a> Lexer<'a> {
                     } else if c.is_alphabetic() || c == '_' {
                         let mut acc = c.to_string();
 
-                        while let Some(cc) = self
-                            .peek()
-                            .filter(|c| c.is_alphanumeric() || **c == '_' || **c == '\'')
-                        {
+                        while let Some(cc) = self.peek().filter(|c| {
+                            c.is_alphanumeric() || **c == '_' || **c == '\'' || **c == '?'
+                        }) {
                             if c.is_uppercase() && acc.len() == 1 && *cc == '\'' {
                                 // F', R', etc. start strings
                                 break;
@@ -3680,7 +3682,7 @@ impl<'a> Lexer<'a> {
                                 _ => Token::Ident(acc),
                             })
                         }
-                    } else if OPERATOR_SYMBOLS.contains(&c) {
+                    } else if OPERATOR_SYMBOLS.contains(&c) && c != '?' {
                         // Most operators ending in = parse weird. It's hard to pop the last character
                         // off a String because of UTF-8 stuff so keep them separate until the last
                         // possible moment.
@@ -4503,17 +4505,22 @@ impl Env {
                 match inner {
                     Err(NErr::Throw(x)) => {
                         let mut msg = format!("{}", x);
-                        if let Some(k) = r.vars.keys().filter(|k| {
-                            // TODO: better similarity comparison lol
-                            k.contains(s) || s.contains(&**k)
-                        }).min_by_key(|k| k.len().abs_diff(s.len())) {
+                        if let Some(k) = r
+                            .vars
+                            .keys()
+                            .filter(|k| {
+                                // TODO: better similarity comparison lol
+                                k.contains(s) || s.contains(&**k)
+                            })
+                            .min_by_key(|k| k.len().abs_diff(s.len()))
+                        {
                             msg += &format!(" Did you mean: \"{}\"?", k);
                         }
                         Err(NErr::name_error(msg))
                     }
                     x => x,
                 }
-            },
+            }
         }
     }
 
@@ -5152,7 +5159,9 @@ fn default_precedence(name: &str) -> f64 {
             } else {
                 // to decide: '@'
                 match c {
-                    '=' | '<' | '>' | '∘' | '∈' | '∉' | '∋' | '∌' | '≤' | '≥' => COMPARISON_PRECEDENCE,
+                    '=' | '<' | '>' | '∘' | '∈' | '∉' | '∋' | '∌' | '≤' | '≥' => {
+                        COMPARISON_PRECEDENCE
+                    }
                     '$' => STRING_PRECEDENCE,
                     '|' => OR_PRECEDENCE,
                     '+' | '-' | '~' | '⊕' | '⧺' => PLUS_PRECEDENCE,
@@ -6931,6 +6940,20 @@ fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
 pub fn initialize(env: &mut Env) {
     env.insert("null".to_string(), ObjType::Null, Obj::Null)
         .unwrap();
+    env.insert("true".to_string(), ObjType::Int, Obj::one())
+        .unwrap();
+    env.insert("false".to_string(), ObjType::Int, Obj::zero())
+        .unwrap();
+    env.insert_builtin(TwoArgBuiltin {
+        name: "and'".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(if a.truthy() { b } else { a }),
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "or'".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(if a.truthy() { a } else { b }),
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "not".to_string(),
         can_refer: false,
@@ -7014,12 +7037,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ComparisonOperator::of(">", |a, b| {
         Ok(ncmp(a, b)? == Ordering::Greater)
     }));
-    env.insert_builtin_with_alias(ComparisonOperator::of("<=", |a, b| {
-        Ok(ncmp(a, b)? != Ordering::Greater)
-    }), "≤");
-    env.insert_builtin_with_alias(ComparisonOperator::of(">=", |a, b| {
-        Ok(ncmp(a, b)? != Ordering::Less)
-    }), "≥");
+    env.insert_builtin_with_alias(
+        ComparisonOperator::of("<=", |a, b| Ok(ncmp(a, b)? != Ordering::Greater)),
+        "≤",
+    );
+    env.insert_builtin_with_alias(
+        ComparisonOperator::of(">=", |a, b| Ok(ncmp(a, b)? != Ordering::Less)),
+        "≥",
+    );
     env.insert_builtin(TwoNumsBuiltin {
         name: "/".to_string(),
         body: |a, b| Ok(Obj::Num(a / b)),
@@ -7320,17 +7345,20 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("not function".to_string())),
         },
     });
-    env.insert_builtin_with_alias(TwoArgBuiltin {
-        name: "<<<".to_string(),
-        can_refer: true,
-        body: |a, b| match (a, b) {
-            (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
-                Func::Composition(Box::new(f), Box::new(g)),
-                Precedence::zero(),
-            )),
-            _ => Err(NErr::type_error("not function".to_string())),
+    env.insert_builtin_with_alias(
+        TwoArgBuiltin {
+            name: "<<<".to_string(),
+            can_refer: true,
+            body: |a, b| match (a, b) {
+                (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
+                    Func::Composition(Box::new(f), Box::new(g)),
+                    Precedence::zero(),
+                )),
+                _ => Err(NErr::type_error("not function".to_string())),
+            },
         },
-    }, "∘");
+        "∘",
+    );
     env.insert_builtin(TwoArgBuiltin {
         name: "on".to_string(),
         can_refer: true,
@@ -7871,6 +7899,11 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(TwoArgBuiltin {
+        name: "$$".to_string(),
+        can_refer: false,
+        body: |a, b| Ok(Obj::from(format!("{}{}", a, b))),
+    });
+    env.insert_builtin(TwoArgBuiltin {
         name: "*$".to_string(),
         can_refer: false,
         body: |a, b| {
@@ -8090,17 +8123,20 @@ pub fn initialize(env: &mut Env) {
     });
 
     // Lists
-    env.insert_builtin_with_alias(TwoArgBuiltin {
-        name: "++".to_string(),
-        can_refer: false,
-        body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
-                Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
-                Ok(Obj::Seq(Seq::List(a)))
-            }
-            _ => Err(NErr::generic_argument_error()),
+    env.insert_builtin_with_alias(
+        TwoArgBuiltin {
+            name: "++".to_string(),
+            can_refer: false,
+            body: |a, b| match (a, b) {
+                (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
+                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Ok(Obj::Seq(Seq::List(a)))
+                }
+                _ => Err(NErr::generic_argument_error()),
+            },
         },
-    }, "⧺");
+        "⧺",
+    );
     env.insert_builtin(TwoArgBuiltin {
         name: ".+".to_string(),
         can_refer: false,
@@ -8154,7 +8190,10 @@ pub fn initialize(env: &mut Env) {
                     let u = n
                         .to_usize()
                         .ok_or(NErr::value_error("bad lazy pow".to_string()))?;
-                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(Rc::new(vec![0; u])))))))
+                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(
+                        v,
+                        Some(Rc::new(vec![0; u])),
+                    )))))
                 }
                 _ => Err(NErr::generic_argument_error()),
             }
@@ -8221,7 +8260,7 @@ pub fn initialize(env: &mut Env) {
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => take_while(s, f, env),
             (a, b) => slice(a, None, Some(b)),
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "drop".to_string(),
@@ -8229,7 +8268,7 @@ pub fn initialize(env: &mut Env) {
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => drop_while(s, f, env),
             (a, b) => slice(a, Some(b), None),
-        }
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "find".to_string(),
@@ -8248,11 +8287,11 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
-        name: "try_find".to_string(),
+        name: "find?".to_string(),
         can_refer: true,
         body: |env, mut a, b| match b {
             Obj::Func(f, _) => {
-                let mut it = mut_obj_into_iter(&mut a, "find")?;
+                let mut it = mut_obj_into_iter(&mut a, "find?")?;
                 while let Some(x) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(x);
@@ -8295,11 +8334,11 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
-        name: "try_index".to_string(),
+        name: "index?".to_string(),
         can_refer: true,
         body: |env, a, b| match (a, b) {
             (mut a, Obj::Func(f, _)) => {
-                let mut it = mut_obj_into_iter(&mut a, "try_index")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "index?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(Obj::from(i));
@@ -8315,7 +8354,7 @@ pub fn initialize(env: &mut Env) {
                 }
             }
             (mut a, b) => {
-                let mut it = mut_obj_into_iter(&mut a, "try_index")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "index?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x == b {
                         return Ok(Obj::from(i));
@@ -8453,13 +8492,11 @@ pub fn initialize(env: &mut Env) {
         name: "items".to_string(),
         can_refer: false,
         body: |a| match a {
-            Obj::Seq(mut s @ Seq::Dict(..)) => {
-                Ok(Obj::list(
-                    mut_seq_into_iter_pairs(&mut s)
-                        .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
-                        .collect()
-                ))
-            }
+            Obj::Seq(mut s @ Seq::Dict(..)) => Ok(Obj::list(
+                mut_seq_into_iter_pairs(&mut s)
+                    .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
+                    .collect(),
+            )),
             _ => Err(NErr::generic_argument_error()),
         },
     });
@@ -8469,7 +8506,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut a| {
             Ok(Obj::list(
                 mut_obj_into_iter(&mut a, "enumerate conversion")?
-                .enumerate()
+                    .enumerate()
                     .map(|(k, v)| Obj::list(vec![Obj::from(k), v]))
                     .collect(),
             ))
@@ -8538,7 +8575,7 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(OneArgBuiltin {
-        name: "try_read_file".to_string(),
+        name: "read_file?".to_string(),
         can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::File::open(&*s) {
