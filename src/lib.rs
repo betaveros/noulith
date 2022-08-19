@@ -1601,6 +1601,7 @@ pub enum Func {
         Option<Box<Obj>>,
         Vec<(Box<Func>, Precedence, Option<Box<Obj>>)>,
     ),
+    CallSection(Option<Box<Obj>>, Vec<Option<Obj>>),
     Type(ObjType),
 }
 
@@ -1708,6 +1709,24 @@ impl Func {
                     Some(_) => Err(NErr::argument_error("chain section: too many arguments".to_string())),
                 }
             }
+            Func::CallSection(callee, sec_args) => {
+                let mut it = args.into_iter();
+                let callee = match callee {
+                    Some(x) => *x.clone(),
+                    None => match it.next() {
+                        Some(e) => e,
+                        None => return Err(NErr::argument_error("call section: too few arguments".to_string())),
+                    }
+                };
+                let real_args = sec_args.into_iter().map(|e| match e {
+                    Some(x) => Some(x.clone()),
+                    None => it.next(),
+                }).collect::<Option<Vec<Obj>>>().ok_or(NErr::argument_error("call section: too few arguments".to_string()))?;
+                match it.next() {
+                    None => call(env, callee, real_args),
+                    Some(_) => Err(NErr::argument_error("call section: too many arguments".to_string())),
+                }
+            }
             Func::IndexSection(x, i) => {
                 let mut it = args.into_iter();
                 let x = match x {
@@ -1760,6 +1779,7 @@ impl Func {
             Func::Flip(f) => f.can_refer(),
             Func::ListSection(_) => false,
             Func::ChainSection(..) => true, // FIXME
+            Func::CallSection(..) => true,  // FIXME
             Func::IndexSection(..) => false,
             Func::SliceSection(..) => false,
             Func::Type(_) => false,
@@ -1780,6 +1800,7 @@ impl Func {
             Func::Flip(..) => None,
             Func::ListSection(_) => None,
             Func::ChainSection(..) => None,
+            Func::CallSection(..) => None,
             Func::IndexSection(..) => None,
             Func::SliceSection(..) => None,
             Func::Type(_) => None,
@@ -1804,6 +1825,7 @@ impl Display for Func {
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             // TODO
             Func::ListSection(xs) => write!(formatter, "ListSection({:?})", xs),
+            Func::CallSection(f, xs) => write!(formatter, "CallSection({:?} {:?})", f, xs),
             Func::ChainSection(xs, ys) => write!(formatter, "ChainSection({:?} {:?})", xs, ys),
             Func::IndexSection(x, i) => write!(formatter, "IndexSection({:?} {:?})", x, i),
             Func::SliceSection(x, lo, hi) => {
@@ -6196,9 +6218,47 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
             }
         }
         Expr::Call(f, args) => {
-            let fr = evaluate(env, f)?;
-            let a = eval_seq(env, args)?;
-            call_or_part_apply(env, fr, a)
+            let fr = match &**f {
+                Expr::Underscore => None,
+                f => Some(evaluate(env, f)?),
+            };
+            // let a = eval_seq(env, args)?;
+            let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
+            for x in args {
+                acc = match (&**x, acc) {
+                    (Expr::Underscore, Ok(v)) => {
+                        let mut r = v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>();
+                        r.push(None);
+                        Err(r)
+                    }
+                    (Expr::Underscore, Err(mut a)) => {
+                        a.push(None);
+                        Err(a)
+                    }
+                    (e, Ok(mut v)) => {
+                        v.push(evaluate(env, &e)?);
+                        Ok(v)
+                    }
+                    (e, Err(mut a)) => {
+                        a.push(Some(evaluate(env, &e)?));
+                        Err(a)
+                    }
+                }
+            }
+            match (fr, acc) {
+                (Some(f), Ok(v)) => call_or_part_apply(env, f, v),
+                (None, Ok(v)) => Ok(Obj::Func(
+                    Func::CallSection(
+                        None,
+                        v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>(),
+                    ),
+                    Precedence::zero(),
+                )),
+                (f, Err(v)) => Ok(Obj::Func(
+                    Func::CallSection(f.map(Box::new), v),
+                    Precedence::zero(),
+                )),
+            }
         }
         Expr::CommaSeq(_) => Err(NErr::syntax_error(
             "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
