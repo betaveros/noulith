@@ -3171,6 +3171,7 @@ pub enum Lvalue {
     Unannotation(Box<Lvalue>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
+    Or(Box<Lvalue>, Box<Lvalue>),
 }
 
 impl Lvalue {
@@ -3183,6 +3184,7 @@ impl Lvalue {
             Lvalue::Unannotation(x) => x.any_literals(),
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
+            Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
         }
     }
 
@@ -3195,6 +3197,11 @@ impl Lvalue {
             Lvalue::Unannotation(x) => x.collect_identifiers(),
             Lvalue::CommaSeq(x) => x.iter().flat_map(|e| e.collect_identifiers()).collect(),
             Lvalue::Splat(x) => x.collect_identifiers(),
+            Lvalue::Or(a, b) => {
+                let mut s = a.collect_identifiers();
+                s.extend(b.collect_identifiers());
+                s
+            }
         }
     }
 }
@@ -3213,6 +3220,7 @@ enum EvaluatedLvalue {
     Unannotation(Box<EvaluatedLvalue>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
+    Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     Literal(Obj),
 }
 
@@ -3238,6 +3246,7 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
+        Expr::Or(a, b) => Ok(Lvalue::Or(Box::new(to_lvalue(*a)?), Box::new(to_lvalue(*b)?))),
         // TODO: special case for negative literals????
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
@@ -5020,6 +5029,12 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
             "Can't assign to raw splat {:?}",
             lhs
         ))),
+        EvaluatedLvalue::Or(a, b) => {
+            match assign(env, a, rt, rhs) {
+                Ok(()) => Ok(()),
+                Err(_) => assign(env, b, rt, rhs),
+            }
+        },
         EvaluatedLvalue::Literal(obj) => {
             if obj == rhs {
                 Ok(())
@@ -5063,6 +5078,10 @@ fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &O
         EvaluatedLvalue::Unannotation(s) => assign_every(env, s, None, rhs),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::Or(..) => Err(NErr::type_error(format!(
+            "Can't assign-every to or {:?}",
             lhs
         ))),
         EvaluatedLvalue::Literal(obj) => {
@@ -5132,9 +5151,12 @@ fn modify_every(
         ))),
         EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
-            "Can't assign to raw splat {:?}",
+            "Can't modify raw splat {:?}",
             lhs
         ))),
+        EvaluatedLvalue::Or(..) => {
+            Err(NErr::type_error(format!("Can't modify or {:?}", lhs)))
+        }
         EvaluatedLvalue::Literal(_) => {
             Err(NErr::type_error(format!("Can't modify literal {:?}", lhs)))
         }
@@ -5300,6 +5322,9 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
                 .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
+        Lvalue::Or(a, b) => Ok(EvaluatedLvalue::Or(
+                Box::new(eval_lvalue(env, a)?),
+                Box::new(eval_lvalue(env, b)?))),
         Lvalue::Literal(obj) => Ok(EvaluatedLvalue::Literal(obj.clone())),
     }
 }
@@ -5659,6 +5684,9 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         // maybe if commaseq eagerly looks for splats...
         Lvalue::Splat(_) => Err(NErr::syntax_error(
             "Can't evaluate splat on LHS of assignment??".to_string(),
+        )),
+        Lvalue::Or(..) => Err(NErr::syntax_error(
+            "Can't evaluate or on LHS of assignment??".to_string(),
         )),
         // seems questionable
         Lvalue::Literal(x) => Ok(x.clone()),
@@ -6346,6 +6374,9 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
                 .collect::<NRes<Vec<Box<Lvalue>>>>()?,
         )),
         Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(bound, env, x)?)),
+        Lvalue::Or(a, b) => Ok(Lvalue::Or(
+                box_freeze_lvalue(bound, env, a)?,
+                box_freeze_lvalue(bound, env, b)?)),
     }
 }
 
