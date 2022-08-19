@@ -1037,9 +1037,19 @@ pub enum FmtBase {
 }
 
 #[derive(Clone, Debug)]
+pub enum FmtAlign {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Clone, Debug)]
 pub struct MyFmtFlags {
     base: FmtBase,
     repr: bool,
+    pad: char,
+    pad_length: usize,
+    pad_align: FmtAlign,
     budget: usize,
 }
 
@@ -1048,15 +1058,16 @@ impl MyFmtFlags {
         MyFmtFlags {
             base: FmtBase::Decimal,
             repr: false,
+            pad: ' ',
+            pad_length: 0,
+            pad_align: FmtAlign::Right,
             budget: usize::MAX,
         }
     }
     pub fn budgeted_repr(budget: usize) -> MyFmtFlags {
-        MyFmtFlags {
-            base: FmtBase::Decimal,
-            repr: true,
-            budget,
-        }
+        let mut f = MyFmtFlags::new();
+        f.budget = budget;
+        f
     }
     fn deduct(&mut self, amt: usize) {
         if self.budget >= amt {
@@ -1072,13 +1083,30 @@ impl MyDisplay for NNum {
         false
     }
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
-        match flags.base {
-            FmtBase::Decimal => write!(formatter, "{}", self),
-            FmtBase::Binary => write!(formatter, "{:b}", self),
-            FmtBase::Octal => write!(formatter, "{:o}", self),
-            FmtBase::LowerHex => write!(formatter, "{:x}", self),
-            FmtBase::UpperHex => write!(formatter, "{:X}", self),
-        }
+        let s = match flags.base {
+            FmtBase::Decimal => format!("{}", self),
+            FmtBase::Binary => format!("{:b}", self),
+            FmtBase::Octal => format!("{:o}", self),
+            FmtBase::LowerHex => format!("{:x}", self),
+            FmtBase::UpperHex => format!("{:X}", self),
+        };
+        let pad_amt = if s.len() < flags.pad_length {
+            flags.pad_length - s.len()
+        } else {
+            0
+        };
+        let (left_amt, right_amt) = match flags.pad_align {
+            FmtAlign::Left => (0, pad_amt),
+            FmtAlign::Right => (pad_amt, 0),
+            FmtAlign::Center => (pad_amt / 2, pad_amt - pad_amt / 2),
+        };
+        write!(
+            formatter,
+            "{}{}{}",
+            flags.pad.to_string().repeat(left_amt),
+            s,
+            flags.pad.to_string().repeat(right_amt)
+        )
     }
 }
 impl MyDisplay for NTotalNum {
@@ -3246,7 +3274,10 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
-        Expr::Or(a, b) => Ok(Lvalue::Or(Box::new(to_lvalue(*a)?), Box::new(to_lvalue(*b)?))),
+        Expr::Or(a, b) => Ok(Lvalue::Or(
+            Box::new(to_lvalue(*a)?),
+            Box::new(to_lvalue(*b)?),
+        )),
         // TODO: special case for negative literals????
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
@@ -4187,7 +4218,13 @@ impl Parser {
             match second {
                 Expr::Ident(op) => {
                     if self.try_consume(&Token::Bang) {
-                        let ret = Expr::Chain(Box::new(op1), vec![(Box::new(Expr::Ident(op)), Box::new(self.single("operator-bang operand")?))]);
+                        let ret = Expr::Chain(
+                            Box::new(op1),
+                            vec![(
+                                Box::new(Expr::Ident(op)),
+                                Box::new(self.single("operator-bang operand")?),
+                            )],
+                        );
                         if self.peek() == Some(&Token::Comma) {
                             Err("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string())
                         } else {
@@ -4201,13 +4238,14 @@ impl Parser {
                         while let Some(Token::Ident(op)) = self.peek() {
                             let op = op.to_string();
                             self.advance();
-                            ops.push((Box::new(Expr::Ident(op)), Box::new(
-                            if self.try_consume(&Token::Bang) {
-                                self.single("operator-bang operand")?
-                            } else {
-                                self.operand()?
-                            }
-                            )));
+                            ops.push((
+                                Box::new(Expr::Ident(op)),
+                                Box::new(if self.try_consume(&Token::Bang) {
+                                    self.single("operator-bang operand")?
+                                } else {
+                                    self.operand()?
+                                }),
+                            ));
                         }
                         Ok(Expr::Chain(Box::new(op1), ops))
                     }
@@ -5029,11 +5067,9 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
             "Can't assign to raw splat {:?}",
             lhs
         ))),
-        EvaluatedLvalue::Or(a, b) => {
-            match assign(env, a, rt, rhs) {
-                Ok(()) => Ok(()),
-                Err(_) => assign(env, b, rt, rhs),
-            }
+        EvaluatedLvalue::Or(a, b) => match assign(env, a, rt, rhs) {
+            Ok(()) => Ok(()),
+            Err(_) => assign(env, b, rt, rhs),
         },
         EvaluatedLvalue::Literal(obj) => {
             if obj == rhs {
@@ -5154,9 +5190,7 @@ fn modify_every(
             "Can't modify raw splat {:?}",
             lhs
         ))),
-        EvaluatedLvalue::Or(..) => {
-            Err(NErr::type_error(format!("Can't modify or {:?}", lhs)))
-        }
+        EvaluatedLvalue::Or(..) => Err(NErr::type_error(format!("Can't modify or {:?}", lhs))),
         EvaluatedLvalue::Literal(_) => {
             Err(NErr::type_error(format!("Can't modify literal {:?}", lhs)))
         }
@@ -5323,8 +5357,9 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
         Lvalue::Or(a, b) => Ok(EvaluatedLvalue::Or(
-                Box::new(eval_lvalue(env, a)?),
-                Box::new(eval_lvalue(env, b)?))),
+            Box::new(eval_lvalue(env, a)?),
+            Box::new(eval_lvalue(env, b)?),
+        )),
         Lvalue::Literal(obj) => Ok(EvaluatedLvalue::Literal(obj.clone())),
     }
 }
@@ -5828,7 +5863,8 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (Expr, MyFmtFlags)>>,
                     return Err("format string: empty format expr".to_string());
                 } else {
                     for com in comments {
-                        for c in com.chars() {
+                        let mut it = com.chars().peekable();
+                        while let Some(c) = it.next() {
                             match c {
                                 'x' => {
                                     flags.base = FmtBase::LowerHex;
@@ -5846,6 +5882,39 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (Expr, MyFmtFlags)>>,
                                 // 'E' => { flags.base = FmtBase::UpperExp; }
                                 'd' | 'D' => {
                                     flags.base = FmtBase::Decimal;
+                                }
+                                '<' => {
+                                    flags.pad_align = FmtAlign::Left;
+                                }
+                                '>' => {
+                                    flags.pad_align = FmtAlign::Right;
+                                }
+                                '^' => {
+                                    flags.pad_align = FmtAlign::Center;
+                                }
+                                '0' => {
+                                    flags.pad = '0';
+                                }
+                                d if d.is_digit(10) => {
+                                    let mut acc = d.to_string();
+                                    loop {
+                                        match it.peek().filter(|d| d.is_digit(10)).cloned() {
+                                            Some(d) => {
+                                                it.next();
+                                                acc.push(d)
+                                            }
+                                            None => break,
+                                        }
+                                    }
+                                    match acc.parse::<usize>() {
+                                        Ok(s) => flags.pad_length = s,
+                                        Err(e) => {
+                                            return Err(format!(
+                                                "format string: pad length couldn't parse: {}",
+                                                e
+                                            ))
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }
@@ -6375,8 +6444,9 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
         )),
         Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(bound, env, x)?)),
         Lvalue::Or(a, b) => Ok(Lvalue::Or(
-                box_freeze_lvalue(bound, env, a)?,
-                box_freeze_lvalue(bound, env, b)?)),
+            box_freeze_lvalue(bound, env, a)?,
+            box_freeze_lvalue(bound, env, b)?,
+        )),
     }
 }
 
@@ -7621,7 +7691,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
-            _ => Err(NErr::generic_argument_error())
+            _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -7631,7 +7701,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
-            _ => Err(NErr::generic_argument_error())
+            _ => Err(NErr::generic_argument_error()),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
