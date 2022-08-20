@@ -2590,12 +2590,27 @@ impl Builtin for Merge {
     }
 }
 
+fn captures_to_obj(regex: &Regex, captures: &regex::Captures<'_>) -> Obj {
+    if regex.capture_locations().len() == 1 {
+        Obj::from(captures.get(0).unwrap().as_str())
+    } else {
+        Obj::list(
+            captures.iter()
+                .map(|cap| match cap {
+                    None => Obj::Null, // didn't participate
+                    Some(s) => Obj::from(s.as_str()),
+                })
+                .collect(),
+        )
+    }
+}
+
 // it's just "with" lmao
 #[derive(Debug, Clone)]
 struct Replace;
 
 impl Builtin for Replace {
-    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
             Few3::Three(
                 Obj::Seq(Seq::String(a)),
@@ -2605,7 +2620,33 @@ impl Builtin for Replace {
                 // rust's replacement syntax is $n or ${n} for nth group
                 let r = Regex::new(&b)
                     .map_err(|e| NErr::value_error(format!("replace: invalid regex: {}", e)))?;
-                Ok(Obj::from(r.replace(&a, &*c).into_owned()))
+                Ok(Obj::from(r.replace_all(&a, &*c).into_owned()))
+            }
+            Few3::Three(
+                Obj::Seq(Seq::String(a)),
+                Obj::Seq(Seq::String(b)),
+                Obj::Func(f, _prec),
+            ) => {
+                let r = Regex::new(&b)
+                    .map_err(|e| NErr::value_error(format!("replace: invalid regex: {}", e)))?;
+                let mut status = Ok(());
+                let res = Obj::from(
+                    r.replace_all(&a, |caps: &regex::Captures<'_>| {
+                        if status.is_err() {
+                            return String::new();
+                        }
+                        match f.run(env, vec![captures_to_obj(&r, caps)]) {
+                            Ok(s) => format!("{}", s),
+                            Err(e) => {
+                                status = Err(e);
+                                String::new()
+                            }
+                        }
+                    })
+                    .into_owned(),
+                );
+                status?;
+                Ok(res)
             }
             _ => Err(NErr::type_error(
                 "replace: must get three strings".to_string(),
@@ -8220,14 +8261,7 @@ pub fn initialize(env: &mut Env) {
                 } else {
                     match r.captures(&a) {
                         None => Ok(Obj::Null),
-                        Some(c) => Ok(Obj::list(
-                            c.iter()
-                                .map(|cap| match cap {
-                                    None => Obj::Null, // didn't participate
-                                    Some(s) => Obj::from(s.as_str()),
-                                })
-                                .collect(),
-                        )),
+                        Some(c) => Ok(captures_to_obj(&r, &c)),
                     }
                 }
             }
@@ -8265,6 +8299,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::generic_argument_error()),
         },
     });
+    env.insert_builtin(Replace);
 
     // Haskell-ism for partial application (when that works)
     env.insert_builtin(TwoArgBuiltin {
