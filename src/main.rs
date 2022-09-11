@@ -61,6 +61,32 @@ fn repl() {
     }
 }
 
+fn run_code(code: &str) {
+    let mut env = Env::new(TopEnv {
+        backrefs: Vec::new(),
+        input: Box::new(BufReader::new(io::stdin())),
+        output: Box::new(io::stdout()),
+    });
+    initialize(&mut env);
+    let e = Rc::new(RefCell::new(env));
+
+    match parse(&code) {
+        Ok(Some(expr)) => match evaluate(&e, &expr) {
+            Ok(Obj::Null) => {}
+            Ok(e) => {
+                println!("{}", e);
+            }
+            Err(e) => {
+                println!("ERROR: {}", e);
+            }
+        },
+        Ok(None) => {}
+        Err(e) => {
+            println!("PARSE ERROR: {}", e);
+        }
+    }
+}
+
 fn main() {
     match std::env::args().collect::<Vec<String>>().as_slice() {
         [] | [_] => {
@@ -74,37 +100,21 @@ fn main() {
                 let mut code = String::new();
                 file.read_to_string(&mut code)
                     .expect("reading code file failed");
-
-                let mut env = Env::new(TopEnv {
-                    backrefs: Vec::new(),
-                    input: Box::new(BufReader::new(io::stdin())),
-                    output: Box::new(io::stdout()),
-                });
-                initialize(&mut env);
-                let e = Rc::new(RefCell::new(env));
-
-                match parse(&code) {
-                    Ok(Some(expr)) => match evaluate(&e, &expr) {
-                        Ok(Obj::Null) => {}
-                        Ok(e) => {
-                            println!("{}", e);
-                        }
-                        Err(e) => {
-                            println!("ERROR: {}", e);
-                        }
-                    },
-                    Ok(None) => {}
-                    Err(e) => {
-                        println!("PARSE ERROR: {}", e);
-                    }
-                }
+                run_code(&code);
             }
             Err(_) => {
                 panic!("opening code file failed");
             }
-        },
-        _ => {
-            panic!("too many arguments");
+        }
+        [_, f, code] => {
+            if f == "-e" {
+                run_code(&code);
+            } else {
+                panic!("unknown argument {:?}", f);
+            }
+        }
+        args => {
+            panic!("too many command-line arguments: {:?}", args);
         }
     }
 }

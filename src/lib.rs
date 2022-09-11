@@ -8757,6 +8757,26 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    // Haskell-ism
+    env.insert_builtin(EnvOneArgBuiltin {
+        name: "interact".to_string(),
+        can_refer: false,
+        body: |env, arg| {
+            match arg {
+                Obj::Func(f, _) => {
+                    let mut input = String::new();
+                    // to EOF
+                    match try_borrow_nres(env, "interact", "")?
+                        .mut_top_env(|t| t.input.read_to_string(&mut input))
+                    {
+                        Ok(_) => f.run(env, vec![Obj::from(input)]),
+                        Err(msg) => Err(NErr::value_error(format!("interact: input failed: {}", msg))),
+                    }
+                }
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
 
     // TODO safety, wasm version
     env.insert_builtin(OneArgBuiltin {
