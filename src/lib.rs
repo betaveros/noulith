@@ -2133,6 +2133,29 @@ impl Builtin for ComparisonOperator {
             _ => None,
         }
     }
+
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+        if !self.chained.is_empty() {
+            Err(NErr::value_error("chained comparison operator destructuring??".to_string()))?
+        }
+        match few2(lhs) {
+            Few2::Two(Some(a), None) => {
+                if (self.accept)(a, &rvalue)? {
+                    Ok(vec![a.clone(), rvalue])
+                } else {
+                    Err(NErr::value_error("comparison destructure failed".to_string()))
+                }
+            }
+            Few2::Two(None, Some(a)) => {
+                if (self.accept)(&rvalue, a)? {
+                    Ok(vec![rvalue, a.clone()])
+                } else {
+                    Err(NErr::value_error("comparison destructure failed".to_string()))
+                }
+            }
+            _ => Err(NErr::type_error("comparison destructure failed".to_string())),
+        }
+    }
 }
 
 // min or max. conditional partial application
