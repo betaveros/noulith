@@ -1850,6 +1850,165 @@ pub trait Builtin: Debug {
     fn can_refer(&self) -> bool {
         false
     }
+
+    // even if lhs has literals, return them verbatim anyway
+    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+        Err(NErr::type_error(format!(
+            "{} cannot destructure {}",
+            self.builtin_name(),
+            rvalue
+        )))
+    }
+}
+
+// can "destructure"
+#[derive(Debug, Clone)]
+struct Plus;
+
+impl Builtin for Plus {
+    // copypasta
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
+                Ok(clone_and_part_app_2(self, arg))
+            }
+            Few2::One(a) => Err(NErr::argument_error(format!(
+                "+ only accepts numbers (or vectors), got {:?}",
+                a
+            ))),
+            Few2::Two(a, b) => err_add_name(
+                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), a, b),
+                "+",
+            ),
+            f => Err(NErr::argument_error(format!(
+                "+ only accepts two numbers, got {}",
+                f.len()
+            ))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "+"
+    }
+    fn can_refer(&self) -> bool {
+        false
+    }
+
+    // Haskell deprecated NPlusKPatterns for a good reason but we don't care about good reason over
+    // here
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+        match (rvalue, few2(lhs)) {
+            (Obj::Num(r), Few2::Two(Some(Obj::Num(a)), None)) => {
+                let diff = r - a;
+                if diff >= NNum::from(0) {
+                    Ok(vec![Obj::Num(a.clone()), Obj::Num(diff)])
+                } else {
+                    Err(NErr::value_error("+ computed negative".to_string()))
+                }
+            }
+            (Obj::Num(r), Few2::Two(None, Some(Obj::Num(a)))) => {
+                let diff = r - a;
+                if diff >= NNum::from(0) {
+                    Ok(vec![Obj::Num(diff), Obj::Num(a.clone())])
+                } else {
+                    Err(NErr::value_error("+ computed negative".to_string()))
+                }
+            }
+            _ => Err(NErr::type_error("+ failed to destructure".to_string())),
+        }
+    }
+}
+
+// can "destructure" (mainly to support casing by negative literals)
+#[derive(Debug, Clone)]
+struct Minus;
+
+impl Builtin for Minus {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
+            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b),
+            Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "-"
+    }
+    fn can_refer(&self) -> bool {
+        false
+    }
+
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+        if lhs.len() == 1 {
+            Ok(vec![expect_nums_and_vectorize_1(
+                |x| Ok(Obj::Num(-x)),
+                rvalue,
+            )?])
+        } else {
+            Err(NErr::type_error(
+                "- can only destructure 1 (for now)".to_string(),
+            ))
+        }
+    }
+}
+
+// thonk
+#[derive(Debug, Clone)]
+struct Times;
+
+impl Builtin for Times {
+    // copypasta
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
+                Ok(clone_and_part_app_2(self, arg))
+            }
+            Few2::One(a) => Err(NErr::argument_error(format!(
+                "* only accepts numbers (or vectors), got {:?}",
+                a
+            ))),
+            Few2::Two(a, b) => err_add_name(
+                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), a, b),
+                "*",
+            ),
+            f => Err(NErr::argument_error(format!(
+                "* only accepts two numbers, got {}",
+                f.len()
+            ))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "*"
+    }
+    fn can_refer(&self) -> bool {
+        false
+    }
+
+    // even worse than NPlusKPatterns maybe (TODO there's like paired divmod stuff right)
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+        match (rvalue, few2(lhs)) {
+            (Obj::Num(r), Few2::Two(Some(Obj::Num(a)), None)) => {
+                if (&r % a).is_nonzero() {
+                    Err(NErr::value_error("* had remainder".to_string()))
+                } else {
+                    Ok(vec![Obj::Num(a.clone()), Obj::Num(r.div_floor(a))])
+                }
+            }
+            (Obj::Num(r), Few2::Two(None, Some(Obj::Num(a)))) => {
+                if (&r % a).is_nonzero() {
+                    Err(NErr::value_error("* had remainder".to_string()))
+                } else {
+                    Ok(vec![Obj::Num(r.div_floor(a)), Obj::Num(a.clone())])
+                }
+            }
+            _ => Err(NErr::type_error("* failed to destructure".to_string())),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2595,7 +2754,8 @@ fn captures_to_obj(regex: &Regex, captures: &regex::Captures<'_>) -> Obj {
         Obj::from(captures.get(0).unwrap().as_str())
     } else {
         Obj::list(
-            captures.iter()
+            captures
+                .iter()
                 .map(|cap| match cap {
                     None => Obj::Null, // didn't participate
                     Some(s) => Obj::from(s.as_str()),
@@ -3263,6 +3423,7 @@ pub enum Lvalue {
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
+    Destructure(Box<Expr>, Vec<Box<Lvalue>>),
 }
 
 impl Lvalue {
@@ -3276,6 +3437,7 @@ impl Lvalue {
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
+            Lvalue::Destructure(_, vs) => vs.iter().any(|e| e.any_literals()),
         }
     }
 
@@ -3293,6 +3455,7 @@ impl Lvalue {
                 s.extend(b.collect_identifiers());
                 s
             }
+            Lvalue::Destructure(_, b) => b.iter().flat_map(|e| e.collect_identifiers()).collect(),
         }
     }
 }
@@ -3313,6 +3476,7 @@ enum EvaluatedLvalue {
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     Literal(Obj),
+    Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
 }
 
 fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
@@ -3341,7 +3505,20 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
             Box::new(to_lvalue(*a)?),
             Box::new(to_lvalue(*b)?),
         )),
-        // TODO: special case for negative literals????
+        Expr::Call(f, args) => Ok(Lvalue::Destructure(
+            f,
+            args.into_iter()
+                .map(|e| Ok(Box::new(to_lvalue(*e)?)))
+                .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
+        )),
+        // only one-chains allowed, for now
+        Expr::Chain(lhs, mut args) if args.len() == 1 => {
+            let arg = args.pop().unwrap();
+            Ok(Lvalue::Destructure(
+                arg.0,
+                vec![Box::new(to_lvalue(*lhs)?), Box::new(to_lvalue(*arg.1)?)],
+            ))
+        }
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
 }
@@ -5144,6 +5321,26 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
                 )))
             }
         }
+        EvaluatedLvalue::Destructure(f, args) => {
+            let known = args
+                .iter()
+                .map(|e| match &**e {
+                    EvaluatedLvalue::Literal(obj) => Some(obj),
+                    _ => None,
+                })
+                .collect::<Vec<Option<&Obj>>>();
+            let res = f.destructure(rhs.clone(), known)?;
+            if res.len() == args.len() {
+                assign_all(env, args, rt, &res)
+            } else {
+                Err(NErr::type_error(format!(
+                    "{} destructure length didn't match: {:?} {:?}",
+                    f.builtin_name(),
+                    res,
+                    args
+                )))
+            }
+        }
     }
 }
 
@@ -5190,6 +5387,26 @@ fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &O
                 Err(NErr::type_error(format!(
                     "Literal pattern didn't match: {} {}",
                     obj, rhs
+                )))
+            }
+        }
+        EvaluatedLvalue::Destructure(f, args) => {
+            let known = args
+                .iter()
+                .map(|e| match &**e {
+                    EvaluatedLvalue::Literal(obj) => Some(obj),
+                    _ => None,
+                })
+                .collect::<Vec<Option<&Obj>>>();
+            let res = f.destructure(rhs.clone(), known)?;
+            if res.len() == args.len() {
+                assign_all(env, args, rt, &res)
+            } else {
+                Err(NErr::type_error(format!(
+                    "{} destructure length didn't match: {:?} {:?}",
+                    f.builtin_name(),
+                    res,
+                    args
                 )))
             }
         }
@@ -5257,6 +5474,10 @@ fn modify_every(
         EvaluatedLvalue::Literal(_) => {
             Err(NErr::type_error(format!("Can't modify literal {:?}", lhs)))
         }
+        EvaluatedLvalue::Destructure(..) => Err(NErr::type_error(format!(
+            "Can't modify destructure {:?}",
+            lhs
+        ))),
     }
 }
 
@@ -5424,6 +5645,18 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
             Box::new(eval_lvalue(env, b)?),
         )),
         Lvalue::Literal(obj) => Ok(EvaluatedLvalue::Literal(obj.clone())),
+        Lvalue::Destructure(f, args) => match evaluate(env, f)? {
+            Obj::Func(Func::Builtin(b), _) => Ok(EvaluatedLvalue::Destructure(
+                b,
+                args.iter()
+                    .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
+                    .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
+            )),
+            ef => Err(NErr::type_error(format!(
+                "destructure callee was not builtin, got {}",
+                ef
+            ))),
+        },
     }
 }
 
@@ -5788,6 +6021,9 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         )),
         // seems questionable
         Lvalue::Literal(x) => Ok(x.clone()),
+        Lvalue::Destructure(..) => Err(NErr::syntax_error(
+            "Can't evaluate destructure on LHS of assignment??".to_string(),
+        )),
     }
 }
 
@@ -6548,6 +6784,12 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
             box_freeze_lvalue(bound, env, a)?,
             box_freeze_lvalue(bound, env, b)?,
         )),
+        Lvalue::Destructure(f, args) => Ok(Lvalue::Destructure(
+            box_freeze(bound, env, f)?,
+            args.iter()
+                .map(|e| box_freeze_lvalue(bound, env, e))
+                .collect::<NRes<Vec<Box<Lvalue>>>>()?,
+        )),
     }
 }
 
@@ -7162,20 +7404,8 @@ pub fn initialize(env: &mut Env) {
         body: |arg| Ok(Obj::from(!arg.truthy())),
     });
 
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "+".to_string(),
-        body: |a, b| Ok(Obj::Num(a + b)),
-    });
-    env.insert_builtin(BasicBuiltin {
-        name: "-".to_string(),
-        can_refer: false,
-        body: |_env, args| match few2(args) {
-            Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
-            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b),
-            Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
-        },
-    });
+    env.insert_builtin(Plus);
+    env.insert_builtin(Minus);
     env.insert_builtin(BasicBuiltin {
         name: "~".to_string(),
         can_refer: false,
@@ -7199,10 +7429,7 @@ pub fn initialize(env: &mut Env) {
         name: "⊕".to_string(),
         body: |a, b| Ok(Obj::Num(a ^ b)),
     });
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "*".to_string(),
-        body: |a, b| Ok(Obj::Num(a * b)),
-    });
+    env.insert_builtin(Times);
     env.insert_builtin(OneArgBuiltin {
         name: "sum".to_string(),
         can_refer: false,
@@ -8770,7 +8997,10 @@ pub fn initialize(env: &mut Env) {
                         .mut_top_env(|t| t.input.read_to_string(&mut input))
                     {
                         Ok(_) => f.run(env, vec![Obj::from(input)]),
-                        Err(msg) => Err(NErr::value_error(format!("interact: input failed: {}", msg))),
+                        Err(msg) => Err(NErr::value_error(format!(
+                            "interact: input failed: {}",
+                            msg
+                        ))),
                     }
                 }
                 _ => Err(NErr::type_error("not callable".to_string())),

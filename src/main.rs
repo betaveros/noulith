@@ -105,7 +105,7 @@ fn main() {
             Err(_) => {
                 panic!("opening code file failed");
             }
-        }
+        },
         [_, f, code] => {
             if f == "-e" {
                 run_code(&code);
