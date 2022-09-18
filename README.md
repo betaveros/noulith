@@ -181,6 +181,16 @@ x := [1, 2]; x (zip+)= [3, 4]
 
 `x` is `[4, 6]`. In particular when you want to write `a = f(a)` you can just write `a .= f` because `.` is function application.
 
+One corner case in the semantics here: While the operator is being called, the LHS variable will be null. That is, the following code will print `null`:
+
+```
+x := 0
+f := \a: (print x; a)
+x .= f
+```
+
+This allows us to not have to keep an extra copy of the LHS variable in common cases where we "modify" it, so code like `x append= y` is actually efficient (see discussion of immutability below).
+
 The weird keyword `every` lets you assign to or operate on multiple variables or elements of a slice at once. This initializes three variables to `1`.
 
 ```
@@ -212,6 +222,13 @@ z := remove x[0]
 ```
 
 `y` will be `5`, `z` will be `a`, and `x` will be `[2, 3, 4]`. There's no way to implement `pop` as a function yourself; the best you could do is take a list and separately return the last element and everything before it.
+
+You can implement your own "mutable data cells" easily (?) with a closure:
+
+```
+make_cell := \init: (x := init; [\: x, \y: (x = y)])
+get_a, set_a := make_cell(0)
+```
 
 ### Control Flow
 

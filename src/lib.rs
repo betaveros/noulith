@@ -1764,28 +1764,6 @@ impl Func {
         }
     }
 
-    // Whether this might possibly look up a name in an environment
-    fn can_refer(&self) -> bool {
-        match self {
-            Func::Builtin(b) => b.can_refer(),
-            Func::Closure(_) => true,
-            Func::PartialApp1(f, _) => f.can_refer(),
-            Func::PartialApp2(f, _) => f.can_refer(),
-            Func::PartialAppLast(f, _) => f.can_refer(),
-            Func::Composition(f, g) => f.can_refer() || g.can_refer(),
-            Func::OnComposition(f, g) => f.can_refer() || g.can_refer(),
-            Func::Parallel(fs) => fs.iter().any(|f| f.can_refer()),
-            Func::Fanout(fs) => fs.iter().any(|f| f.can_refer()),
-            Func::Flip(f) => f.can_refer(),
-            Func::ListSection(_) => false,
-            Func::ChainSection(..) => true, // FIXME
-            Func::CallSection(..) => true,  // FIXME
-            Func::IndexSection(..) => false,
-            Func::SliceSection(..) => false,
-            Func::Type(_) => false,
-        }
-    }
-
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match self {
             Func::Builtin(b) => b.try_chain(other),
@@ -1847,10 +1825,6 @@ pub trait Builtin: Debug {
         None
     }
 
-    fn can_refer(&self) -> bool {
-        false
-    }
-
     // even if lhs has literals, return them verbatim anyway
     fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
         Err(NErr::type_error(format!(
@@ -1890,9 +1864,6 @@ impl Builtin for Plus {
 
     fn builtin_name(&self) -> &str {
         "+"
-    }
-    fn can_refer(&self) -> bool {
-        false
     }
 
     // Haskell deprecated NPlusKPatterns for a good reason but we don't care about good reason over
@@ -1936,9 +1907,6 @@ impl Builtin for Minus {
 
     fn builtin_name(&self) -> &str {
         "-"
-    }
-    fn can_refer(&self) -> bool {
-        false
     }
 
     fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
@@ -1984,9 +1952,6 @@ impl Builtin for Times {
 
     fn builtin_name(&self) -> &str {
         "*"
-    }
-    fn can_refer(&self) -> bool {
-        false
     }
 
     // even worse than NPlusKPatterns maybe (TODO there's like paired divmod stuff right)
@@ -2935,9 +2900,6 @@ impl Builtin for Group {
     fn builtin_name(&self) -> &str {
         "group"
     }
-    fn can_refer(&self) -> bool {
-        true
-    }
 }
 
 // conditional partial application, and also I want aliases
@@ -2957,9 +2919,6 @@ impl Builtin for Sort {
     fn builtin_name(&self) -> &str {
         "sort"
     }
-    fn can_refer(&self) -> bool {
-        true
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -2973,15 +2932,11 @@ impl Builtin for Preposition {
     fn builtin_name(&self) -> &str {
         &self.0
     }
-    fn can_refer(&self) -> bool {
-        false
-    }
 }
 
 #[derive(Clone)]
 pub struct BasicBuiltin {
     name: String,
-    can_refer: bool,
     body: fn(env: &REnv, args: Vec<Obj>) -> NRes<Obj>,
 }
 
@@ -2994,9 +2949,9 @@ macro_rules! standard_three_part_debug {
                     fmt,
                     concat!(
                         stringify!($name),
-                        " {{ name: {:?}, can_refer: {:?}, body: {:?} }}"
+                        " {{ name: {:?}, body: {:?} }}"
                     ),
-                    self.name, self.can_refer, self.body as usize
+                    self.name, self.body as usize
                 )
             }
         }
@@ -3012,15 +2967,11 @@ impl Builtin for BasicBuiltin {
     fn builtin_name(&self) -> &str {
         &self.name
     }
-    fn can_refer(&self) -> bool {
-        self.can_refer
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct OneArgBuiltin {
     name: String,
-    can_refer: bool,
     body: fn(a: Obj) -> NRes<Obj>,
 }
 
@@ -3039,15 +2990,11 @@ impl Builtin for OneArgBuiltin {
     fn builtin_name(&self) -> &str {
         &self.name
     }
-    fn can_refer(&self) -> bool {
-        self.can_refer
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct TwoArgBuiltin {
     name: String,
-    can_refer: bool,
     body: fn(a: Obj, b: Obj) -> NRes<Obj>,
 }
 
@@ -3068,9 +3015,6 @@ impl Builtin for TwoArgBuiltin {
     fn builtin_name(&self) -> &str {
         &self.name
     }
-    fn can_refer(&self) -> bool {
-        self.can_refer
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -3082,7 +3026,6 @@ pub struct OneNumBuiltin {
 #[derive(Clone)]
 pub struct EnvOneArgBuiltin {
     name: String,
-    can_refer: bool,
     body: fn(env: &REnv, a: Obj) -> NRes<Obj>,
 }
 standard_three_part_debug!(EnvOneArgBuiltin);
@@ -3102,15 +3045,11 @@ impl Builtin for EnvOneArgBuiltin {
     fn builtin_name(&self) -> &str {
         &self.name
     }
-    fn can_refer(&self) -> bool {
-        self.can_refer
-    }
 }
 
 #[derive(Clone)]
 pub struct EnvTwoArgBuiltin {
     name: String,
-    can_refer: bool,
     body: fn(env: &REnv, a: Obj, b: Obj) -> NRes<Obj>,
 }
 standard_three_part_debug!(EnvTwoArgBuiltin);
@@ -3131,9 +3070,6 @@ impl Builtin for EnvTwoArgBuiltin {
 
     fn builtin_name(&self) -> &str {
         &self.name
-    }
-    fn can_refer(&self) -> bool {
-        self.can_refer
     }
 }
 
@@ -3176,9 +3112,6 @@ impl Builtin for OneNumBuiltin {
     fn builtin_name(&self) -> &str {
         &self.name
     }
-    fn can_refer(&self) -> bool {
-        false
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -3207,10 +3140,6 @@ impl Builtin for NumsBuiltin {
 
     fn builtin_name(&self) -> &str {
         &self.name
-    }
-
-    fn can_refer(&self) -> bool {
-        false
     }
 }
 
@@ -3275,10 +3204,6 @@ impl Builtin for TwoNumsBuiltin {
 
     fn builtin_name(&self) -> &str {
         &self.name
-    }
-
-    fn can_refer(&self) -> bool {
-        false
     }
 }
 
@@ -6502,10 +6427,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &Expr) -> NRes<Obj> {
                             Expr::CommaSeq(xs) => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        if !ff.can_refer() {
-                            // Drop the Rc from the lvalue so that pure functions can try to consume it
-                            assign(&env, &p, None, &Obj::Null)?;
-                        }
+                        // Drop the Rc from the lvalue so that functions can try to consume it. We
+                        // used to only do this when the function was pure, but that required a
+                        // stupid amount of code to bookkeep and prevents users from writing
+                        // consuming modifiers. Instead it's now enshrined into the semantics.
+                        assign(&env, &p, None, &Obj::Null)?;
                         let fres = ff.run(env, vec![pv, res])?;
                         assign(&env, &p, None, &fres)?;
                         Ok(Obj::Null)
@@ -7413,17 +7339,14 @@ pub fn initialize(env: &mut Env) {
         .unwrap();
     env.insert_builtin(TwoArgBuiltin {
         name: "and'".to_string(),
-        can_refer: false,
         body: |a, b| Ok(if a.truthy() { b } else { a }),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "or'".to_string(),
-        can_refer: false,
         body: |a, b| Ok(if a.truthy() { a } else { b }),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "not".to_string(),
-        can_refer: false,
         body: |arg| Ok(Obj::from(!arg.truthy())),
     });
 
@@ -7431,7 +7354,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Minus);
     env.insert_builtin(BasicBuiltin {
         name: "~".to_string(),
-        can_refer: false,
         body: |_env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s),
@@ -7455,7 +7377,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Times);
     env.insert_builtin(OneArgBuiltin {
         name: "sum".to_string(),
-        can_refer: false,
         body: |mut arg| {
             let mut acc = NNum::from(0);
             for x in mut_obj_into_iter(&mut arg, "sum")? {
@@ -7469,7 +7390,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "product".to_string(),
-        can_refer: false,
         body: |mut arg| {
             let mut acc = NNum::from(1);
             for x in mut_obj_into_iter(&mut arg, "product")? {
@@ -7682,7 +7602,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ToBuiltin);
     env.insert_builtin(OneArgBuiltin {
         name: "ord".to_string(),
-        can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => {
                 if s.len() != 1 {
@@ -7696,7 +7615,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "chr".to_string(),
-        can_refer: false,
         body: |arg| match arg {
             Obj::Num(n) => Ok(Obj::from(
                 nnum::char_from_bigint(&into_bigint_ok(n)?)
@@ -7708,7 +7626,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "len".to_string(),
-        can_refer: false,
         body: |arg| match arg {
             Obj::Seq(s) => match s.len() {
                 Some(n) => Ok(Obj::from(n)),
@@ -7719,17 +7636,14 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "then".to_string(),
-        can_refer: true,
         body: |env, a, b| call(env, b, vec![a]),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "apply".to_string(),
-        can_refer: true,
         body: |env, mut a, b| call(env, b, mut_obj_into_iter(&mut a, "apply")?.collect()),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "of".to_string(),
-        can_refer: true,
         body: |env, a, mut b| call(env, a, mut_obj_into_iter(&mut b, "of")?.collect()),
     });
     env.insert_builtin(Preposition("by".to_string()));
@@ -7738,57 +7652,46 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Preposition("default".to_string()));
     env.insert_builtin(TwoArgBuiltin {
         name: "in".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(a, b)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "∈".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(a, b)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "not_in".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(!obj_in(a, b)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "∉".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(!obj_in(a, b)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "contains".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "∋".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(obj_in(b, a)?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "∌".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(!obj_in(b, a)?)),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: ".".to_string(),
-        can_refer: true,
         body: |env, a, b| call(env, b, vec![a]),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: ".>".to_string(),
-        can_refer: true,
         body: |env, a, b| call(env, b, vec![a]),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "<.".to_string(),
-        can_refer: true,
         body: |env, a, b| call(env, a, vec![b]),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ">>>".to_string(),
-        can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
                 Func::Composition(Box::new(g), Box::new(f)),
@@ -7800,7 +7703,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin_with_alias(
         TwoArgBuiltin {
             name: "<<<".to_string(),
-            can_refer: true,
             body: |a, b| match (a, b) {
                 (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
                     Func::Composition(Box::new(f), Box::new(g)),
@@ -7813,7 +7715,6 @@ pub fn initialize(env: &mut Env) {
     );
     env.insert_builtin(TwoArgBuiltin {
         name: "on".to_string(),
-        can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Func(f, _), Obj::Func(g, _)) => Ok(Obj::Func(
                 Func::OnComposition(Box::new(f), Box::new(g)),
@@ -7824,17 +7725,14 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "repeat".to_string(),
-        can_refer: false,
         body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Repeat(a))))),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "cycle".to_string(),
-        can_refer: false,
         body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Cycle(to_rc_vec_obj(a)?, 0))))),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "iota".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
                 x,
@@ -7846,7 +7744,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "permutations".to_string(),
-        can_refer: false,
         body: |a| {
             let v = to_rc_vec_obj(a)?;
             let iv = Rc::new((0..v.len()).collect());
@@ -7855,7 +7752,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "combinations".to_string(),
-        can_refer: false,
         body: |a, b| {
             let v = to_rc_vec_obj(a)?;
             match b {
@@ -7872,7 +7768,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "subsequences".to_string(),
-        can_refer: false,
         body: |a| {
             let v = to_rc_vec_obj(a)?;
             let iv = Rc::new(vec![false; v.len()]);
@@ -7881,7 +7776,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "iterate".to_string(),
-        can_refer: true,
         body: |env, a, f| match f {
             Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Rc::new(Iterate(Some((
                 a,
@@ -7893,7 +7787,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "each".to_string(),
-        can_refer: true,
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "each")?;
             match b {
@@ -7909,7 +7802,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
-        can_refer: true,
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "map")?;
             match b {
@@ -7923,7 +7815,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_keys".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
                 Rc::make_mut(&mut d)
@@ -7937,7 +7828,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_values".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
                 Rc::make_mut(&mut d)
@@ -7954,7 +7844,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "flatten".to_string(),
-        can_refer: false,
         body: |mut a| {
             let mut acc = Vec::new();
             for mut e in mut_obj_into_iter(&mut a, "flatten (outer)")? {
@@ -7968,7 +7857,6 @@ pub fn initialize(env: &mut Env) {
     // haxx
     env.insert_builtin(OneArgBuiltin {
         name: "keys".to_string(),
-        can_refer: false,
         body: |mut a| {
             let mut acc = Vec::new();
             for (k, _) in mut_obj_into_iter_pairs(&mut a, "keys")? {
@@ -7979,7 +7867,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "values".to_string(),
-        can_refer: false,
         body: |mut a| {
             let mut acc = Vec::new();
             for (_, v) in mut_obj_into_iter_pairs(&mut a, "values")? {
@@ -7990,7 +7877,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
-        can_refer: true,
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "flat_map (outer)")?;
             match b {
@@ -8014,7 +7900,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Fanout);
     env.insert_builtin(EnvOneArgBuiltin {
         name: "transpose".to_string(),
-        can_refer: false,
         body: |_env, a| {
             let mut v = to_rc_vec_obj(a)?;
             let v = Rc::make_mut(&mut v);
@@ -8037,7 +7922,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
@@ -8047,7 +7931,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "reject".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
@@ -8057,7 +7940,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "partition".to_string(),
-        can_refer: true,
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "partition")?;
             match b {
@@ -8079,7 +7961,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "any".to_string(),
-        can_refer: true,
         body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(
@@ -8098,7 +7979,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "all".to_string(),
-        can_refer: true,
         body: |env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
             Few2::One(mut a) => Ok(Obj::from(
@@ -8118,7 +7998,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "count".to_string(),
-        can_refer: true,
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "count")?;
             let mut c = 0usize;
@@ -8145,7 +8024,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Merge);
     env.insert_builtin(OneArgBuiltin {
         name: "unique".to_string(),
-        can_refer: true,
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(multi_unique(s)?)),
             _ => Err(NErr::generic_argument_error()),
@@ -8153,7 +8031,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "window".to_string(),
-        can_refer: true,
         body: |a, b| match (a, b) {
             (Obj::Seq(s), Obj::Num(n)) => match to_usize_ok(&n)? {
                 0 => Err(NErr::value_error("can't window 0".to_string())),
@@ -8164,7 +8041,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "prefixes".to_string(),
-        can_refer: true,
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::list(multi_prefixes(s)?)),
             _ => Err(NErr::value_error("not number".to_string())),
@@ -8172,7 +8048,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "suffixes".to_string(),
-        can_refer: true,
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::list(multi_suffixes(s)?)),
             _ => Err(NErr::value_error("not number".to_string())),
@@ -8180,7 +8055,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "frequencies".to_string(),
-        can_refer: true,
         body: |mut a| {
             let it = mut_obj_into_iter(&mut a, "frequencies")?;
             let mut c = HashMap::<ObjKey, usize>::new();
@@ -8197,7 +8071,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Scan);
     env.insert_builtin(TwoArgBuiltin {
         name: "append".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::List(mut a)), b) => {
                 Rc::make_mut(&mut a).push(b.clone());
@@ -8208,7 +8081,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "<=>".to_string(),
-        can_refer: false,
         body: |a, b| match ncmp(&a, &b) {
             Ok(Ordering::Less) => Ok(Obj::Num(-NNum::from(1))),
             Ok(Ordering::Equal) => Ok(Obj::zero()),
@@ -8218,7 +8090,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ">=<".to_string(),
-        can_refer: false,
         body: |a, b| match ncmp(&a, &b) {
             Ok(Ordering::Less) => Ok(Obj::Num(NNum::from(1))),
             Ok(Ordering::Equal) => Ok(Obj::Num(NNum::from(0))),
@@ -8236,7 +8107,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "print".to_string(),
-        can_refer: false,
         body: |env, args| {
             try_borrow_nres(env, "print", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
@@ -8257,7 +8127,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "write".to_string(),
-        can_refer: false,
         body: |env, args| {
             try_borrow_nres(env, "write", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
@@ -8272,7 +8141,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "echo".to_string(),
-        can_refer: false,
         body: |env, args| {
             try_borrow_nres(env, "echo", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
@@ -8292,7 +8160,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
-        can_refer: false,
         body: |env, args| {
             try_borrow_nres(env, "debug", &format!("{}", args.len()))?
                 .mut_top_env(|t| -> io::Result<()> {
@@ -8312,7 +8179,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "is".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(is_type(&to_type(&b, "builtin 'is'")?, &a))),
     });
     env.insert_type(ObjType::Null);
@@ -8330,7 +8196,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_type(ObjType::Any);
     env.insert_builtin(EnvOneArgBuiltin {
         name: "satisfying".to_string(),
-        can_refer: false,
         body: |env, arg| match arg {
             Obj::Func(f, _) => Ok(Obj::Func(
                 Func::Type(ObjType::Satisfying(env.clone(), Box::new(f))),
@@ -8341,7 +8206,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
-        can_refer: false,
         body: |_env, args| {
             let mut acc = String::new();
             for arg in args {
@@ -8352,12 +8216,10 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "$$".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(format!("{}{}", a, b))),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "*$".to_string(),
-        can_refer: false,
         body: |a, b| {
             Ok(Obj::from(
                 format!("{}", b).repeat(obj_clamp_to_usize_ok(&a)?),
@@ -8366,7 +8228,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "$*".to_string(),
-        can_refer: false,
         body: |a, b| {
             Ok(Obj::from(
                 format!("{}", a).repeat(obj_clamp_to_usize_ok(&b)?),
@@ -8375,7 +8236,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "upper".to_string(),
-        can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_uppercase())),
             _ => Err(NErr::type_error("expected string".to_string())),
@@ -8383,7 +8243,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "lower".to_string(),
-        can_refer: false,
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.to_lowercase())),
             _ => Err(NErr::type_error("expected string".to_string())),
@@ -8394,7 +8253,6 @@ pub fn initialize(env: &mut Env) {
         ($name:expr, $pred:expr) => {
             env.insert_builtin(OneArgBuiltin {
                 name: $name.to_string(),
-                can_refer: false,
                 body: |arg| match arg {
                     Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.chars().all($pred))),
                     _ => Err(NErr::type_error("expected string".to_string())),
@@ -8412,12 +8270,10 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(TwoArgBuiltin {
         name: "join".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "split".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
                 s.split(&*t).map(|w| Obj::from(w.to_string())).collect(),
@@ -8427,7 +8283,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "starts_with".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => {
                 Ok(Obj::from(s.starts_with(&*t)))
@@ -8437,7 +8292,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "ends_with".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.ends_with(&*t))),
             _ => Err(NErr::argument_error(":(".to_string())),
@@ -8445,7 +8299,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "strip".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
             _ => Err(NErr::argument_error(":(".to_string())),
@@ -8453,7 +8306,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "trim".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
             _ => Err(NErr::argument_error(":(".to_string())),
@@ -8461,7 +8313,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "words".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::list(
                 s.split_whitespace().map(|w| Obj::from(w)).collect(),
@@ -8471,7 +8322,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "lines".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::list(
                 s.split_terminator('\n')
@@ -8483,12 +8333,10 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "unwords".to_string(),
-        can_refer: false,
         body: |a| Ok(Obj::from(simple_join(a, " ")?)),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "unlines".to_string(),
-        can_refer: false,
         body: |a| {
             let mut s = simple_join(a, "\n")?;
             s.push('\n');
@@ -8498,7 +8346,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(TwoArgBuiltin {
         name: "search".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
                 let r = Regex::new(&b)
@@ -8520,7 +8367,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "search_all".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
                 let r = Regex::new(&b)
@@ -8554,17 +8400,14 @@ pub fn initialize(env: &mut Env) {
     // Haskell-ism for partial application (when that works)
     env.insert_builtin(TwoArgBuiltin {
         name: "!!".to_string(),
-        can_refer: false,
         body: index,
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "!?".to_string(),
-        can_refer: false,
         body: safe_index,
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "!%".to_string(),
-        can_refer: false,
         body: obj_cyclic_index,
     });
 
@@ -8572,7 +8415,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin_with_alias(
         TwoArgBuiltin {
             name: "++".to_string(),
-            can_refer: false,
             body: |a, b| match (a, b) {
                 (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
                     Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
@@ -8585,7 +8427,6 @@ pub fn initialize(env: &mut Env) {
     );
     env.insert_builtin(TwoArgBuiltin {
         name: ".+".to_string(),
-        can_refer: false,
         body: |a, b| match b {
             Obj::Seq(Seq::List(mut b)) => {
                 Rc::make_mut(&mut b).insert(0, a);
@@ -8596,7 +8437,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "+.".to_string(),
-        can_refer: false,
         body: |a, b| match a {
             Obj::Seq(Seq::List(mut a)) => {
                 Rc::make_mut(&mut a).push(b);
@@ -8607,28 +8447,23 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "..".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::list(vec![a, b])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "=>".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::list(vec![a, b])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "*.".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::list(vec![b; obj_clamp_to_usize_ok(&a)?])),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ".*".to_string(),
-        can_refer: false,
         body: |a, b| Ok(Obj::list(vec![a; obj_clamp_to_usize_ok(&b)?])),
     });
     env.insert_builtin_with_alias(CartesianProduct, "×");
     env.insert_builtin(TwoArgBuiltin {
         name: "^^".to_string(),
-        can_refer: false,
         body: |a, b| {
             let v = to_rc_vec_obj(a)?;
             match b {
@@ -8647,17 +8482,14 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "id".to_string(),
-        can_refer: false,
         body: |a| Ok(a),
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "const".to_string(),
-        can_refer: false,
         body: |_, b| Ok(b),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "flip".to_string(),
-        can_refer: true,
         body: |a| match a {
             Obj::Func(f, _) => Ok(Obj::Func(Func::Flip(Box::new(f)), Precedence::zero())),
             _ => Err(NErr::type_error("not function".to_string())),
@@ -8665,7 +8497,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "first".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 0),
             _ => Err(NErr::generic_argument_error()),
@@ -8673,7 +8504,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "second".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 1),
             _ => Err(NErr::generic_argument_error()),
@@ -8681,7 +8511,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "third".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 2),
             _ => Err(NErr::generic_argument_error()),
@@ -8689,7 +8518,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "last".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, -1),
             _ => Err(NErr::generic_argument_error()),
@@ -8697,12 +8525,10 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "tail".to_string(),
-        can_refer: false,
         body: |a| slice(a, Some(Obj::one()), None),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "take".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => take_while(s, f, env),
             (a, b) => slice(a, None, Some(b)),
@@ -8710,7 +8536,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "drop".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => drop_while(s, f, env),
             (a, b) => slice(a, Some(b), None),
@@ -8718,7 +8543,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "find".to_string(),
-        can_refer: true,
         body: |env, mut a, b| match b {
             Obj::Func(f, _) => {
                 let mut it = mut_obj_into_iter(&mut a, "find")?;
@@ -8734,7 +8558,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "find?".to_string(),
-        can_refer: true,
         body: |env, mut a, b| match b {
             Obj::Func(f, _) => {
                 let mut it = mut_obj_into_iter(&mut a, "find?")?;
@@ -8750,7 +8573,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "index".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "index")?.enumerate();
@@ -8781,7 +8603,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "index?".to_string(),
-        can_refer: true,
         body: |env, a, b| match (a, b) {
             (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "index?")?.enumerate();
@@ -8813,7 +8634,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Sort);
     env.insert_builtin(OneArgBuiltin {
         name: "reverse".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(multi_reverse(s)?)),
             _ => Err(NErr::generic_argument_error()),
@@ -8823,7 +8643,6 @@ pub fn initialize(env: &mut Env) {
     // Dicts
     env.insert_builtin(TwoArgBuiltin {
         name: "||".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(mut b, _))) => {
                 Rc::make_mut(&mut a).extend(Rc::make_mut(&mut b).drain());
@@ -8834,7 +8653,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "|.".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
                 Rc::make_mut(&mut a).insert(to_key(b)?, Obj::Null);
@@ -8845,7 +8663,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "discard".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
@@ -8856,7 +8673,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "-.".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
@@ -8867,7 +8683,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "insert".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(mut s)) => {
                 let mut it = mut_seq_into_iter(&mut s);
@@ -8885,7 +8700,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "|..".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(mut s)) => {
                 let mut it = mut_seq_into_iter(&mut s);
@@ -8902,7 +8716,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "&&".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
                 Rc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
@@ -8913,7 +8726,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "--".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
                 Rc::make_mut(&mut a).retain(|k, _| !b.contains_key(k));
@@ -8924,7 +8736,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "set".to_string(),
-        can_refer: false,
         body: |mut a| {
             Ok(Obj::dict(
                 mut_obj_into_iter(&mut a, "set conversion")?
@@ -8936,7 +8747,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "items".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(mut s @ Seq::Dict(..)) => Ok(Obj::list(
                 mut_seq_into_iter_pairs(&mut s)
@@ -8948,7 +8758,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "enumerate".to_string(),
-        can_refer: false,
         body: |mut a| {
             Ok(Obj::list(
                 mut_obj_into_iter(&mut a, "enumerate conversion")?
@@ -8961,7 +8770,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
-        can_refer: false,
         body: |env, a| match a {
             Obj::Seq(Seq::String(r)) => match parse(&r) {
                 Ok(Some(code)) => evaluate(env, &code),
@@ -8974,7 +8782,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(BasicBuiltin {
         name: "input".to_string(),
-        can_refer: false,
         body: |env, args| {
             if args.is_empty() {
                 let mut input = String::new();
@@ -8991,7 +8798,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(BasicBuiltin {
         name: "read".to_string(),
-        can_refer: false,
         body: |env, args| {
             if args.is_empty() {
                 let mut input = String::new();
@@ -9010,7 +8816,6 @@ pub fn initialize(env: &mut Env) {
     // Haskell-ism
     env.insert_builtin(EnvOneArgBuiltin {
         name: "interact".to_string(),
-        can_refer: false,
         body: |env, arg| {
             match arg {
                 Obj::Func(f, _) => {
@@ -9034,7 +8839,6 @@ pub fn initialize(env: &mut Env) {
     // TODO safety, wasm version
     env.insert_builtin(OneArgBuiltin {
         name: "read_file".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::read_to_string(&*s) {
                 Ok(c) => Ok(Obj::from(c)),
@@ -9045,7 +8849,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "read_file?".to_string(),
-        can_refer: false,
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::File::open(&*s) {
                 Ok(mut f) => {
@@ -9068,7 +8871,6 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "write_file".to_string(),
-        can_refer: false,
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
                 match fs::write(f.as_str(), s.as_bytes()) {
@@ -9083,7 +8885,6 @@ pub fn initialize(env: &mut Env) {
     // this isn't a very good assert
     env.insert_builtin(OneArgBuiltin {
         name: "assert".to_string(),
-        can_refer: false,
         body: |a| {
             if a.truthy() {
                 Ok(Obj::Null)
@@ -9095,7 +8896,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(BasicBuiltin {
         name: "time".to_string(),
-        can_refer: false,
         body: |_env, args| {
             if args.is_empty() {
                 match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
@@ -9110,7 +8910,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(BasicBuiltin {
         name: "now".to_string(),
-        can_refer: false,
         body: |_env, args| match few(args) {
             Few::Zero => Ok(datetime_to_obj(Local::now())),
             Few::One(t) => match t {
@@ -9128,7 +8927,6 @@ pub fn initialize(env: &mut Env) {
     // l m a o
     env.insert_builtin(BasicBuiltin {
         name: "import".to_string(),
-        can_refer: false,
         body: |env, args| {
             let mut ret = Obj::Null;
             for arg in args {
@@ -9151,7 +8949,6 @@ pub fn initialize(env: &mut Env) {
     #[cfg(feature = "request")]
     env.insert_builtin(BasicBuiltin {
         name: "request".to_string(),
-        can_refer: false,
         body: |_env, args| {
             let resp = match few2(args) {
                 Few2::One(Obj::Seq(Seq::String(url))) => reqwest::blocking::get(&*url)
@@ -9197,7 +8994,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(OneArgBuiltin {
         name: "freeze".to_string(),
-        can_refer: true,
         body: |a| match a {
             Obj::Func(Func::Closure(c), p) => {
                 let bound = c
@@ -9222,7 +9018,6 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(BasicBuiltin {
         name: "vars".to_string(),
-        can_refer: false,
         body: |env, _args| {
             Ok(Obj::Seq(Seq::Dict(
                 Rc::new(
