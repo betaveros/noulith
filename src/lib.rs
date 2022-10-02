@@ -2100,25 +2100,51 @@ impl Builtin for ComparisonOperator {
     }
 
     fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
-        if !self.chained.is_empty() {
-            Err(NErr::value_error("chained comparison operator destructuring??".to_string()))?
+        if self.chained.len() + 2 != lhs.len() {
+            Err(NErr::argument_error(format!(
+                "Chained comparison operator destructuring got the wrong number of args"
+            )))?
         }
-        match few2(lhs) {
-            Few2::Two(Some(a), None) => {
-                if (self.accept)(a, &rvalue)? {
-                    Ok(vec![a.clone(), rvalue])
-                } else {
-                    Err(NErr::value_error("comparison destructure failed".to_string()))
+
+        // Just copy rvalue into slots
+        // then run the comparison
+        let slots = lhs.iter().filter(|x| x.is_none()).count();
+        if slots == 0 {
+            Err(NErr::argument_error(format!(
+                "Chained comparison operator destructuring: all literals??"
+            )))?
+        }
+        let rvalues = if slots == 1 {
+            vec![rvalue]
+        } else {
+            obj_to_cloning_iter(&rvalue, "comparison unpacking")?
+                .collect::<Vec<Obj>>()
+        };
+        let mut ret = Vec::new();
+        let mut riter = rvalues.into_iter();
+        for x in lhs {
+            match x {
+                None => match riter.next() {
+                    Some(t) => ret.push(t),
+                    None => Err(NErr::argument_error(format!(
+                        "Chained comparison operator ran out of ok rvalues"
+                    )))?
                 }
+                Some(x) => ret.push(x.clone())
             }
-            Few2::Two(None, Some(a)) => {
-                if (self.accept)(&rvalue, a)? {
-                    Ok(vec![rvalue, a.clone()])
-                } else {
-                    Err(NErr::value_error("comparison destructure failed".to_string()))
-                }
-            }
-            _ => Err(NErr::type_error("comparison destructure failed".to_string())),
+        }
+        if riter.next().is_some() {
+            Err(NErr::argument_error(format!(
+                                    "Chained comparison operator too many rvalues"
+                                )))?
+        }
+
+        // FIXME because we only chain with comparison operators we should be able to do stuff but
+        // it's hard/annoying
+        if self.run(&Rc::new(RefCell::new(Env::empty())), ret.clone())?.truthy() {
+            Ok(ret)
+        } else {
+            Err(NErr::value_error("comparison destructure failed".to_string()))
         }
     }
 }
@@ -3372,6 +3398,7 @@ pub enum Lvalue {
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
     Destructure(Box<Expr>, Vec<Box<Lvalue>>),
+    ChainDestructure(Box<Lvalue>, Vec<(Box<Expr>, Box<Lvalue>)>),
 }
 
 impl Lvalue {
@@ -3386,6 +3413,9 @@ impl Lvalue {
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
             Lvalue::Destructure(_, vs) => vs.iter().any(|e| e.any_literals()),
+            Lvalue::ChainDestructure(lv, vs) => {
+                lv.any_literals() || vs.iter().any(|e| e.1.any_literals())
+            }
         }
     }
 
@@ -3404,6 +3434,13 @@ impl Lvalue {
                 s
             }
             Lvalue::Destructure(_, b) => b.iter().flat_map(|e| e.collect_identifiers()).collect(),
+            Lvalue::ChainDestructure(lv, vs) => {
+                let mut s = lv.collect_identifiers();
+                for x in vs {
+                    s.extend(x.1.collect_identifiers());
+                }
+                s
+            }
         }
     }
 }
@@ -3459,14 +3496,12 @@ fn to_lvalue(expr: Expr) -> Result<Lvalue, String> {
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
                 .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
         )),
-        // only one-chains allowed, for now
-        Expr::Chain(lhs, mut args) if args.len() == 1 => {
-            let arg = args.pop().unwrap();
-            Ok(Lvalue::Destructure(
-                arg.0,
-                vec![Box::new(to_lvalue(*lhs)?), Box::new(to_lvalue(*arg.1)?)],
-            ))
-        }
+        Expr::Chain(lhs, args) => Ok(Lvalue::ChainDestructure(
+            Box::new(to_lvalue(*lhs)?),
+            args.into_iter()
+                .map(|(e, v)| Ok((e, Box::new(to_lvalue(*v)?))))
+                .collect::<Result<Vec<(Box<Expr>, Box<Lvalue>)>, String>>()?,
+        )),
         _ => Err(format!("can't to_lvalue {:?}", expr)),
     }
 }
@@ -5532,6 +5567,85 @@ impl ChainEvaluator {
     }
 }
 
+struct LvalueChainEvaluator {
+    operands: Vec<Vec<Box<EvaluatedLvalue>>>,
+    operators: Vec<(Func, Precedence)>,
+}
+
+impl LvalueChainEvaluator {
+    fn new(operand: EvaluatedLvalue) -> LvalueChainEvaluator {
+        LvalueChainEvaluator {
+            operands: vec![vec![Box::new(operand)]],
+            operators: Vec::new(),
+        }
+    }
+
+    fn run_top_popped(&mut self, op: Func) -> NRes<()> {
+        let mut rhs = self.operands.pop().expect("sync");
+        let mut lhs = self.operands.pop().expect("sync");
+        match op {
+            Func::Builtin(b) => {
+                lhs.append(&mut rhs); // concats and drains rhs of elements
+                self.operands
+                    .push(vec![Box::new(EvaluatedLvalue::Destructure(b, lhs))]);
+                Ok(())
+            }
+            nop => Err(NErr::type_error(format!(
+                "can't destructure with non-builtin {:?}",
+                nop
+            ))),
+        }
+    }
+
+    fn run_top(&mut self) -> NRes<()> {
+        let (op, _) = self.operators.pop().expect("sync");
+        self.run_top_popped(op)
+    }
+
+    fn give(
+        &mut self,
+        operator: Func,
+        precedence: Precedence,
+        operand: EvaluatedLvalue,
+    ) -> NRes<()> {
+        while self
+            .operators
+            .last()
+            .map_or(false, |t| t.1 .0 >= precedence.0)
+        {
+            let (top, prec) = self.operators.pop().expect("sync");
+            match top.try_chain(&operator) {
+                Some(new_op) => {
+                    self.operators.push((new_op, prec));
+                    self.operands
+                        .last_mut()
+                        .expect("sync")
+                        .push(Box::new(operand));
+                    return Ok(());
+                }
+                None => {
+                    self.run_top_popped(top)?;
+                }
+            }
+        }
+
+        self.operators.push((operator, precedence));
+        self.operands.push(vec![Box::new(operand)]);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> NRes<EvaluatedLvalue> {
+        while !self.operators.is_empty() {
+            self.run_top()?;
+        }
+        if self.operands.len() == 1 {
+            Ok(*self.operands.remove(0).remove(0))
+        } else {
+            panic!("chain eval out of sync")
+        }
+    }
+}
+
 // allow splats
 fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<Expr>>) -> NRes<Vec<Obj>> {
     let mut acc = Vec::new();
@@ -5605,6 +5719,22 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
                 ef
             ))),
         },
+        Lvalue::ChainDestructure(lv, vs) => {
+            let mut ce = LvalueChainEvaluator::new(eval_lvalue(env, lv)?);
+            for (oper, opd) in vs {
+                let oprr = evaluate(env, oper)?;
+                if let Obj::Func(b, prec) = oprr {
+                    let oprd = eval_lvalue(env, opd)?;
+                    ce.give(b, prec, oprd)?;
+                } else {
+                    return Err(NErr::type_error(format!(
+                        "Destructure chain cannot use nonblock in operand position: {:?}",
+                        oprr
+                    )));
+                }
+            }
+            ce.finish()
+        }
     }
 }
 
@@ -5971,6 +6101,9 @@ fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
         Lvalue::Literal(x) => Ok(x.clone()),
         Lvalue::Destructure(..) => Err(NErr::syntax_error(
             "Can't evaluate destructure on LHS of assignment??".to_string(),
+        )),
+        Lvalue::ChainDestructure(..) => Err(NErr::syntax_error(
+            "Can't evaluate chain destructure on LHS of assignment??".to_string(),
         )),
     }
 }
@@ -6738,6 +6871,17 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
             args.iter()
                 .map(|e| box_freeze_lvalue(bound, env, e))
                 .collect::<NRes<Vec<Box<Lvalue>>>>()?,
+        )),
+        Lvalue::ChainDestructure(f, args) => Ok(Lvalue::ChainDestructure(
+            box_freeze_lvalue(bound, env, f)?,
+            args.iter()
+                .map(|(e, v)| {
+                    Ok((
+                        box_freeze(bound, env, e)?,
+                        box_freeze_lvalue(bound, env, v)?,
+                    ))
+                })
+                .collect::<NRes<Vec<(Box<Expr>, Box<Lvalue>)>>>()?,
         )),
     }
 }
