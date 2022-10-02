@@ -25,6 +25,8 @@ use chrono::prelude::*;
 
 use std::time::SystemTime;
 
+use base64;
+
 #[cfg(feature = "request")]
 use reqwest;
 
@@ -662,6 +664,9 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::List, Obj::Seq(Seq::List(_))) => true,
         (ObjType::String, Obj::Seq(Seq::String(_))) => true,
         (ObjType::Dict, Obj::Seq(Seq::Dict(..))) => true,
+        (ObjType::Vector, Obj::Seq(Seq::Vector(..))) => true,
+        (ObjType::Bytes, Obj::Seq(Seq::Bytes(..))) => true,
+        (ObjType::Stream, Obj::Seq(Seq::Stream(..))) => true,
         (ObjType::Func, Obj::Func(..)) => true,
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
@@ -2117,8 +2122,7 @@ impl Builtin for ComparisonOperator {
         let rvalues = if slots == 1 {
             vec![rvalue]
         } else {
-            obj_to_cloning_iter(&rvalue, "comparison unpacking")?
-                .collect::<Vec<Obj>>()
+            obj_to_cloning_iter(&rvalue, "comparison unpacking")?.collect::<Vec<Obj>>()
         };
         let mut ret = Vec::new();
         let mut riter = rvalues.into_iter();
@@ -2128,23 +2132,28 @@ impl Builtin for ComparisonOperator {
                     Some(t) => ret.push(t),
                     None => Err(NErr::argument_error(format!(
                         "Chained comparison operator ran out of ok rvalues"
-                    )))?
-                }
-                Some(x) => ret.push(x.clone())
+                    )))?,
+                },
+                Some(x) => ret.push(x.clone()),
             }
         }
         if riter.next().is_some() {
             Err(NErr::argument_error(format!(
-                                    "Chained comparison operator too many rvalues"
-                                )))?
+                "Chained comparison operator too many rvalues"
+            )))?
         }
 
         // FIXME because we only chain with comparison operators we should be able to do stuff but
         // it's hard/annoying
-        if self.run(&Rc::new(RefCell::new(Env::empty())), ret.clone())?.truthy() {
+        if self
+            .run(&Rc::new(RefCell::new(Env::empty())), ret.clone())?
+            .truthy()
+        {
             Ok(ret)
         } else {
-            Err(NErr::value_error("comparison destructure failed".to_string()))
+            Err(NErr::value_error(
+                "comparison destructure failed".to_string(),
+            ))
         }
     }
 }
@@ -2973,10 +2982,7 @@ macro_rules! standard_three_part_debug {
             fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
                 write!(
                     fmt,
-                    concat!(
-                        stringify!($name),
-                        " {{ name: {:?}, body: {:?} }}"
-                    ),
+                    concat!(stringify!($name), " {{ name: {:?}, body: {:?} }}"),
                     self.name, self.body as usize
                 )
             }
@@ -8335,6 +8341,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_type(ObjType::Dict);
     env.insert_type(ObjType::Vector);
     env.insert_type(ObjType::Bytes);
+    env.insert_type(ObjType::Stream);
     env.insert_type(ObjType::Func);
     env.insert_type(ObjType::Type);
     env.insert_type(ObjType::Any);
@@ -8977,6 +8984,66 @@ pub fn initialize(env: &mut Env) {
                 }
                 _ => Err(NErr::type_error("not callable".to_string())),
             }
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "hex_encode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::Bytes(b)) => Ok(Obj::from(
+                b.iter().map(|x| format!("{:02x}", x)).collect::<String>(),
+            )),
+            _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "hex_decode".to_string(),
+        body: |arg| {
+            fn val(c: u8) -> NRes<u8> {
+                Ok(match c {
+                    b'A'..=b'F' => c - b'A' + 10,
+                    b'a'..=b'f' => c - b'a' + 10,
+                    b'0'..=b'9' => c - b'0',
+                    _ => return Err(NErr::value_error(format!("Invalid hex byte: {:?}", c))),
+                })
+            }
+            match arg {
+                Obj::Seq(Seq::String(s)) => {
+                    if s.len() % 2 == 0 {
+                        Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                            s.as_bytes()
+                                .chunks(2)
+                                .map(|ch| Ok(val(ch[0])? << 4 | val(ch[1])?))
+                                .collect::<NRes<Vec<u8>>>()?,
+                        ))))
+                    } else {
+                        Err(NErr::value_error(format!(
+                            "Can't decode odd-length hex string"
+                        )))
+                    }
+                }
+                _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
+            }
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "base64encode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::Bytes(b)) => Ok(Obj::from(base64::encode(&*b))),
+            _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "base64decode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::String(s)) => match base64::decode(&*s) {
+                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
+                Err(e) => Err(NErr::value_error(format!(
+                    "failed to base64decode: {:?}",
+                    e
+                ))),
+            },
+            _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
         },
     });
 
