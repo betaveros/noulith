@@ -736,12 +736,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
                 mut_obj_into_iter(&mut arg, "bytes conversion")?
-                    .map(|e| match e {
-                        Obj::Num(n) => n
-                            .to_u8()
-                            .ok_or(NErr::value_error(format!("can't to byte: {}", n))),
-                        x => Err(NErr::value_error(format!("can't to byte: {}", x))),
-                    })
+                    .map(|e| to_byte(e, "bytes conversion"))
                     .collect::<NRes<Vec<u8>>>()?,
             )))),
         },
@@ -3110,16 +3105,28 @@ impl Builtin for EnvTwoArgBuiltin {
     }
 }
 
+fn to_nnum(obj: Obj, reason: &'static str) -> NRes<NNum> {
+    match obj {
+        Obj::Num(n) => Ok(n),
+        x => Err(NErr::type_error(format!(
+            "{}: non-number: {}",
+            reason, x
+        ))),
+    }
+}
+
+fn to_byte(obj: Obj, reason: &'static str) -> NRes<u8> {
+    match obj {
+        Obj::Num(n) => n
+            .to_u8()
+            .ok_or(NErr::value_error(format!("{}: can't convert number to byte: {}", reason, n))),
+        x => Err(NErr::value_error(format!("{}: can't convert non-number to byte: {}", reason, x))),
+    }
+}
+
 fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
     Ok(Obj::Seq(Seq::Vector(Rc::new(
-        iter.map(|e| match e? {
-            Obj::Num(n) => Ok(n),
-            x => Err(NErr::type_error(format!(
-                "can't convert to vector, non-number: {}",
-                x
-            ))),
-        })
-        .collect::<NRes<Vec<NNum>>>()?,
+        iter.map(|e| to_nnum(e?, "can't convert to vector")).collect::<NRes<Vec<NNum>>>()?,
     ))))
 }
 
@@ -8225,16 +8232,6 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(Fold);
     env.insert_builtin(Scan);
     env.insert_builtin(TwoArgBuiltin {
-        name: "append".to_string(),
-        body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::List(mut a)), b) => {
-                Rc::make_mut(&mut a).push(b.clone());
-                Ok(Obj::Seq(Seq::List(a)))
-            }
-            _ => Err(NErr::argument_error("2 args only".to_string())),
-        },
-    });
-    env.insert_builtin(TwoArgBuiltin {
         name: "<=>".to_string(),
         body: |a, b| match ncmp(&a, &b) {
             Ok(Ordering::Less) => Ok(Obj::Num(-NNum::from(1))),
@@ -8576,6 +8573,14 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
                     Ok(Obj::Seq(Seq::List(a)))
                 }
+                (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
+                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Ok(Obj::Seq(Seq::Vector(a)))
+                }
+                (Obj::Seq(Seq::Bytes(mut a)), Obj::Seq(Seq::Bytes(mut b))) => {
+                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Ok(Obj::Seq(Seq::Bytes(a)))
+                }
                 _ => Err(NErr::generic_argument_error()),
             },
         },
@@ -8588,19 +8593,35 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut b).insert(0, a);
                 Ok(Obj::Seq(Seq::List(b)))
             }
+            Obj::Seq(Seq::Vector(mut b)) => {
+                Rc::make_mut(&mut b).insert(0, to_nnum(a, "prepend to vector")?);
+                Ok(Obj::Seq(Seq::Vector(b)))
+            }
+            Obj::Seq(Seq::Bytes(mut b)) => {
+                Rc::make_mut(&mut b).insert(0, to_byte(a, "prepend to bytes")?);
+                Ok(Obj::Seq(Seq::Bytes(b)))
+            }
             _ => Err(NErr::generic_argument_error()),
         },
     });
-    env.insert_builtin(TwoArgBuiltin {
-        name: "+.".to_string(),
+    env.insert_builtin_with_alias(TwoArgBuiltin {
+        name: "append".to_string(),
         body: |a, b| match a {
             Obj::Seq(Seq::List(mut a)) => {
                 Rc::make_mut(&mut a).push(b);
                 Ok(Obj::Seq(Seq::List(a)))
             }
+            Obj::Seq(Seq::Vector(mut a)) => {
+                Rc::make_mut(&mut a).push(to_nnum(b, "append to vector")?);
+                Ok(Obj::Seq(Seq::Vector(a)))
+            }
+            Obj::Seq(Seq::Bytes(mut a)) => {
+                Rc::make_mut(&mut a).push(to_byte(b, "append to bytes")?);
+                Ok(Obj::Seq(Seq::Bytes(a)))
+            }
             _ => Err(NErr::generic_argument_error()),
         },
-    });
+    }, "+.");
     env.insert_builtin(TwoArgBuiltin {
         name: "..".to_string(),
         body: |a, b| Ok(Obj::list(vec![a, b])),
@@ -8992,6 +9013,23 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
+    env.insert_builtin(OneArgBuiltin {
+        name: "utf8encode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
+            _ => Err(NErr::type_error("must utf8encode string".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "utf8decode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::Bytes(b)) => match String::from_utf8(unwrap_or_clone(b)) {
+                Ok(s) => Ok(Obj::from(s)),
+                Err(e) => Err(NErr::value_error(format!("utf8decode failed: {:?}", e))),
+            },
+            _ => Err(NErr::type_error("must utf8encode string".to_string())),
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "hex_encode".to_string(),
         body: |arg| match arg {
