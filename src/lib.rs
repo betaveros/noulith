@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use regex::Regex;
 
-use num::bigint::{BigInt, Sign};
+use num::bigint::{BigInt, RandBigInt, Sign};
 use num::complex::Complex64;
 use num::Signed;
 use num::ToPrimitive;
@@ -26,9 +26,14 @@ use chrono::prelude::*;
 use std::time::SystemTime;
 
 use base64;
+use rand;
 
 #[cfg(feature = "request")]
 use reqwest;
+
+#[cfg(feature = "crypto")]
+use aes;
+use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -9135,6 +9140,23 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
+    env.insert_builtin(BasicBuiltin {
+        name: "random".to_string(),
+        body: |_env, args| match few(args) {
+            Few::Zero => Ok(Obj::from(rand::random::<f64>())),
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "random_range".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => {
+                Ok(Obj::from(rand::thread_rng().gen_bigint_range(&a, &b)))
+            }
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
+
     // l m a o
     env.insert_builtin(BasicBuiltin {
         name: "import".to_string(),
@@ -9202,6 +9224,44 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+
+    #[cfg(feature = "crypto")]
+    {
+        env.insert_builtin(TwoArgBuiltin {
+            name: "aes128_hazmat_encrypt_block".to_string(),
+            body: |a, b| match (a, b) {
+                (Obj::Seq(Seq::Bytes(k)), Obj::Seq(Seq::Bytes(mut m))) => {
+                    if k.len() == 16 && m.len() == 16 {
+                        aes::Aes128::new(generic_array::GenericArray::from_slice(&k))
+                            .encrypt_block(generic_array::GenericArray::from_mut_slice(
+                                Rc::make_mut(&mut m).as_mut(),
+                            ));
+                        Ok(Obj::Seq(Seq::Bytes(m)))
+                    } else {
+                        Err(NErr::value_error("aes: bad sizes".to_string()))
+                    }
+                }
+                _ => Err(NErr::generic_argument_error()),
+            },
+        });
+        env.insert_builtin(TwoArgBuiltin {
+            name: "aes128_hazmat_decrypt_block".to_string(),
+            body: |a, b| match (a, b) {
+                (Obj::Seq(Seq::Bytes(k)), Obj::Seq(Seq::Bytes(mut m))) => {
+                    if k.len() == 16 && m.len() == 16 {
+                        aes::Aes128::new(generic_array::GenericArray::from_slice(&k))
+                            .decrypt_block(generic_array::GenericArray::from_mut_slice(
+                                Rc::make_mut(&mut m).as_mut(),
+                            ));
+                        Ok(Obj::Seq(Seq::Bytes(m)))
+                    } else {
+                        Err(NErr::value_error("aes: bad sizes".to_string()))
+                    }
+                }
+                _ => Err(NErr::generic_argument_error()),
+            },
+        });
+    }
 
     env.insert_builtin(OneArgBuiltin {
         name: "freeze".to_string(),
