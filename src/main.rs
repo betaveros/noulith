@@ -46,7 +46,7 @@ fn repl() {
                     println!(
                         "\\{}: {}",
                         refs_len,
-                        noulith::FlaggedObj(x, noulith::MyFmtFlags::budgeted_repr(64))
+                        noulith::FmtObj(&x, &noulith::MyFmtFlags::budgeted_repr(64))
                     );
                 }
                 Err(e) => {

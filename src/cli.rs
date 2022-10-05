@@ -168,7 +168,7 @@ pub fn repl() {
                             println!(
                                 "\x1b[34m\\{}: \x1b[0m{}\x1b[38;5;59m: {}\x1b[0m",
                                 refs_len,
-                                noulith::FlaggedObj(x, noulith::MyFmtFlags::budgeted_repr(64)),
+                                noulith::FmtObj(&x, &noulith::MyFmtFlags::budgeted_repr(64)),
                                 name
                             );
                         }

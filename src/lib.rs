@@ -782,7 +782,8 @@ fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
         // e.g. "heterogenous tuples"
         a => Err(NErr::type_error(format!(
             "can't convert {} to type for {}",
-            a, msg
+            FmtObj::debug(a),
+            msg
         ))),
     }
 }
@@ -964,7 +965,7 @@ fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
 fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
     match n {
         Obj::Num(n) => clamp_to_usize_ok(n),
-        _ => Err(NErr::type_error("bad scalar".to_string())),
+        _ => Err(NErr::type_error(format!("bad scalar {}", FmtObj::debug(n)))),
     }
 }
 fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
@@ -1060,7 +1061,7 @@ pub struct MyFmtFlags {
 }
 
 impl MyFmtFlags {
-    pub fn new() -> MyFmtFlags {
+    pub const fn new() -> MyFmtFlags {
         MyFmtFlags {
             base: FmtBase::Decimal,
             repr: false,
@@ -1070,7 +1071,7 @@ impl MyFmtFlags {
             budget: usize::MAX,
         }
     }
-    pub fn budgeted_repr(budget: usize) -> MyFmtFlags {
+    pub const fn budgeted_repr(budget: usize) -> MyFmtFlags {
         let mut f = MyFmtFlags::new();
         f.budget = budget;
         f
@@ -1191,6 +1192,23 @@ fn write_pairs<'a, 'b>(
     Ok(())
 }
 
+struct FmtDictPairs<'f, T>(T, &'f MyFmtFlags);
+impl<
+        'f,
+        'a,
+        'b,
+        A: MyDisplay + 'a,
+        B: MyDisplay + 'b,
+        T: Iterator<Item = (&'a A, &'b B)> + Clone,
+    > Display for FmtDictPairs<'f, T>
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "{{")?;
+        write_pairs(self.0.clone(), formatter, &mut self.1.clone())?;
+        write!(formatter, "}}")
+    }
+}
+
 fn write_bytes(s: &[u8], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
     flags.deduct(s.len());
     write!(formatter, "B[")?;
@@ -1276,10 +1294,18 @@ impl Obj {
 }
 
 // ????
-pub struct FlaggedObj(pub Obj, pub MyFmtFlags);
-impl Display for FlaggedObj {
+pub struct FmtObj<'a, 'b>(pub &'a Obj, pub &'b MyFmtFlags);
+impl<'a, 'b> Display for FmtObj<'a, 'b> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         self.0.fmt_with(formatter, self.1.clone())
+    }
+}
+
+const DEBUG_FMT: MyFmtFlags = MyFmtFlags::budgeted_repr(64);
+
+impl FmtObj<'_, '_> {
+    fn debug<'a>(t: &'a Obj) -> FmtObj<'a, 'static> {
+        FmtObj(t, &DEBUG_FMT)
     }
 }
 
@@ -1409,7 +1435,8 @@ fn mut_obj_into_iter<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjI
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
         e => Err(NErr::type_error(format!(
             "{}: not iterable: {}",
-            purpose, e
+            purpose,
+            FmtObj::debug(e)
         ))),
     }
 }
@@ -1638,11 +1665,11 @@ impl Func {
             Func::Closure(c) => c.run(args),
             Func::PartialApp1(f, x) => match few(args) {
                 Few::One(arg) => f.run(env, vec![(**x).clone(), arg]),
-                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, x, a)))
+                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
             }
             Func::PartialApp2(f, x) => match few(args) {
                 Few::One(arg) => f.run(env, vec![arg, (**x).clone()]),
-                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, x, a)))
+                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
             }
             Func::PartialAppLast(f, x) => {
                 args.push(*x.clone());
@@ -1674,7 +1701,7 @@ impl Func {
                         return Err(NErr::argument_error(format!("can't call Parallel with no args")))
                     }
                     Few::One(x) => {
-                        return Err(NErr::type_error(format!("can't call Parallel with one non-seq {}", x)))
+                        return Err(NErr::type_error(format!("can't call Parallel with one non-seq {}", FmtObj::debug(&x))))
                     }
                     Few::Many(args) => {
                         for (f, a) in fs.iter().zip(args) {
@@ -1826,12 +1853,36 @@ impl Display for Func {
             Func::Fanout(fs) => write!(formatter, "Fanout({})", CommaSeparated(fs)),
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             // TODO
-            Func::ListSection(xs) => write!(formatter, "ListSection({:?})", xs),
-            Func::CallSection(f, xs) => write!(formatter, "CallSection({:?} {:?})", f, xs),
-            Func::ChainSection(xs, ys) => write!(formatter, "ChainSection({:?} {:?})", xs, ys),
-            Func::IndexSection(x, i) => write!(formatter, "IndexSection({:?} {:?})", x, i),
+            Func::ListSection(xs) => {
+                write!(formatter, "ListSection({})", FmtSectionSlots(xs.as_slice()))
+            }
+            Func::CallSection(f, xs) => write!(
+                formatter,
+                "CallSection({} {})",
+                FmtSectionBoxedSlot(f),
+                FmtSectionSlots(xs)
+            ),
+            Func::ChainSection(xs, ys) => {
+                write!(formatter, "ChainSection({}", FmtSectionBoxedSlot(xs))?;
+                for (_loc, func, _prec, operand) in ys {
+                    write!(formatter, " {} {}", func, FmtSectionBoxedSlot(operand))?;
+                }
+                write!(formatter, ")")
+            }
+            Func::IndexSection(x, i) => write!(
+                formatter,
+                "IndexSection({}[{}])",
+                FmtSectionBoxedSlot(x),
+                FmtSectionBoxedSlot(i)
+            ),
             Func::SliceSection(x, lo, hi) => {
-                write!(formatter, "SliceSection({:?} {:?} {:?})", x, lo, hi)
+                write!(
+                    formatter,
+                    "SliceSection({} {:?} {:?})",
+                    FmtSectionBoxedSlot(x),
+                    lo,
+                    hi
+                )
             }
             Func::Type(t) => write!(formatter, "{}", t.name()),
         }
@@ -1872,7 +1923,7 @@ impl Builtin for Plus {
                 Ok(clone_and_part_app_2(self, arg))
             }
             Few2::One(a) => Err(NErr::argument_error(format!(
-                "+ only accepts numbers (or vectors), got {:?}",
+                "+ only accepts numbers (or vectors), got {}",
                 a
             ))),
             Few2::Two(a, b) => err_add_name(
@@ -1960,7 +2011,7 @@ impl Builtin for Times {
                 Ok(clone_and_part_app_2(self, arg))
             }
             Few2::One(a) => Err(NErr::argument_error(format!(
-                "* only accepts numbers (or vectors), got {:?}",
+                "* only accepts numbers (or vectors), got {}",
                 a
             ))),
             Few2::Two(a, b) => err_add_name(
@@ -3127,7 +3178,11 @@ impl Builtin for EnvTwoArgBuiltin {
 fn to_nnum(obj: Obj, reason: &'static str) -> NRes<NNum> {
     match obj {
         Obj::Num(n) => Ok(n),
-        x => Err(NErr::type_error(format!("{}: non-number: {}", reason, x))),
+        x => Err(NErr::type_error(format!(
+            "{}: non-number: {}",
+            reason,
+            FmtObj::debug(&x)
+        ))),
     }
 }
 
@@ -3232,14 +3287,14 @@ fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj
                 )
             } else {
                 Err(NErr::value_error(format!(
-                    "vectorized op: different lengths: {} {}",
+                    "vectorized op: different lengths: {}, {}",
                     a.len(),
                     b.len()
                 )))
             }
         }
         (a, b) => Err(NErr::argument_error(format!(
-            "only accepts numbers (or vectors), got {:?} {:?}",
+            "only accepts numbers (or vectors), got {}, {}",
             a, b
         ))),
     }
@@ -3253,7 +3308,7 @@ impl Builtin for TwoNumsBuiltin {
                 Ok(clone_and_part_app_2(self, arg))
             }
             Few2::One(a) => Err(NErr::argument_error(format!(
-                "{} only accepts numbers (or vectors), got {:?}",
+                "{} only accepts numbers (or vectors), got {}",
                 self.name, a
             ))),
             Few2::Two(a, b) => {
@@ -4102,16 +4157,20 @@ struct Parser {
     i: usize,
 }
 
-fn err_add_context(a: Result<LocExpr, String>, ctx: &str) -> Result<LocExpr, String> {
+fn err_add_context(a: Result<LocExpr, String>, ctx: &str, loc: CodeLoc) -> Result<LocExpr, String> {
     match a {
         Ok(t) => Ok(t),
-        Err(s) => Err(s + " at " + ctx),
+        Err(s) => Err(format!("{} at {} {}:{}", s, ctx, loc.line, loc.col)),
     }
 }
 
 impl Parser {
+    fn peek_loc_token(&self) -> Option<&LocToken> {
+        self.tokens.get(self.i)
+    }
+
     fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.i).map(|lt| &lt.token)
+        self.peek_loc_token().map(|lt| &lt.token)
     }
 
     fn advance(&mut self) {
@@ -4128,7 +4187,7 @@ impl Parser {
     }
 
     fn peek_loc(&self) -> CodeLoc {
-        match self.tokens.get(self.i) {
+        match self.peek_loc_token() {
             Some(t) => t.start,
             // FIXME
             None => CodeLoc {
@@ -4163,8 +4222,13 @@ impl Parser {
     }
 
     fn atom(&mut self) -> Result<LocExpr, String> {
-        let loc = self.peek_loc();
-        if let Some(token) = self.peek() {
+        if let Some(LocToken {
+            start,
+            end: _,
+            token,
+        }) = self.peek_loc_token()
+        {
+            let loc = *start;
             match token {
                 Token::IntLit(n) => {
                     let n = n.clone();
@@ -4661,7 +4725,7 @@ impl Parser {
 
     fn single(&mut self, ctx: &str) -> Result<LocExpr, String> {
         let loc = self.peek_loc();
-        let mut op1 = err_add_context(self.logic_and(), ctx)?;
+        let mut op1 = err_add_context(self.logic_and(), ctx, loc)?;
         loop {
             match self.peek() {
                 Some(Token::Or) => {
@@ -4670,7 +4734,7 @@ impl Parser {
                         loc,
                         Expr::Or(
                             Box::new(op1),
-                            Box::new(err_add_context(self.logic_and(), ctx)?),
+                            Box::new(err_add_context(self.logic_and(), ctx, loc)?),
                         ),
                     );
                 }
@@ -4680,7 +4744,7 @@ impl Parser {
                         loc,
                         Expr::Coalesce(
                             Box::new(op1),
-                            Box::new(err_add_context(self.logic_and(), ctx)?),
+                            Box::new(err_add_context(self.logic_and(), ctx, loc)?),
                         ),
                     );
                 }
@@ -5191,8 +5255,9 @@ fn set_index(
                         match mut_d.get_mut(&k) {
                             Some(vvv) => vvv,
                             None => Err(NErr::type_error(format!(
-                                "setting dictionary: nothing at key {:?} {:?}",
-                                mut_d, k
+                                "setting dictionary: nothing at key {}[{}]",
+                                FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                k
                             )))?,
                         },
                         rest,
@@ -5225,11 +5290,12 @@ fn set_index(
             },
             (Seq::Vector(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
             (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
-                Obj::Num(n) => {
+                Obj::Num(ref n) => {
                     let i = pythonic_index(v, i)?;
-                    Rc::make_mut(v)[i] = n
-                        .to_u8()
-                        .ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
+                    Rc::make_mut(v)[i] = n.to_u8().ok_or(NErr::value_error(format!(
+                        "can't to byte: {}",
+                        FmtObj::debug(&value)
+                    )))?;
                     Ok(())
                 }
                 _ => Err(NErr::type_error(format!("bytes bad value assgn"))),
@@ -5304,8 +5370,9 @@ fn modify_existing_index(
                             Some(d) => modify_existing_index(e.insert((&**d).clone()), rest, f),
                             None => {
                                 return Err(NErr::key_error(format!(
-                                    "nothing at key {:?} {:?}",
-                                    mut_d, kk
+                                    "nothing at key {}[{}]",
+                                    FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                    kk
                                 )))
                             }
                         },
@@ -5364,8 +5431,9 @@ fn modify_every_existing_index(
                             }
                             None => {
                                 return Err(NErr::key_error(format!(
-                                    "nothing at key {:?} {:?}",
-                                    mut_d, kk
+                                    "nothing at key {}[{}]",
+                                    FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                    kk
                                 )))
                             }
                         },
@@ -5406,13 +5474,13 @@ fn assign_respecting_type(
         // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
         // constructed to mutably borrow the variable it's for?
         if ixs.is_empty() && !is_type(ty, rhs) {
-            Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, rhs, ty.name())))?
+            Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, FmtObj::debug(rhs), ty.name())))?
         }
         set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, rhs.clone(), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
         if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
-            Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, rhs, ty.name())))
+            Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, FmtObj::debug(rhs), ty.name())))
         } else {
             Ok(())
         }
@@ -5637,9 +5705,10 @@ fn modify_every(
             lhs
         ))),
         EvaluatedLvalue::Or(..) => Err(NErr::type_error(format!("Can't modify or {:?}", lhs))),
-        EvaluatedLvalue::Literal(_) => {
-            Err(NErr::type_error(format!("Can't modify literal {:?}", lhs)))
-        }
+        EvaluatedLvalue::Literal(x) => Err(NErr::type_error(format!(
+            "Can't modify literal {}",
+            FmtObj::debug(x)
+        ))),
         EvaluatedLvalue::Destructure(..) => Err(NErr::type_error(format!(
             "Can't modify destructure {:?}",
             lhs
@@ -5699,7 +5768,11 @@ impl ChainEvaluator {
         let mut rhs = self.operands.pop().expect("sync");
         let mut lhs = self.operands.pop().expect("sync");
         lhs.append(&mut rhs); // concats and drains rhs of elements
-        self.operands.push(vec![add_trace(op.run(env, lhs), format!("chain {}", op), loc)?]);
+        self.operands.push(vec![add_trace(
+            op.run(env, lhs),
+            format!("chain {}", op),
+            loc,
+        )?]);
         Ok(())
     }
 
@@ -5714,7 +5787,7 @@ impl ChainEvaluator {
         operator: Func,
         precedence: Precedence,
         operand: Obj,
-        loc: CodeLoc
+        loc: CodeLoc,
     ) -> NRes<()> {
         while self
             .operators
@@ -6074,8 +6147,9 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     None => match def {
                         Some(d) => Ok((&**d).clone()),
                         None => Err(NErr::key_error(format!(
-                            "Dictionary lookup: nothing at key {:?} {:?}",
-                            xx, k
+                            "Dictionary lookup: nothing at key {}[{}]",
+                            FmtDictPairs(xx.iter(), &MyFmtFlags::budgeted_repr(64)),
+                            k
                         ))),
                     },
                 }
@@ -6103,7 +6177,11 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             "precedence" => Ok(Obj::from(*p)),
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         },
-        (xr, ir) => Err(NErr::type_error(format!("can't index {:?} {:?}", xr, ir))),
+        (xr, ir) => Err(NErr::type_error(format!(
+            "can't index {}[{}]",
+            FmtObj::debug(&xr),
+            FmtObj::debug(&ir)
+        ))),
     }
 }
 
@@ -6231,7 +6309,10 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
 fn call(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     match f {
         Obj::Func(ff, _) => ff.run(env, args),
-        _ => Err(NErr::type_error(format!("Can't call non-function {:?}", f))),
+        _ => Err(NErr::type_error(format!(
+            "Can't call non-function {}",
+            FmtObj::debug(&f)
+        ))),
     }
 }
 
@@ -7283,6 +7364,60 @@ impl<'a, T: Display> Display for CommaSeparated<'a, T> {
     }
 }
 
+struct FmtSectionSlot<'a>(&'a Option<Obj>);
+
+impl<'a> Display for FmtSectionSlot<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            Some(t) => write!(formatter, "{}", FmtObj::debug(t)),
+            None => write!(formatter, "_"),
+        }
+    }
+}
+
+struct FmtSectionBoxedSlot<'a>(&'a Option<Box<Obj>>);
+
+impl<'a> Display for FmtSectionBoxedSlot<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self.0 {
+            Some(t) => write!(formatter, "{}", FmtObj::debug(&**t)),
+            None => write!(formatter, "_"),
+        }
+    }
+}
+
+struct FmtSectionSlots<'a>(&'a [Option<Obj>]);
+
+impl<'a> Display for FmtSectionSlots<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let mut started = false;
+        for t in self.0 {
+            if started {
+                write!(formatter, ", ")?;
+            }
+            started = true;
+            write!(formatter, "{}", FmtSectionSlot(t))?
+        }
+        Ok(())
+    }
+}
+
+struct FmtSectionBoxedSlots<'a>(&'a [Option<Box<Obj>>]);
+
+impl<'a> Display for FmtSectionBoxedSlots<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let mut started = false;
+        for t in self.0 {
+            if started {
+                write!(formatter, ", ")?;
+            }
+            started = true;
+            write!(formatter, "{}", FmtSectionBoxedSlot(t))?
+        }
+        Ok(())
+    }
+}
+
 fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
     // this might coerce too hard but idk
     let mut acc = String::new();
@@ -7804,6 +7939,10 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(TwoNumsBuiltin {
+        name: "gcd".to_string(),
+        body: |a, b| Ok(Obj::Num(a.gcd(&b))),
+    });
+    env.insert_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| Ok(Obj::Num(a.pow_num(&b))),
     });
@@ -7989,7 +8128,10 @@ pub fn initialize(env: &mut Env) {
                 Some(n) => Ok(Obj::from(n)),
                 None => Ok(Obj::from(f64::INFINITY)),
             },
-            e => Err(NErr::type_error(format!("sequence only, got {}", e))),
+            e => Err(NErr::type_error(format!(
+                "sequence only, got {}",
+                FmtObj::debug(&e)
+            ))),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -8350,7 +8492,10 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::from(true))
             }
-            Few2::Two(_, b) => Err(NErr::type_error(format!("second arg not func: {}", b))),
+            Few2::Two(_, b) => Err(NErr::type_error(format!(
+                "second arg not func: {}",
+                FmtObj::debug(&b)
+            ))),
             ff => Err(NErr::argument_error(format!("too many args: {:?}", ff))),
         },
     });
@@ -8517,7 +8662,7 @@ pub fn initialize(env: &mut Env) {
                             write!(t.output, " ")?;
                         }
                         started = true;
-                        write!(t.output, "{:?}", arg)?;
+                        write!(t.output, "{}", FmtObj::debug(arg))?;
                     }
                     Ok(())
                 })
