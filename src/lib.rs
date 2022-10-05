@@ -7088,15 +7088,19 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::While(cond, body) => {
-            while evaluate(env, cond)?.truthy() {
-                match evaluate(env, body) {
+            // FIXME :(
+            loop {
+                let ee = Env::with_parent(env);
+                if !(evaluate(&ee, cond)?.truthy()) {
+                    return Ok(Obj::Null);
+                }
+                match evaluate(&ee, body) {
                     Ok(_) => (),
                     Err(NErr::Break(e)) => return Ok(e),
                     Err(NErr::Continue) => continue,
                     Err(e) => return Err(e),
                 }
             }
-            Ok(Obj::Null)
         }
         Expr::Switch(scrutinee, arms) => {
             let s = evaluate(env, scrutinee)?;
