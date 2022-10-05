@@ -6781,19 +6781,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
                 _ => evaluate(env, rhs),
             }?;
+
             let ret = if *every {
                 assign_every(&env, &p, None, &res, AssignMode::Assign)
             } else {
                 assign(&env, &p, None, &res, AssignMode::Assign)
             };
-            match ret {
-                Ok(()) => Ok(Obj::Null),
-                Err(NErr::Throw(e, mut trace)) => {
-                    trace.push((format!("assign"), expr.0));
-                    Err(NErr::Throw(e, trace))
-                }
-                Err(e) => Err(e),
-            }
+            add_trace(ret, format!("assign"), expr.0)?;
+            Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
         Expr::Pop(pat) => match eval_lvalue(env, pat)? {
@@ -6883,7 +6878,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()]))?;
+                        add_trace(
+                            modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()])),
+                            format!("op({})-assign", ff),
+                            expr.0,
+                        )?;
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!(
@@ -6904,9 +6903,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         // used to only do this when the function was pure, but that required a
                         // stupid amount of code to bookkeep and prevents users from writing
                         // consuming modifiers. Instead it's now enshrined into the semantics.
-                        assign(&env, &p, None, &Obj::Null, AssignMode::IgnoreExistingType)?;
+                        add_trace(
+                            assign(&env, &p, None, &Obj::Null, AssignMode::IgnoreExistingType),
+                            format!("null-assign"),
+                            expr.0,
+                        )?;
                         let fres = ff.run(env, vec![pv, res])?;
-                        assign(&env, &p, None, &fres, AssignMode::Assign)?;
+                        add_trace(
+                            assign(&env, &p, None, &fres, AssignMode::Assign),
+                            format!("op({})-assign", ff),
+                            expr.0,
+                        )?;
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!(
@@ -8829,7 +8836,26 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(TwoArgBuiltin {
         name: "join".to_string(),
-        body: |a, b| Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
+        body: |mut a, b| match b {
+            Obj::Seq(Seq::Bytes(b)) => {
+                let mut acc: Vec<u8> = Vec::new();
+                let mut started = false;
+                for mut arg in mut_obj_into_iter(&mut a, "join (bytes)")? {
+                    if started {
+                        acc.extend(b.iter())
+                    }
+                    started = true;
+                    acc.extend(
+                        mut_obj_into_iter(&mut arg, "join (bytes) byte conversion")?
+                            .map(|e| to_byte(e, "join (bytes) byte conversion"))
+                            .collect::<NRes<Vec<u8>>>()?
+                            .iter(),
+                    );
+                }
+                Ok(Obj::Seq(Seq::Bytes(Rc::new(acc))))
+            }
+            _ => Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
+        },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "split".to_string(),
