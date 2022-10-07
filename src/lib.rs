@@ -18,6 +18,7 @@ use regex::Regex;
 
 use num::bigint::{BigInt, RandBigInt, Sign};
 use num::complex::Complex64;
+use num::BigRational;
 use num::Signed;
 use num::ToPrimitive;
 
@@ -605,6 +606,7 @@ pub enum Seq {
 pub enum ObjType {
     Null,
     Int,
+    Rational,
     Float,
     Complex,
     Number,
@@ -625,6 +627,7 @@ impl ObjType {
         match self {
             ObjType::Null => "nulltype",
             ObjType::Int => "int",
+            ObjType::Rational => "rational",
             ObjType::Float => "float",
             ObjType::Complex => "complex",
             ObjType::Number => "number",
@@ -647,6 +650,7 @@ pub fn type_of(obj: &Obj) -> ObjType {
     match obj {
         Obj::Null => ObjType::Null,
         Obj::Num(NNum::Int(_)) => ObjType::Int,
+        Obj::Num(NNum::Rational(_)) => ObjType::Rational,
         Obj::Num(NNum::Float(_)) => ObjType::Float,
         Obj::Num(NNum::Complex(_)) => ObjType::Complex,
         Obj::Seq(Seq::List(_)) => ObjType::List,
@@ -1073,6 +1077,7 @@ impl MyFmtFlags {
     }
     pub const fn budgeted_repr(budget: usize) -> MyFmtFlags {
         let mut f = MyFmtFlags::new();
+        f.repr = true;
         f.budget = budget;
         f
     }
@@ -1090,12 +1095,16 @@ impl MyDisplay for NNum {
         false
     }
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
-        let s = match flags.base {
-            FmtBase::Decimal => format!("{}", self),
-            FmtBase::Binary => format!("{:b}", self),
-            FmtBase::Octal => format!("{:o}", self),
-            FmtBase::LowerHex => format!("{:x}", self),
-            FmtBase::UpperHex => format!("{:X}", self),
+        let s = if flags.repr {
+            self.repr()
+        } else {
+            match flags.base {
+                FmtBase::Decimal => format!("{}", self),
+                FmtBase::Binary => format!("{:b}", self),
+                FmtBase::Octal => format!("{:o}", self),
+                FmtBase::LowerHex => format!("{:x}", self),
+                FmtBase::UpperHex => format!("{:X}", self),
+            }
         };
         let pad_amt = if s.len() < flags.pad_length {
             flags.pad_length - s.len()
@@ -1842,9 +1851,11 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, x),
-            Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, x),
-            Func::PartialAppLast(f, x) => write!(formatter, "Partial({}(...?, {}))", f, x),
+            Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
+            Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
+            Func::PartialAppLast(f, x) => {
+                write!(formatter, "Partial({}(...?, {}))", f, FmtObj::debug(x))
+            }
             Func::Composition(f, g) => write!(formatter, "Comp({} . {})", f, g),
             Func::OnComposition(f, g) => write!(formatter, "OnComp({} . {})", f, g),
             Func::Parallel(fs) => {
@@ -2049,6 +2060,52 @@ impl Builtin for Times {
                 }
             }
             _ => Err(NErr::type_error("* failed to destructure".to_string())),
+        }
+    }
+}
+
+// thonk
+#[derive(Debug, Clone)]
+struct Divide;
+
+impl Builtin for Divide {
+    // copypasta
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
+                Ok(clone_and_part_app_2(self, arg))
+            }
+            Few2::One(a) => Err(NErr::argument_error(format!(
+                "/ only accepts numbers (or vectors), got {}",
+                a
+            ))),
+            Few2::Two(a, b) => err_add_name(
+                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a / b)), a, b),
+                "/",
+            ),
+            f => Err(NErr::argument_error(format!(
+                "/ only accepts two numbers, got {}",
+                f.len()
+            ))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "/"
+    }
+
+    // this one actually makes sense now???
+    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
+        match rvalue {
+            Obj::Num(r) => match r.to_rational() {
+                Some(r) => Ok(vec![
+                    Obj::from(r.numer().clone()),
+                    Obj::from(r.denom().clone()),
+                ]),
+                None => Err(NErr::value_error("/ destructured non-rational".to_string())),
+            },
+            _ => Err(NErr::type_error("/ failed to destructure".to_string())),
         }
     }
 }
@@ -3371,6 +3428,7 @@ impl Closure {
 pub enum Token {
     Invalid(String),
     IntLit(BigInt),
+    RatLit(BigRational),
     FloatLit(f64),
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
@@ -3445,6 +3503,7 @@ pub struct LocExpr(CodeLoc, Expr);
 #[derive(Debug)]
 pub enum Expr {
     IntLit(BigInt),
+    RatLit(BigRational),
     FloatLit(f64),
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
@@ -3953,6 +4012,10 @@ impl<'a> Lexer<'a> {
                                     }
                                     self.try_emit_float(acc)
                                 }
+                                Some('f' | 'F') => {
+                                    self.next();
+                                    self.try_emit_float(acc)
+                                }
                                 _ => self.try_emit_float(acc),
                             }
                         } else {
@@ -3988,6 +4051,16 @@ impl<'a> Lexer<'a> {
                                 (_, Some('i' | 'I' | 'j' | 'J')) => {
                                     self.next();
                                     self.try_emit_imaginary_float(acc)
+                                }
+                                (_, Some('q' | 'Q')) => {
+                                    self.next();
+                                    self.emit(Token::RatLit(BigRational::from(
+                                        acc.parse::<BigInt>().unwrap(),
+                                    )))
+                                }
+                                (_, Some('f' | 'F')) => {
+                                    self.next();
+                                    self.try_emit_float(acc)
                                 }
                                 (_, Some('e' | 'E')) => {
                                     acc.push('e');
@@ -4236,6 +4309,11 @@ impl Parser {
                     let n = n.clone();
                     self.advance();
                     Ok(LocExpr(loc, Expr::IntLit(n)))
+                }
+                Token::RatLit(n) => {
+                    let n = n.clone();
+                    self.advance();
+                    Ok(LocExpr(loc, Expr::RatLit(n)))
                 }
                 Token::FloatLit(n) => {
                     let n = *n;
@@ -6663,6 +6741,7 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.1 {
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
+        Expr::RatLit(n) => Ok(Obj::from(NNum::from(n.clone()))),
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
         Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
         Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
@@ -7274,6 +7353,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
         expr.0,
         match &expr.1 {
             Expr::IntLit(x) => Ok(Expr::IntLit(x.clone())),
+            Expr::RatLit(x) => Ok(Expr::RatLit(x.clone())),
             Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
             Expr::ImaginaryFloatLit(x) => Ok(Expr::ImaginaryFloatLit(x.clone())),
             Expr::StringLit(x) => Ok(Expr::StringLit(x.clone())),
@@ -7986,10 +8066,7 @@ pub fn initialize(env: &mut Env) {
         ComparisonOperator::of(">=", |a, b| Ok(ncmp(a, b)? != Ordering::Less)),
         "≥",
     );
-    env.insert_builtin(TwoNumsBuiltin {
-        name: "/".to_string(),
-        body: |a, b| Ok(Obj::Num(a / b)),
-    });
+    env.insert_builtin(Divide);
     env.insert_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
         body: |a, b| Ok(Obj::Num(a % b)),
@@ -8096,6 +8173,24 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::Num(NNum::iverson(
                 a.mod_floor(&NNum::from(2)) == NNum::from(1),
             )))
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "numerator".to_string(),
+        body: |a| {
+            a.numerator().map(Obj::from).ok_or(NErr::type_error(format!(
+                "can't take numerator of non-rational"
+            )))
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "denominator".to_string(),
+        body: |a| {
+            a.denominator()
+                .map(Obj::from)
+                .ok_or(NErr::type_error(format!(
+                    "can't take denominator of non-rational"
+                )))
         },
     });
     env.insert_builtin(OneNumBuiltin {
@@ -8752,6 +8847,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_type(ObjType::Null);
     env.insert_type(ObjType::Int);
+    env.insert_type(ObjType::Rational);
     env.insert_type(ObjType::Float);
     env.insert_type(ObjType::Complex);
     env.insert_type(ObjType::Number);
