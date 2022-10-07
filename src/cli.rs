@@ -30,9 +30,10 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                         None
                     }
                 }
-                Token::IntLit(_) | Token::FloatLit(_) | Token::ImaginaryFloatLit(_) => {
-                    Some("\x1b[38;5;208m")
-                }
+                Token::IntLit(_)
+                | Token::RatLit(_)
+                | Token::FloatLit(_)
+                | Token::ImaginaryFloatLit(_) => Some("\x1b[38;5;208m"),
                 Token::StringLit(_) | Token::BytesLit(_) | Token::FormatString(_) => {
                     Some("\x1b[32m")
                 }
