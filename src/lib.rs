@@ -1901,7 +1901,7 @@ pub trait Builtin: Debug {
     }
 
     // even if lhs has literals, return them verbatim anyway
-    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
         Err(NErr::type_error(format!(
             "{} cannot destructure {}",
             self.builtin_name(),
@@ -1943,20 +1943,20 @@ impl Builtin for Plus {
 
     // Haskell deprecated NPlusKPatterns for a good reason but we don't care about good reason over
     // here
-    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
         match (rvalue, few2(lhs)) {
             (Obj::Num(r), Few2::Two(Some(Obj::Num(a)), None)) => {
-                let diff = r - a;
+                let diff = r - &a;
                 if diff >= NNum::from(0) {
-                    Ok(vec![Obj::Num(a.clone()), Obj::Num(diff)])
+                    Ok(vec![Obj::Num(a), Obj::Num(diff)])
                 } else {
                     Err(NErr::value_error("+ computed negative".to_string()))
                 }
             }
             (Obj::Num(r), Few2::Two(None, Some(Obj::Num(a)))) => {
-                let diff = r - a;
+                let diff = r - &a;
                 if diff >= NNum::from(0) {
-                    Ok(vec![Obj::Num(diff), Obj::Num(a.clone())])
+                    Ok(vec![Obj::Num(diff), Obj::Num(a)])
                 } else {
                     Err(NErr::value_error("+ computed negative".to_string()))
                 }
@@ -1984,7 +1984,7 @@ impl Builtin for Minus {
         "-"
     }
 
-    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
         if lhs.len() == 1 {
             Ok(vec![expect_nums_and_vectorize_1(
                 |x| Ok(Obj::Num(-x)),
@@ -2030,20 +2030,22 @@ impl Builtin for Times {
     }
 
     // even worse than NPlusKPatterns maybe (TODO there's like paired divmod stuff right)
-    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
         match (rvalue, few2(lhs)) {
             (Obj::Num(r), Few2::Two(Some(Obj::Num(a)), None)) => {
-                if (&r % a).is_nonzero() {
+                if (&r % &a).is_nonzero() {
                     Err(NErr::value_error("* had remainder".to_string()))
                 } else {
-                    Ok(vec![Obj::Num(a.clone()), Obj::Num(r.div_floor(a))])
+                    let k = Obj::Num(r.div_floor(&a));
+                    Ok(vec![Obj::Num(a), k])
                 }
             }
             (Obj::Num(r), Few2::Two(None, Some(Obj::Num(a)))) => {
-                if (&r % a).is_nonzero() {
+                if (&r % &a).is_nonzero() {
                     Err(NErr::value_error("* had remainder".to_string()))
                 } else {
-                    Ok(vec![Obj::Num(r.div_floor(a)), Obj::Num(a.clone())])
+                    let k = Obj::Num(r.div_floor(&a));
+                    Ok(vec![k, Obj::Num(a)])
                 }
             }
             _ => Err(NErr::type_error("* failed to destructure".to_string())),
@@ -2174,7 +2176,7 @@ impl Builtin for ComparisonOperator {
         }
     }
 
-    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<&Obj>>) -> NRes<Vec<Obj>> {
+    fn destructure(&self, rvalue: Obj, lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
         if self.chained.len() + 2 != lhs.len() {
             Err(NErr::argument_error(format!(
                 "Chained comparison operator destructuring got the wrong number of args"
@@ -3354,7 +3356,7 @@ impl Closure {
             .map(|e| Ok(Box::new(eval_lvalue(&ee, e)?)))
             .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
         add_trace(
-            assign_all(&ee, &p, Some(&ObjType::Any), &args),
+            assign_all(&ee, &p, Some(&ObjType::Any), &args, AssignMode::Assign),
             "argument receiving".to_string(),
             self.body.0,
         )?;
@@ -5097,6 +5099,13 @@ impl Env {
     }
 }
 
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum AssignMode {
+    Assign,             // assign or declare, as type annotations declare
+    IgnoreExistingType, // just ignore types of existing variables; for LHS-dropping
+    PatternMatch,       // unannotated variables should be checked against instead of updated
+}
+
 // the ObjType is provided iff it's a declaration
 
 fn assign_all_basic(
@@ -5104,10 +5113,11 @@ fn assign_all_basic(
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs: &[Obj],
+    mode: AssignMode,
 ) -> NRes<()> {
     if lhs.len() == rhs.len() {
         for (lhs1, rhs1) in lhs.iter().zip(rhs.iter()) {
-            assign(env, lhs1, rt, rhs1)?;
+            assign(env, lhs1, rt, rhs1, mode)?;
         }
         Ok(())
     } else {
@@ -5126,6 +5136,7 @@ fn assign_all(
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs: &[Obj],
+    mode: AssignMode,
 ) -> NRes<()> {
     let mut splat = None;
     for (i, lhs1) in lhs.iter().enumerate() {
@@ -5145,21 +5156,23 @@ fn assign_all(
     }
     match splat {
         Some((si, inner)) => {
-            assign_all_basic(env, &lhs[..si], rt, &rhs[..si])?;
+            assign_all_basic(env, &lhs[..si], rt, &rhs[..si], mode)?;
             assign(
                 env,
                 inner,
                 rt,
                 &Obj::list(rhs[si..rhs.len() - lhs.len() + si + 1].to_vec()),
+                mode,
             )?;
             assign_all_basic(
                 env,
                 &lhs[si + 1..],
                 rt,
                 &rhs[rhs.len() - lhs.len() + si + 1..],
+                mode,
             )
         }
-        None => assign_all_basic(env, lhs, rt, rhs),
+        None => assign_all_basic(env, lhs, rt, rhs, mode),
     }
 }
 
@@ -5466,6 +5479,7 @@ fn assign_respecting_type(
     ixs: &[EvaluatedIndexOrSlice],
     rhs: &Obj,
     every: bool,
+    typecheck: bool,
 ) -> NRes<()> {
     try_borrow_nres(env, "env for assigning", s)?.modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
@@ -5473,13 +5487,13 @@ fn assign_respecting_type(
         // FIXME is there possibly a double borrow here? maybe not because we only use immutable
         // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
         // constructed to mutably borrow the variable it's for?
-        if ixs.is_empty() && !is_type(ty, rhs) {
+        if typecheck && ixs.is_empty() && !is_type(ty, rhs) {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, FmtObj::debug(rhs), ty.name())))?
         }
         set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, rhs.clone(), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
-        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
+        if typecheck && !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
             Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): {} not {}", s, FmtObj::debug(rhs), ty.name())))
         } else {
             Ok(())
@@ -5491,7 +5505,13 @@ fn assign_respecting_type(
     }))?
 }
 
-fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
+fn assign(
+    env: &REnv,
+    lhs: &EvaluatedLvalue,
+    rt: Option<&ObjType>,
+    rhs: &Obj,
+    mode: AssignMode,
+) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => {
             match rt {
@@ -5519,10 +5539,27 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
                     )));
                 }
             }
-            None => assign_respecting_type(env, s, ixs, rhs, false),
+            None => {
+                let typecheck = match mode {
+                    AssignMode::Assign => true,
+                    AssignMode::IgnoreExistingType => false,
+                    AssignMode::PatternMatch => {
+                        let obj = eval_lvalue_as_obj(env, lhs)?;
+                        return if obj == rhs.clone() {
+                            Ok(())
+                        } else {
+                            Err(NErr::type_error(format!(
+                                "Equality against variable pattern didn't match: {} {}",
+                                obj, rhs
+                            )))
+                        };
+                    }
+                };
+                assign_respecting_type(env, s, ixs, rhs, /* every */ false, typecheck)
+            }
         },
         EvaluatedLvalue::CommaSeq(ss) => match rhs {
-            Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls),
+            Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, ls, mode),
             rhs => assign_all(
                 env,
                 ss,
@@ -5530,20 +5567,21 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
                 obj_to_cloning_iter(&rhs, "unpacking")?
                     .collect::<Vec<Obj>>()
                     .as_slice(),
+                mode,
             ),
         },
         EvaluatedLvalue::Annotation(s, ann) => match ann {
-            None => assign(env, s, Some(&ObjType::Any), rhs),
-            Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
+            None => assign(env, s, Some(&ObjType::Any), rhs, mode),
+            Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
         },
-        EvaluatedLvalue::Unannotation(s) => assign(env, s, None, rhs),
+        EvaluatedLvalue::Unannotation(s) => assign(env, s, None, rhs, mode),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
         ))),
-        EvaluatedLvalue::Or(a, b) => match assign(env, a, rt, rhs) {
+        EvaluatedLvalue::Or(a, b) => match assign(env, a, rt, rhs, mode) {
             Ok(()) => Ok(()),
-            Err(_) => assign(env, b, rt, rhs),
+            Err(_) => assign(env, b, rt, rhs, mode),
         },
         EvaluatedLvalue::Literal(obj) => {
             if obj == rhs {
@@ -5559,13 +5597,20 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
             let known = args
                 .iter()
                 .map(|e| match &**e {
-                    EvaluatedLvalue::Literal(obj) => Some(obj),
+                    EvaluatedLvalue::Literal(obj) => Some(obj.clone()),
+                    EvaluatedLvalue::Unannotation(v) => match &**v {
+                        // FIXME what to do even
+                        EvaluatedLvalue::IndexedIdent(..) => {
+                            Some(eval_lvalue_as_obj(env, v).ok()?.clone())
+                        }
+                        _ => None,
+                    },
                     _ => None,
                 })
-                .collect::<Vec<Option<&Obj>>>();
+                .collect::<Vec<Option<Obj>>>();
             let res = f.destructure(rhs.clone(), known)?;
             if res.len() == args.len() {
-                assign_all(env, args, rt, &res)
+                assign_all(env, args, rt, &res, mode)
             } else {
                 Err(NErr::type_error(format!(
                     "{} destructure length didn't match: {:?} {:?}",
@@ -5578,7 +5623,13 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) ->
     }
 }
 
-fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &Obj) -> NRes<()> {
+fn assign_every(
+    env: &REnv,
+    lhs: &EvaluatedLvalue,
+    rt: Option<&ObjType>,
+    rhs: &Obj,
+    mode: AssignMode,
+) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
@@ -5593,19 +5644,30 @@ fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &O
                     )));
                 }
             }
-            None => assign_respecting_type(env, s, ixs, rhs, true),
+            None => {
+                let typecheck = match mode {
+                    AssignMode::Assign => true,
+                    AssignMode::IgnoreExistingType => false,
+                    AssignMode::PatternMatch => {
+                        return Err(NErr::type_error(format!(
+                            "why are we pattern matching literally every?"
+                        )))
+                    }
+                };
+                assign_respecting_type(env, s, ixs, rhs, /* every */ true, typecheck)
+            }
         },
         EvaluatedLvalue::CommaSeq(ss) => {
             for v in ss {
-                assign_every(env, v, rt, rhs)?;
+                assign_every(env, v, rt, rhs, mode)?;
             }
             Ok(())
         }
         EvaluatedLvalue::Annotation(s, ann) => match ann {
-            None => assign_every(env, s, Some(&ObjType::Any), rhs),
-            Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs),
+            None => assign_every(env, s, Some(&ObjType::Any), rhs, mode),
+            Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
         },
-        EvaluatedLvalue::Unannotation(s) => assign_every(env, s, None, rhs),
+        EvaluatedLvalue::Unannotation(s) => assign_every(env, s, None, rhs, mode),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
@@ -5628,13 +5690,13 @@ fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: &O
             let known = args
                 .iter()
                 .map(|e| match &**e {
-                    EvaluatedLvalue::Literal(obj) => Some(obj),
+                    EvaluatedLvalue::Literal(obj) => Some(obj.clone()),
                     _ => None,
                 })
-                .collect::<Vec<Option<&Obj>>>();
+                .collect::<Vec<Option<Obj>>>();
             let res = f.destructure(rhs.clone(), known)?;
             if res.len() == args.len() {
-                assign_all(env, args, rt, &res)
+                assign_all(env, args, rt, &res, mode)
             } else {
                 Err(NErr::type_error(format!(
                     "{} destructure length didn't match: {:?} {:?}",
@@ -5686,7 +5748,14 @@ fn modify_every(
                     *x = rhs(std::mem::take(x))?;
                     Ok(())
                 })?;
-                assign_respecting_type(env, s, &[], &old, false /* every */)
+                assign_respecting_type(
+                    env,
+                    s,
+                    &[],
+                    &old,
+                    false, /* every */
+                    true,  /* typecheck */
+                )
             }
         }
         EvaluatedLvalue::CommaSeq(ss) => {
@@ -6245,10 +6314,11 @@ fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
     }
 }
 
-fn index_or_slice(xr: Obj, ir: EvaluatedIndexOrSlice) -> NRes<Obj> {
+fn index_or_slice(xr: Obj, ir: &EvaluatedIndexOrSlice) -> NRes<Obj> {
     match ir {
-        EvaluatedIndexOrSlice::Index(i) => index(xr, i),
-        EvaluatedIndexOrSlice::Slice(i, j) => slice(xr, i, j),
+        // FIXME can or should we push these clones down
+        EvaluatedIndexOrSlice::Index(i) => index(xr, i.clone()),
+        EvaluatedIndexOrSlice::Slice(i, j) => slice(xr, i.clone(), j.clone()),
     }
 }
 
@@ -6336,39 +6406,36 @@ fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     }
 }
 
-fn eval_lvalue_as_obj(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<Obj> {
+fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
     match expr {
-        Lvalue::Underscore => Err(NErr::syntax_error(
+        EvaluatedLvalue::Underscore => Err(NErr::syntax_error(
             "Can't evaluate underscore on LHS of assignment??".to_string(),
         )),
-        Lvalue::IndexedIdent(s, v) => {
+        EvaluatedLvalue::IndexedIdent(s, v) => {
             let mut sr = Env::try_borrow_get_var(env, s)?;
             for ix in v {
-                sr = index_or_slice(sr, eval_index_or_slice(env, ix)?)?.clone();
+                sr = index_or_slice(sr, ix)?.clone();
             }
             Ok(sr)
         }
-        Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
-        Lvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
-        Lvalue::CommaSeq(v) => Ok(Obj::list(
+        EvaluatedLvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
+        EvaluatedLvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
+        EvaluatedLvalue::CommaSeq(v) => Ok(Obj::list(
             v.iter()
                 .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
                 .collect::<NRes<Vec<Obj>>>()?,
         )),
         // maybe if commaseq eagerly looks for splats...
-        Lvalue::Splat(_) => Err(NErr::syntax_error(
+        EvaluatedLvalue::Splat(_) => Err(NErr::syntax_error(
             "Can't evaluate splat on LHS of assignment??".to_string(),
         )),
-        Lvalue::Or(..) => Err(NErr::syntax_error(
+        EvaluatedLvalue::Or(..) => Err(NErr::syntax_error(
             "Can't evaluate or on LHS of assignment??".to_string(),
         )),
         // seems questionable
-        Lvalue::Literal(x) => Ok(x.clone()),
-        Lvalue::Destructure(..) => Err(NErr::syntax_error(
+        EvaluatedLvalue::Literal(x) => Ok(x.clone()),
+        EvaluatedLvalue::Destructure(..) => Err(NErr::syntax_error(
             "Can't evaluate destructure on LHS of assignment??".to_string(),
-        )),
-        Lvalue::ChainDestructure(..) => Err(NErr::syntax_error(
-            "Can't evaluate chain destructure on LHS of assignment??".to_string(),
         )),
     }
 }
@@ -6427,7 +6494,7 @@ fn evaluate_for(
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&ee, &p, Some(&ObjType::Any), &x)?;
+                        assign(&ee, &p, Some(&ObjType::Any), &x, AssignMode::Assign)?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
@@ -6442,6 +6509,7 @@ fn evaluate_for(
                             &p,
                             Some(&ObjType::Any),
                             &Obj::list(vec![key_to_obj(k), v]),
+                            AssignMode::Assign,
                         )?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
@@ -6449,7 +6517,7 @@ fn evaluate_for(
                 ForIterationType::Declare => {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, lvalue)?;
-                    assign(&ee, &p, Some(&ObjType::Any), &itr)?;
+                    assign(&ee, &p, Some(&ObjType::Any), &itr, AssignMode::Assign)?;
 
                     evaluate_for(&ee, rest, body, callback)?;
                 }
@@ -6630,7 +6698,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             (x, i) => {
                 let xr = evaluate(env, x)?;
                 let ir = eval_index_or_slice(env, i)?;
-                index_or_slice(xr, ir)
+                index_or_slice(xr, &ir)
             }
         },
         Expr::Chain(op1, ops) => {
@@ -6714,9 +6782,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 _ => evaluate(env, rhs),
             }?;
             let ret = if *every {
-                assign_every(&env, &p, None, &res)
+                assign_every(&env, &p, None, &res, AssignMode::Assign)
             } else {
-                assign(&env, &p, None, &res)
+                assign(&env, &p, None, &res, AssignMode::Assign)
             };
             match ret {
                 Ok(()) => Ok(Obj::Null),
@@ -6800,10 +6868,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Swap(a, b) => {
             let al = eval_lvalue(env, a)?;
             let bl = eval_lvalue(env, b)?;
-            let ao = eval_lvalue_as_obj(env, a)?;
-            let bo = eval_lvalue_as_obj(env, b)?;
-            assign(&env, &al, None, &bo)?;
-            assign(&env, &bl, None, &ao)?;
+            let ao = eval_lvalue_as_obj(env, &al)?;
+            let bo = eval_lvalue_as_obj(env, &bl)?;
+            assign(&env, &al, None, &bo, AssignMode::Assign)?;
+            assign(&env, &bl, None, &ao, AssignMode::Assign)?;
             Ok(Obj::Null)
         }
         Expr::OpAssign(every, pat, op, rhs) => {
@@ -6824,8 +6892,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     ))),
                 }
             } else {
-                let pv = eval_lvalue_as_obj(env, pat)?;
                 let p = eval_lvalue(env, pat)?;
+                let pv = eval_lvalue_as_obj(env, &p)?;
                 match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
                         let res = match &**rhs {
@@ -6836,9 +6904,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         // used to only do this when the function was pure, but that required a
                         // stupid amount of code to bookkeep and prevents users from writing
                         // consuming modifiers. Instead it's now enshrined into the semantics.
-                        assign(&env, &p, None, &Obj::Null)?;
+                        assign(&env, &p, None, &Obj::Null, AssignMode::IgnoreExistingType)?;
                         let fres = ff.run(env, vec![pv, res])?;
-                        assign(&env, &p, None, &fres)?;
+                        assign(&env, &p, None, &fres, AssignMode::Assign)?;
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!(
@@ -7027,11 +7095,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             let s = evaluate(env, scrutinee)?;
             for (pat, body) in arms {
                 let ee = Env::with_parent(env);
-                // questionable sooooo questionable
-                // this can assign to random live variables lol
                 let p = eval_lvalue(&ee, pat)?;
                 // drop asap
-                let ret = assign(&ee, &p, Some(&ObjType::Any), &s);
+                let ret = assign(&ee, &p, Some(&ObjType::Any), &s, AssignMode::PatternMatch);
                 match ret {
                     Ok(()) => return evaluate(&ee, body),
                     Err(_) => continue,
@@ -7044,11 +7110,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             match evaluate(env, body) {
                 x @ (Ok(_) | Err(NErr::Break(_) | NErr::Continue | NErr::Return(_))) => x,
                 Err(NErr::Throw(e, trace)) => {
-                    // see questinability above
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, pat)?;
                     // drop asap
-                    let ret = assign(&ee, &p, Some(&ObjType::Any), &e);
+                    let ret = assign(&ee, &p, Some(&ObjType::Any), &e, AssignMode::PatternMatch);
                     match ret {
                         Ok(()) => evaluate(&ee, catcher),
                         Err(_) => Err(NErr::Throw(e, trace)),
