@@ -444,7 +444,7 @@ impl NNum {
 
 // this seems... nontrivial??
 fn cmp_bigint_f64(a: &BigInt, b: &f64) -> Option<Ordering> {
-    if let Some(bi) = b.to_bigint() {
+    if let Some(bi) = to_bigint_if_int(*b) {
         Some(a.cmp(&bi))
     } else if b.is_infinite() {
         if b.is_sign_positive() {
@@ -467,12 +467,20 @@ enum NNumReal<'a> {
     Float(f64),
 }
 
+fn to_bigint_if_int(f: f64) -> Option<BigInt> {
+    if f == f.trunc() {
+        f.to_bigint()
+    } else {
+        None
+    }
+}
+
 impl<'a> PartialEq for NNumReal<'a> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => a == b,
-            (NNumReal::Int(a), NNumReal::Float(b)) => b.to_bigint().map_or(false, |x| &x == *a),
-            (NNumReal::Float(a), NNumReal::Int(b)) => a.to_bigint().map_or(false, |x| &x == *b),
+            (NNumReal::Int(a), NNumReal::Float(b)) => to_bigint_if_int(*b).map_or(false, |x| &x == *a),
+            (NNumReal::Float(a), NNumReal::Int(b)) => to_bigint_if_int(*a).map_or(false, |x| &x == *b),
             (NNumReal::Float(a), NNumReal::Float(b)) => a == b,
         }
     }
@@ -618,7 +626,7 @@ impl PartialOrd for NTotalNum {
 }
 
 fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
-    match f.to_bigint() {
+    match to_bigint_if_int(f) {
         Some(s) => BigInt::hash(&s, state),
         None => {
             if f.is_nan() {
@@ -1089,13 +1097,13 @@ impl NNum {
                     false
                 }
             }
-            NNum::Float(a) => match a.to_bigint() {
+            NNum::Float(a) => match to_bigint_if_int(*a) {
                 Some(n) => lazy_is_prime(&n),
                 None => false,
             },
             NNum::Complex(a) => {
                 a.im == 0.0
-                    && match a.re.to_bigint() {
+                    && match to_bigint_if_int(a.re) {
                         Some(n) => lazy_is_prime(&n),
                         None => false,
                     }
