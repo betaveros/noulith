@@ -105,8 +105,16 @@ fn lists() {
     assert_eq!(simple_eval("[1, 2] ** 3 join ''"), Obj::from("121212"));
     assert_eq!(simple_eval("1 .* 3 join ''"), Obj::from("111"));
     assert_eq!(simple_eval("1 .. 2 join ''"), Obj::from("12"));
-    assert_eq!(simple_eval("[1, 2] ** [3, 4] then flatten join ''"), Obj::from("13142324"));
-    assert_eq!(simple_eval("[1, 2] ^^ 3 then flatten join ''"), Obj::from("111112121122211212221222"));
+    assert_eq!(
+        simple_eval("[1, 2] ** [3, 4] then flatten join ''"),
+        Obj::from("13142324")
+    );
+    assert_eq!(
+        simple_eval("[1, 2] ^^ 3 then flatten join ''"),
+        Obj::from("111112121122211212221222")
+    );
+    assert_eq!(simple_eval("sort([2, 5, 3]) join ''"), Obj::from("235"));
+    assert_eq!(simple_eval("reverse([2, 5, 3]) join ''"), Obj::from("352"));
 }
 
 #[test]
@@ -129,16 +137,21 @@ fn dicts() {
     assert_eq!(simple_eval("len({1, 2} && {3, 2})"), i(1));
     assert_eq!(simple_eval("len({1, 2} -- {3, 4})"), i(2));
     assert_eq!(simple_eval("len({1, 2} -- {3, 2})"), i(1));
+    assert_eq!(simple_eval("len({1, 2} -. 2)"), i(1));
+    assert_eq!(simple_eval("len({1, 2} -. 3)"), i(2));
     assert_eq!(simple_eval("len({1, 2} |. 3)"), i(3));
     assert_eq!(simple_eval("len({1, 2} |. 2)"), i(2));
     assert_eq!(simple_eval("{1: 2, 3: 4}[1]"), i(2));
     assert_eq!(simple_eval("{:5, 1: 2, 3: 4}[1]"), i(2));
     assert_eq!(simple_eval("{:5, 1: 2, 3: 4}[2]"), i(5));
+    assert_eq!(simple_eval("({1: 2, 3: 4} |.. [5, 6])[5]"), i(6));
+    assert_eq!(simple_eval("({1: 2, 3: 4} |.. [5, 6])[1]"), i(2));
+    assert_eq!(simple_eval("({1: 2, 3: 4} |.. [1, 7])[1]"), i(7));
+    assert_eq!(simple_eval("({1: 2, 3: 4} |.. [1, 7])[3]"), i(4));
+    assert_eq!(simple_eval("{1: 2, 3: 4} !? 4"), Obj::Null);
     assert_eq!(simple_eval("1 ∈ {1: 2}"), i(1));
     assert_eq!(simple_eval("1 ∉ {1: 2}"), i(0));
     assert_eq!(simple_eval("2 ∈ {1: 2}"), i(0));
-    assert_eq!(simple_eval("2 ∉ {1: 2}"), i(1));
-
     assert_eq!(simple_eval("2 ∉ {1: 2}"), i(1));
 }
 
@@ -228,4 +241,27 @@ fn function_stuff() {
         simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"),
         Obj::from("253253")
     );
+}
+
+#[test]
+fn bases() {
+    assert_eq!(simple_eval("int_radix('105', 8)"), i(69));
+    assert_eq!(simple_eval("str_radix(105, 16)"), Obj::from("69"));
+    assert_eq!(simple_eval("base64encode B'aaa'"), Obj::from("YWFh"));
+    assert_eq!(
+        simple_eval("utf8decode! base64decode 'YWFh'"),
+        Obj::from("aaa")
+    );
+    assert_eq!(simple_eval("hex_encode B'lox'"), Obj::from("6c6f78"));
+    assert_eq!(
+        simple_eval("utf8decode! hex_decode '6c6f78'"),
+        Obj::from("lox")
+    );
+}
+
+#[test]
+fn random() {
+    assert_eq!(simple_eval("0 <= random() < 1"), i(1));
+    assert_eq!(simple_eval("random() != random()"), i(1));
+    assert_eq!(simple_eval("5 <= random_range(5, 10) < 10"), i(1));
 }
