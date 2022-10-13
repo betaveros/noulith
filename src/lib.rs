@@ -8565,6 +8565,30 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    // name from python itertools?
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "pairwise".to_string(),
+        body: |env, mut a, b| {
+            let it = mut_obj_into_iter(&mut a, "pairwise")?;
+            match b {
+                Obj::Func(b, _) => Ok(Obj::list(
+                    it.scan(None, |prev, a| {
+                        let ret = match prev.take() {
+                            Some(prev) => Some(b.run(env, vec![prev, a.clone()])),
+                            None => None,
+                        };
+                        *prev = Some(a);
+                        // this outer Some is used by the iterator protocol to mean continue
+                        // iteration
+                        Some(ret)
+                    })
+                    .flatten()
+                    .collect::<NRes<Vec<Obj>>>()?,
+                )),
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
     env.insert_builtin(Zip);
     env.insert_builtin(ZipLongest);
     env.insert_builtin(Parallel);
@@ -9621,7 +9645,7 @@ pub fn initialize(env: &mut Env) {
                                 }
                                 Ok(Obj::from(x))
                             }
-                            _ => Err(NErr::generic_argument_error())
+                            _ => Err(NErr::generic_argument_error()),
                         }
                     } else {
                         Err(NErr::value_error(format!("Base not in [2, 36]: {}", base)))
@@ -9686,7 +9710,22 @@ pub fn initialize(env: &mut Env) {
                         )))
                     }
                 }
-                _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
+                Obj::Seq(Seq::Bytes(s)) => {
+                    if s.len() % 2 == 0 {
+                        Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                            s.chunks(2)
+                                .map(|ch| Ok(val(ch[0])? << 4 | val(ch[1])?))
+                                .collect::<NRes<Vec<u8>>>()?,
+                        ))))
+                    } else {
+                        Err(NErr::value_error(format!(
+                            "Can't decode odd-length hex string"
+                        )))
+                    }
+                }
+                _ => Err(NErr::type_error(
+                    "must hex_decode bytes or string".to_string(),
+                )),
             }
         },
     });
@@ -9701,6 +9740,13 @@ pub fn initialize(env: &mut Env) {
         name: "base64decode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => match base64::decode(&*s) {
+                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
+                Err(e) => Err(NErr::value_error(format!(
+                    "failed to base64decode: {:?}",
+                    e
+                ))),
+            },
+            Obj::Seq(Seq::Bytes(s)) => match base64::decode(&*s) {
                 Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
                 Err(e) => Err(NErr::value_error(format!(
                     "failed to base64decode: {:?}",
