@@ -63,12 +63,30 @@ impl Precedence {
     }
 }
 
+static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Struct {
+    id: usize,
+    size: usize,
+}
+
+impl Struct {
+    fn new(size: usize) -> Self {
+        Struct {
+            id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            size,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Obj {
     Null,
     Num(NNum),
     Seq(Seq),
     Func(Func, Precedence),
+    Instance(Struct, Vec<Box<Obj>>),
 }
 
 // to support Rc<dyn Stream>, can't have Clone, because
@@ -619,6 +637,7 @@ pub enum ObjType {
     Func,
     Type,
     Any,
+    StructInstance,
     Satisfying(REnv, Box<Func>),
 }
 
@@ -640,6 +659,7 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
+            ObjType::StructInstance => "struct_instance",
             ObjType::Satisfying(..) => "satisfying(???)",
         }
         .to_string()
@@ -661,6 +681,7 @@ pub fn type_of(obj: &Obj) -> ObjType {
         Obj::Seq(Seq::Stream(_)) => ObjType::Stream,
         Obj::Func(Func::Type(_), _) => ObjType::Type,
         Obj::Func(..) => ObjType::Func,
+        Obj::Instance(..) => ObjType::StructInstance,
     }
 }
 
@@ -815,6 +836,7 @@ impl Obj {
             Obj::Seq(Seq::Bytes(x)) => !x.is_empty(),
             Obj::Seq(Seq::Stream(x)) => x.len() == Some(0),
             Obj::Func(..) => true,
+            Obj::Instance(..) => true,
         }
     }
 
@@ -1011,6 +1033,9 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         ))),
         Obj::Func(..) => Err(NErr::type_error(
             "Using a function as a dictionary key isn't supported".to_string(),
+        )),
+        Obj::Instance(..) => Err(NErr::type_error(
+            "Using an instance as a dictionary key isn't supported".to_string(),
         )),
     }
 }
@@ -1292,6 +1317,7 @@ impl MyDisplay for Obj {
             }
             Obj::Seq(Seq::Bytes(xs)) => write_bytes(xs.as_slice(), formatter, flags),
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
+            Obj::Instance(_, fields) => write!(formatter, "<instance: {}>", CommaSeparated(fields)),
         }
     }
 }
@@ -1663,6 +1689,8 @@ pub enum Func {
     ),
     CallSection(Option<Box<Obj>>, Vec<Option<Obj>>),
     Type(ObjType),
+    Struct(Struct),
+    StructField(Struct, usize),
 }
 
 type REnv = Rc<RefCell<Env>>;
@@ -1821,6 +1849,25 @@ impl Func {
                 Few::One(arg) => call_type(t, arg),
                 _ => Err(NErr::argument_error("Types can only take one argument".to_string()))
             }
+            Func::Struct(s) => {
+                if args.len() == 0 {
+                    Ok(Obj::Instance(s.clone(), vec![Box::new(Obj::Null); s.size]))
+                } else if args.len() == s.size {
+                    Ok(Obj::Instance(s.clone(), args.into_iter().map(Box::new).collect()))
+                } else {
+                    Err(NErr::argument_error(format!("struct construction: wrong number of arguments: {}, wanted {}", args.len(), s.size)))
+                }
+            }
+            Func::StructField(struc, field_index) => match few(args) {
+                Few::One(Obj::Instance(s, fields)) => {
+                    if *struc == s {
+                        Ok((&*fields[*field_index]).clone())
+                    } else {
+                        Err(NErr::argument_error(format!("wrong kind of struct")))
+                    }
+                }
+                _ => Err(NErr::argument_error("fields can only take one argument".to_string()))
+            }
         }
     }
 
@@ -1842,6 +1889,8 @@ impl Func {
             Func::IndexSection(..) => None,
             Func::SliceSection(..) => None,
             Func::Type(_) => None,
+            Func::Struct(..) => None,
+            Func::StructField(..) => None,
         }
     }
 }
@@ -1896,6 +1945,8 @@ impl Display for Func {
                 )
             }
             Func::Type(t) => write!(formatter, "{}", t.name()),
+            Func::Struct(..) => write!(formatter, "<struct>"),
+            Func::StructField(..) => write!(formatter, "<struct field>"),
         }
     }
 }
@@ -3471,6 +3522,7 @@ pub enum Token {
     Remove,
     Swap,
     Every,
+    Struct,
     Underscore,
 
     // strip me before parsing
@@ -3546,6 +3598,7 @@ pub enum Expr {
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
     // meaningful in lvalues
     Paren(Box<LocExpr>),
+    Struct(Rc<String>, Vec<Rc<String>>),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
@@ -4168,6 +4221,7 @@ impl<'a> Lexer<'a> {
                                 "remove" => Token::Remove,
                                 "swap" => Token::Swap,
                                 "every" => Token::Every,
+                                "struct" => Token::Struct,
                                 "_" => Token::Underscore,
                                 _ => Token::Ident(acc),
                             })
@@ -4563,6 +4617,35 @@ impl Parser {
                         loc,
                         Expr::Try(Box::new(body), Box::new(pat), Box::new(catcher)),
                     ))
+                }
+                Token::Struct => {
+                    self.advance();
+                    if let Some(Token::Ident(name)) = self.peek() {
+                        let name = Rc::new(name.clone());
+                        self.advance();
+                        self.require(Token::LeftParen, "struct begin".to_string())?;
+                        let mut fields = Vec::new();
+                        if let Some(Token::Ident(field1)) = self.peek() {
+                            fields.push(Rc::new(field1.clone()));
+                            self.advance();
+                            while self.try_consume(&Token::Comma) {
+                                if let Some(Token::Ident(field)) = self.peek() {
+                                    fields.push(Rc::new(field.clone()));
+                                    self.advance();
+                                } else {
+                                    Err(format!("bad struct field {}", self.peek_err()))?
+                                }
+                            }
+                        }
+                        self.require(Token::RightParen, "struct end".to_string())?;
+
+                        Ok(LocExpr(
+                            loc,
+                            Expr::Struct(name, fields),
+                        ))
+                    } else {
+                        Err(format!("bad struct name {}", self.peek_err()))?
+                    }
                 }
                 _ => Err(format!("atom: Unexpected {}", self.peek_err())),
             }
@@ -5419,6 +5502,15 @@ fn set_index(
                 k
             ))),
         },
+        (Obj::Instance(struc, fields), [EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)), rest @ ..]) => {
+            if struc == istruc {
+                set_index(&mut *fields[*field_index], rest, value, every)
+            } else {
+                Err(NErr::index_error(format!(
+                    "wrong struct type",
+                )))
+            }
+        }
         (lhs, ii) => Err(NErr::index_error(format!(
             "can't set index {:?} {:?}",
             lhs, ii
@@ -5467,6 +5559,15 @@ fn modify_existing_index(
                                 )))
                             }
                         },
+                    }
+                }
+                (Obj::Instance(struc, fields), EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _))) => {
+                    if struc == istruc {
+                        modify_existing_index(&mut *fields[*field_index], rest, f)
+                    } else {
+                        Err(NErr::index_error(format!(
+                            "wrong struct type",
+                        )))
                     }
                 }
                 // TODO everything
@@ -5528,6 +5629,15 @@ fn modify_every_existing_index(
                                 )))
                             }
                         },
+                    }
+                }
+                (Obj::Instance(struc, fields), EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _))) => {
+                    if struc == istruc {
+                        modify_every_existing_index(&mut *fields[*field_index], rest, f)
+                    } else {
+                        Err(NErr::index_error(format!(
+                            "wrong struct type",
+                        )))
                     }
                 }
                 // TODO everything
@@ -6324,6 +6434,15 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             "precedence" => Ok(Obj::from(*p)),
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         },
+        (Obj::Instance(struc, fields), Obj::Func(Func::StructField(istruc, field_index), _)) => {
+            if struc == &istruc {
+                Ok((&*fields[field_index]).clone())
+            } else {
+                Err(NErr::index_error(format!(
+                    "wrong struct type",
+                )))
+            }
+        }
         (xr, ir) => Err(NErr::type_error(format!(
             "can't index {}[{}]",
             FmtObj::debug(&xr),
@@ -7235,6 +7354,26 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             })
         }
+        Expr::Struct(name, field_names) => {
+            let s = Struct::new(field_names.len());
+            assign(
+                &env,
+                &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
+                Some(&ObjType::Func),
+                &Obj::Func(Func::Struct(s.clone()), Precedence::zero()),
+                AssignMode::Assign,
+            )?;
+            for (i, field) in field_names.iter().enumerate() {
+                assign(
+                    &env,
+                    &EvaluatedLvalue::IndexedIdent((&**field).clone(), Vec::new()),
+                    Some(&ObjType::Func),
+                    &Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
+                    AssignMode::Assign,
+                )?;
+            }
+            Ok(Obj::Null)
+        }
         Expr::Paren(p) => evaluate(env, &*p),
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
@@ -7360,6 +7499,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
             Expr::BytesLit(x) => Ok(Expr::BytesLit(x.clone())),
             Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
             Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
+            Expr::Struct(name, field_names) => Ok(Expr::Struct(name.clone(), field_names.clone())),
 
             Expr::FormatString(s) => Ok(Expr::FormatString(Rc::new(
                 s.iter()
