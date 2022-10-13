@@ -479,8 +479,12 @@ impl<'a> PartialEq for NNumReal<'a> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => a == b,
-            (NNumReal::Int(a), NNumReal::Float(b)) => to_bigint_if_int(*b).map_or(false, |x| &x == *a),
-            (NNumReal::Float(a), NNumReal::Int(b)) => to_bigint_if_int(*a).map_or(false, |x| &x == *b),
+            (NNumReal::Int(a), NNumReal::Float(b)) => {
+                to_bigint_if_int(*b).map_or(false, |x| &x == *a)
+            }
+            (NNumReal::Float(a), NNumReal::Int(b)) => {
+                to_bigint_if_int(*a).map_or(false, |x| &x == *b)
+            }
             (NNumReal::Float(a), NNumReal::Float(b)) => a == b,
         }
     }

@@ -9548,6 +9548,92 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
+    // not TwoNums bc don't want to vectorize
+    env.insert_builtin(TwoArgBuiltin {
+        name: "str_radix".to_string(),
+        body: |a, r| match (a, r) {
+            (Obj::Num(NNum::Int(mut a)), Obj::Num(NNum::Int(r))) => {
+                if let Some(base) = r.to_u32() {
+                    if base >= 2 && base <= 36 {
+                        let neg = a.is_negative();
+                        if neg {
+                            a = -a;
+                        }
+                        let mut ret = Vec::new();
+                        while (&a).is_positive() {
+                            ret.push(
+                                char::from_digit(
+                                    ((&a) % base).to_u32().expect("str_radix bad"),
+                                    base,
+                                )
+                                .expect("str_radix bad"),
+                            );
+                            a /= base;
+                        }
+                        if neg {
+                            ret.push('-');
+                        }
+                        ret.reverse();
+                        Ok(Obj::from(ret.into_iter().collect::<String>()))
+                    } else {
+                        Err(NErr::value_error(format!("Base not in [2, 36]: {}", base)))
+                    }
+                } else {
+                    Err(NErr::value_error(format!("Base way out of range: {}", r)))
+                }
+            }
+            _ => Err(NErr::generic_argument_error()),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "int_radix".to_string(),
+        body: |a, r| {
+            if let Obj::Num(n) = r {
+                if let Some(base) = n.to_bigint().and_then(BigInt::to_u32) {
+                    if 2 <= base && base <= 36 {
+                        let mut x = BigInt::from(0);
+                        match a {
+                            Obj::Seq(Seq::String(s)) => {
+                                for c in s.chars() {
+                                    match c.to_digit(base) {
+                                        Some(cc) => {
+                                            x = base * x + cc;
+                                        }
+                                        None => Err(NErr::value_error(format!(
+                                            "Bad digit in base {}: {:?}",
+                                            base, c
+                                        )))?,
+                                    }
+                                }
+                                return Ok(Obj::from(x));
+                            }
+                            Obj::Seq(Seq::Bytes(b)) => {
+                                for c in b.iter() {
+                                    match (*c as char).to_digit(base) {
+                                        Some(cc) => {
+                                            x = base * x + cc;
+                                        }
+                                        None => Err(NErr::value_error(format!(
+                                            "Bad digit in base {}: {:?}",
+                                            base, c
+                                        )))?,
+                                    }
+                                }
+                                Ok(Obj::from(x))
+                            }
+                            _ => Err(NErr::generic_argument_error())
+                        }
+                    } else {
+                        Err(NErr::value_error(format!("Base not in [2, 36]: {}", base)))
+                    }
+                } else {
+                    Err(NErr::value_error(format!("Base way out of range: {}", n)))
+                }
+            } else {
+                Err(NErr::generic_argument_error())
+            }
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "utf8encode".to_string(),
         body: |arg| match arg {
