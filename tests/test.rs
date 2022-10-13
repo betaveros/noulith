@@ -39,6 +39,7 @@ fn weird_assignments() {
     assert_eq!(simple_eval("every x, y := 2; x + y"), i(4));
     assert_eq!(simple_eval("x := 1 to 10; every x[2:4] = -1; sum x"), i(46));
     assert_eq!(simple_eval("x := 1 to 10; every x[2:4] -= 1; sum x"), i(53));
+    assert_eq!(simple_eval("a, b, ...x, c := 1 to 6; [a, b, x join '', c] join ','"), Obj::from("1,2,345,6"));
 }
 
 #[test]

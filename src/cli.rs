@@ -60,10 +60,12 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::DoubleColon
                 | Token::Ellipsis
                 | Token::Assign
+                | Token::Consume
                 | Token::Pop
                 | Token::Remove
                 | Token::Swap
                 | Token::Every
+                | Token::Struct
                 | Token::Underscore => Some("\x1b[1;34m"),
                 _ => None,
             };
