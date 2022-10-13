@@ -74,6 +74,13 @@ fn math() {
 }
 
 #[test]
+fn fractions() {
+    assert_eq!(simple_eval("numerator! 35 / 28"), i(5));
+    assert_eq!(simple_eval("denominator! 35 / 28"), i(4));
+    assert_eq!(simple_eval("x / y := 35 / 28; x * y"), i(20));
+}
+
+#[test]
 fn bitwise() {
     assert_eq!(simple_eval("7 & 4"), i(4));
     assert_eq!(simple_eval("7 | 4"), i(7));
@@ -96,6 +103,10 @@ fn lists() {
     assert_eq!(simple_eval("[1, 2, 3] +. 4 join ''"), Obj::from("1234"));
     assert_eq!(simple_eval("1 .+ [2, 3, 4] join ''"), Obj::from("1234"));
     assert_eq!(simple_eval("[1, 2] ** 3 join ''"), Obj::from("121212"));
+    assert_eq!(simple_eval("1 .* 3 join ''"), Obj::from("111"));
+    assert_eq!(simple_eval("1 .. 2 join ''"), Obj::from("12"));
+    assert_eq!(simple_eval("[1, 2] ** [3, 4] then flatten join ''"), Obj::from("13142324"));
+    assert_eq!(simple_eval("[1, 2] ^^ 3 then flatten join ''"), Obj::from("111112121122211212221222"));
 }
 
 #[test]
@@ -116,6 +127,8 @@ fn dicts() {
     assert_eq!(simple_eval("len({1, 2} || {3, 2})"), i(3));
     assert_eq!(simple_eval("len({1, 2} && {3, 4})"), i(0));
     assert_eq!(simple_eval("len({1, 2} && {3, 2})"), i(1));
+    assert_eq!(simple_eval("len({1, 2} -- {3, 4})"), i(2));
+    assert_eq!(simple_eval("len({1, 2} -- {3, 2})"), i(1));
     assert_eq!(simple_eval("len({1, 2} |. 3)"), i(3));
     assert_eq!(simple_eval("len({1, 2} |. 2)"), i(2));
     assert_eq!(simple_eval("{1: 2, 3: 4}[1]"), i(2));
@@ -124,6 +137,8 @@ fn dicts() {
     assert_eq!(simple_eval("1 ∈ {1: 2}"), i(1));
     assert_eq!(simple_eval("1 ∉ {1: 2}"), i(0));
     assert_eq!(simple_eval("2 ∈ {1: 2}"), i(0));
+    assert_eq!(simple_eval("2 ∉ {1: 2}"), i(1));
+
     assert_eq!(simple_eval("2 ∉ {1: 2}"), i(1));
 }
 
@@ -189,6 +204,10 @@ fn minmax() {
 fn opassigns() {
     assert_eq!(simple_eval("x := 3; x += 4; x"), i(7));
     assert_eq!(simple_eval("x := 3; x min= 2; x"), i(2));
+    assert_eq!(
+        simple_eval("x: list = [4, 6]; x map= (+1); product x"),
+        i(35)
+    );
 }
 
 #[test]

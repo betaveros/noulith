@@ -9183,7 +9183,7 @@ pub fn initialize(env: &mut Env) {
                     let u = n
                         .to_usize()
                         .ok_or(NErr::value_error("bad lazy pow".to_string()))?;
-                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(
+                    Ok(Obj::Seq(Seq::Stream(Rc::new(CartesianPower(
                         v,
                         Some(Rc::new(vec![0; u])),
                     )))))
