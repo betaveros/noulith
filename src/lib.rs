@@ -1621,11 +1621,37 @@ impl NErr {
         NErr::throw(format!("assert error: {}", s))
     }
 
-    fn generic_argument_error() -> NErr {
-        NErr::throw("unrecognized argument types".to_string())
+    fn argument_error_args(x: &[Obj]) -> NErr {
+        NErr::throw(format!(
+            "unrecognized argument types/count: {}",
+            CommaSeparated(&x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>())
+        ))
+    }
+    fn argument_error_few2(x: &Few2<Obj>) -> NErr {
+        NErr::throw(format!(
+            "unrecognized argument types/count: {}",
+            CommaSeparated(&match x {
+                Few2::Zero => Vec::new(),
+                Few2::One(a) => vec![type_of(a).name()],
+                Few2::Two(a, b) => vec![type_of(a).name(), type_of(b).name()],
+                Few2::Many(x) => x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>(),
+            })
+        ))
     }
     fn argument_error_1(x: &Obj) -> NErr {
         NErr::throw(format!("unrecognized argument type: {}", type_of(x).name()))
+    }
+    fn argument_error_first(x: &Obj) -> NErr {
+        NErr::throw(format!(
+            "unrecognized 1st argument type: {}",
+            type_of(x).name()
+        ))
+    }
+    fn argument_error_second(x: &Obj) -> NErr {
+        NErr::throw(format!(
+            "unrecognized 2nd argument type: {}",
+            type_of(x).name()
+        ))
     }
     fn argument_error_2(x: &Obj, y: &Obj) -> NErr {
         NErr::throw(format!(
@@ -8634,7 +8660,7 @@ pub fn initialize(env: &mut Env) {
                     let iv = Rc::new((0..u).collect());
                     Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(iv))))))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                b => Err(NErr::argument_error_second(&b)),
             }
         },
     });
@@ -9413,7 +9439,7 @@ pub fn initialize(env: &mut Env) {
                         Some(Rc::new(vec![0; u])),
                     )))))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                b => Err(NErr::argument_error_second(&b)),
             }
         },
     });
@@ -9729,7 +9755,7 @@ pub fn initialize(env: &mut Env) {
                     Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
                 }
             } else {
-                Err(NErr::generic_argument_error())
+                Err(NErr::argument_error_args(&args))
             }
         },
     });
@@ -9746,7 +9772,7 @@ pub fn initialize(env: &mut Env) {
                     Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
                 }
             } else {
-                Err(NErr::generic_argument_error())
+                Err(NErr::argument_error_args(&args))
             }
         },
     });
@@ -9846,7 +9872,7 @@ pub fn initialize(env: &mut Env) {
                                 }
                                 Ok(Obj::from(x))
                             }
-                            _ => Err(NErr::generic_argument_error()),
+                            a => Err(NErr::argument_error_first(&a)),
                         }
                     } else {
                         Err(NErr::value_error(format!("Base not in [2, 36]: {}", base)))
@@ -10025,7 +10051,7 @@ pub fn initialize(env: &mut Env) {
                     Err(e) => Ok(Obj::from(-e.duration().as_secs_f64())),
                 }
             } else {
-                Err(NErr::generic_argument_error())
+                Err(NErr::argument_error_args(&args))
             }
         },
     });
@@ -10040,9 +10066,9 @@ pub fn initialize(env: &mut Env) {
                     let off = FixedOffset::east((to_f64_ok(&n)? * 3600.0) as i32);
                     Ok(datetime_to_obj(now + off))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                t => Err(NErr::argument_error_1(&t)),
             },
-            _ => Err(NErr::generic_argument_error()),
+            Few::Many(a) => Err(NErr::argument_error_args(&a)),
         },
     });
 
@@ -10050,7 +10076,8 @@ pub fn initialize(env: &mut Env) {
         name: "random".to_string(),
         body: |_env, args| match few(args) {
             Few::Zero => Ok(Obj::from(rand::random::<f64>())),
-            _ => Err(NErr::generic_argument_error()),
+            Few::One(a) => Err(NErr::argument_error_1(&a)),
+            Few::Many(a) => Err(NErr::argument_error_args(&a)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -10162,7 +10189,7 @@ pub fn initialize(env: &mut Env) {
                         .send()
                         .map_err(|e| NErr::io_error(format!("built request failed: {}", e)))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                f => Err(NErr::argument_error_few2(&f)),
             }?;
             match resp.text() {
                 Ok(s) => Ok(Obj::from(s)),
