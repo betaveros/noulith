@@ -61,6 +61,19 @@ impl Precedence {
     fn zero() -> Self {
         Precedence(0.0, Assoc::Left)
     }
+    fn tighter_than_when_before(&self, other: &Precedence) -> bool {
+        match self.0.partial_cmp(&other.0) {
+            Some(Ordering::Greater) => true,
+            Some(Ordering::Less) => false,
+            // oh my god nan as a precedence
+            Some(Ordering::Equal) | None => match self.1 {
+                // maybe we should error if opposite-associativity things of the same precedence
+                // are all in a row... shrug
+                Assoc::Left => true,
+                Assoc::Right => false,
+            },
+        }
+    }
 }
 
 static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1610,6 +1623,16 @@ impl NErr {
 
     fn generic_argument_error() -> NErr {
         NErr::throw("unrecognized argument types".to_string())
+    }
+    fn argument_error_1(x: &Obj) -> NErr {
+        NErr::throw(format!("unrecognized argument type: {}", type_of(x).name()))
+    }
+    fn argument_error_2(x: &Obj, y: &Obj) -> NErr {
+        NErr::throw(format!(
+            "unrecognized argument types: ({}, {})",
+            type_of(x).name(),
+            type_of(y).name()
+        ))
     }
 }
 
@@ -3190,7 +3213,10 @@ pub struct OneArgBuiltin {
 impl Builtin for OneArgBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(arg) => err_add_name((self.body)(arg), &self.name),
+            Few::One(arg) => {
+                let ty = type_of(&arg);
+                err_add_name((self.body)(arg), &format!("{}({})", self.name, ty.name()))
+            }
             f => Err(NErr::argument_error(format!(
                 "{} only accepts one argument, got {}",
                 self.name,
@@ -4649,10 +4675,7 @@ impl Parser {
                         }
                         self.require(Token::RightParen, "struct end".to_string())?;
 
-                        Ok(LocExpr(
-                            loc,
-                            Expr::Struct(name, fields),
-                        ))
+                        Ok(LocExpr(loc, Expr::Struct(name, fields)))
                     } else {
                         Err(format!("bad struct name {}", self.peek_err()))?
                     }
@@ -5258,6 +5281,10 @@ impl Env {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b, p)
     }
+    fn insert_rassoc_builtin(&mut self, b: impl Builtin + 'static) {
+        let p = Precedence(default_precedence(b.builtin_name()), Assoc::Right);
+        self.insert_builtin_with_precedence(b, p)
+    }
     fn insert_builtin_with_alias(&mut self, b: impl Builtin + 'static + Clone, alias: &str) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b.clone(), p);
@@ -5331,20 +5358,8 @@ fn assign_all(
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, mode)?;
-            assign(
-                env,
-                inner,
-                rt,
-                Obj::list(srhs),
-                mode,
-            )?;
-            assign_all_basic(
-                env,
-                &lhs[si + 1..],
-                rt,
-                rrhs,
-                mode,
-            )
+            assign(env, inner, rt, Obj::list(srhs), mode)?;
+            assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode)
         }
         None => assign_all_basic(env, lhs, rt, rhs, mode),
     }
@@ -5515,13 +5530,14 @@ fn set_index(
                 k
             ))),
         },
-        (Obj::Instance(struc, fields), [EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)), rest @ ..]) => {
+        (
+            Obj::Instance(struc, fields),
+            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)), rest @ ..],
+        ) => {
             if struc == istruc {
                 set_index(&mut fields[*field_index], rest, value, every)
             } else {
-                Err(NErr::index_error(format!(
-                    "wrong struct type",
-                )))
+                Err(NErr::index_error(format!("wrong struct type",)))
             }
         }
         (lhs, ii) => Err(NErr::index_error(format!(
@@ -5574,13 +5590,17 @@ fn modify_existing_index(
                         },
                     }
                 }
-                (Obj::Instance(struc, fields), EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _))) => {
+                (
+                    Obj::Instance(struc, fields),
+                    EvaluatedIndexOrSlice::Index(Obj::Func(
+                        Func::StructField(istruc, field_index),
+                        _,
+                    )),
+                ) => {
                     if struc == istruc {
                         modify_existing_index(&mut fields[*field_index], rest, f)
                     } else {
-                        Err(NErr::index_error(format!(
-                            "wrong struct type",
-                        )))
+                        Err(NErr::index_error(format!("wrong struct type",)))
                     }
                 }
                 // TODO everything
@@ -5644,13 +5664,17 @@ fn modify_every_existing_index(
                         },
                     }
                 }
-                (Obj::Instance(struc, fields), EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _))) => {
+                (
+                    Obj::Instance(struc, fields),
+                    EvaluatedIndexOrSlice::Index(Obj::Func(
+                        Func::StructField(istruc, field_index),
+                        _,
+                    )),
+                ) => {
                     if struc == istruc {
                         modify_every_existing_index(&mut fields[*field_index], rest, f)
                     } else {
-                        Err(NErr::index_error(format!(
-                            "wrong struct type",
-                        )))
+                        Err(NErr::index_error(format!("wrong struct type",)))
                     }
                 }
                 // TODO everything
@@ -5765,8 +5789,7 @@ fn assign(
                 env,
                 ss,
                 rt,
-                obj_to_cloning_iter(&rhs, "unpacking")?
-                    .collect::<Vec<Obj>>(),
+                obj_to_cloning_iter(&rhs, "unpacking")?.collect::<Vec<Obj>>(),
                 mode,
             ),
         },
@@ -6061,7 +6084,7 @@ impl ChainEvaluator {
         while self
             .operators
             .last()
-            .map_or(false, |t| t.1 .0 >= precedence.0)
+            .map_or(false, |t| t.1.tighter_than_when_before(&precedence))
         {
             let (top, prec, loc) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
@@ -6137,7 +6160,7 @@ impl LvalueChainEvaluator {
         while self
             .operators
             .last()
-            .map_or(false, |t| t.1 .0 >= precedence.0)
+            .map_or(false, |t| t.1.tighter_than_when_before(&precedence))
         {
             let (top, prec) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
@@ -6450,9 +6473,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             if struc == &istruc {
                 Ok(fields[field_index].clone())
             } else {
-                Err(NErr::index_error(format!(
-                    "wrong struct type",
-                )))
+                Err(NErr::index_error(format!("wrong struct type",)))
             }
         }
         (xr, ir) => Err(NErr::type_error(format!(
@@ -6986,7 +7007,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Assign(every, pat, rhs) => {
-            let p = eval_lvalue(env, pat)?;
+            let p = add_trace(eval_lvalue(env, pat), format!("assign lvalue"), expr.0)?;
             let res = match &**rhs {
                 LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
                 _ => evaluate(env, rhs),
@@ -7007,9 +7028,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     modify_existing_index(
                         &mut *try_borrow_mut_nres(vv, "var for consume", &s)?,
                         &ixs,
-                        |x| {
-                            Ok(std::mem::take(x))
-                        },
+                        |x| Ok(std::mem::take(x)),
                     )
                 })
                 .ok_or(NErr::type_error("failed to consume??".to_string()))?,
@@ -7334,7 +7353,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 // drop asap
                 // TODO this clone isn't great but isn't trivial to eliminate. maybe pattern match
                 // errors should return the assigned object back or something?? idk
-                let ret = assign(&ee, &p, Some(&ObjType::Any), s.clone(), AssignMode::PatternMatch);
+                let ret = assign(
+                    &ee,
+                    &p,
+                    Some(&ObjType::Any),
+                    s.clone(),
+                    AssignMode::PatternMatch,
+                );
                 match ret {
                     Ok(()) => return evaluate(&ee, body),
                     Err(_) => continue,
@@ -7351,7 +7376,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     let p = eval_lvalue(&ee, pat)?;
                     // drop asap
                     // TODO as above, this clone isn't great but isn't trivial to eliminate
-                    let ret = assign(&ee, &p, Some(&ObjType::Any), e.clone(), AssignMode::PatternMatch);
+                    let ret = assign(
+                        &ee,
+                        &p,
+                        Some(&ObjType::Any),
+                        e.clone(),
+                        AssignMode::PatternMatch,
+                    );
                     match ret {
                         Ok(()) => evaluate(&ee, catcher),
                         Err(_) => Err(NErr::Throw(e, trace)),
@@ -8265,7 +8296,7 @@ pub fn initialize(env: &mut Env) {
         name: "gcd".to_string(),
         body: |a, b| Ok(Obj::Num(a.gcd(&b))),
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_rassoc_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| Ok(Obj::Num(a.pow_num(&b))),
     });
@@ -8580,7 +8611,7 @@ pub fn initialize(env: &mut Env) {
                 None,
                 BigInt::from(1),
             ))))),
-            _ => Err(NErr::generic_argument_error()),
+            e => Err(NErr::argument_error_1(&e)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -8623,7 +8654,7 @@ pub fn initialize(env: &mut Env) {
                 f,
                 env.clone(),
             ))))))),
-            _ => Err(NErr::generic_argument_error()),
+            f => Err(NErr::argument_error_2(&a, &f)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -8791,7 +8822,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -8800,7 +8831,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
                 Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -8894,7 +8925,7 @@ pub fn initialize(env: &mut Env) {
         name: "unique".to_string(),
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(multi_unique(s)?)),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9157,7 +9188,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
                 s.split(&*t).map(|w| Obj::from(w.to_string())).collect(),
             )),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9166,28 +9197,28 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => {
                 Ok(Obj::from(s.starts_with(&*t)))
             }
-            _ => Err(NErr::argument_error(":(".to_string())),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "ends_with".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::from(s.ends_with(&*t))),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "strip".to_string(),
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "trim".to_string(),
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim())),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9196,7 +9227,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::String(s)) => Ok(Obj::list(
                 s.split_whitespace().map(|w| Obj::from(w)).collect(),
             )),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9207,7 +9238,7 @@ pub fn initialize(env: &mut Env) {
                     .map(|w| Obj::from(w.to_string()))
                     .collect(),
             )),
-            _ => Err(NErr::argument_error(":(".to_string())),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9241,7 +9272,7 @@ pub fn initialize(env: &mut Env) {
                     }
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9271,7 +9302,7 @@ pub fn initialize(env: &mut Env) {
                     ))
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(Replace);
@@ -9307,12 +9338,12 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
                     Ok(Obj::Seq(Seq::Bytes(a)))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                (a, b) => Err(NErr::argument_error_2(&a, &b)),
             },
         },
         "⧺",
     );
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_rassoc_builtin(TwoArgBuiltin {
         name: ".+".to_string(),
         body: |a, b| match b {
             Obj::Seq(Seq::List(mut b)) => {
@@ -9327,7 +9358,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut b).insert(0, to_byte(a, "prepend to bytes")?);
                 Ok(Obj::Seq(Seq::Bytes(b)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            b => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin_with_alias(
@@ -9346,7 +9377,7 @@ pub fn initialize(env: &mut Env) {
                     Rc::make_mut(&mut a).push(to_byte(b, "append to bytes")?);
                     Ok(Obj::Seq(Seq::Bytes(a)))
                 }
-                _ => Err(NErr::generic_argument_error()),
+                a => Err(NErr::argument_error_2(&a, &b)),
             },
         },
         "+.",
@@ -9405,28 +9436,28 @@ pub fn initialize(env: &mut Env) {
         name: "first".to_string(),
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 0),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "second".to_string(),
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 1),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "third".to_string(),
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, 2),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "last".to_string(),
         body: |a| match a {
             Obj::Seq(s) => linear_index_isize(s, -1),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9459,7 +9490,7 @@ pub fn initialize(env: &mut Env) {
                 }
                 Err(NErr::value_error("didn't find".to_string()))
             }
-            _ => Err(NErr::generic_argument_error()),
+            b => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -9474,7 +9505,7 @@ pub fn initialize(env: &mut Env) {
                 }
                 Ok(Obj::Null)
             }
-            _ => Err(NErr::generic_argument_error()),
+            b => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -9542,7 +9573,7 @@ pub fn initialize(env: &mut Env) {
         name: "reverse".to_string(),
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::Seq(multi_reverse(s)?)),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
 
@@ -9554,7 +9585,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).extend(Rc::make_mut(&mut b).drain());
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9564,7 +9595,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).insert(to_key(b)?, Obj::Null);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9574,7 +9605,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9584,7 +9615,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9601,7 +9632,7 @@ pub fn initialize(env: &mut Env) {
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9617,7 +9648,7 @@ pub fn initialize(env: &mut Env) {
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9627,7 +9658,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9637,7 +9668,7 @@ pub fn initialize(env: &mut Env) {
                 Rc::make_mut(&mut a).retain(|k, _| !b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9659,7 +9690,7 @@ pub fn initialize(env: &mut Env) {
                     .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
                     .collect(),
             )),
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9776,7 +9807,7 @@ pub fn initialize(env: &mut Env) {
                     Err(NErr::value_error(format!("Base way out of range: {}", r)))
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9824,7 +9855,7 @@ pub fn initialize(env: &mut Env) {
                     Err(NErr::value_error(format!("Base way out of range: {}", n)))
                 }
             } else {
-                Err(NErr::generic_argument_error())
+                Err(NErr::argument_error_2(&a, &r))
             }
         },
     });
@@ -9935,7 +9966,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(c) => Ok(Obj::from(c)),
                 Err(e) => Err(NErr::io_error(format!("{}", e))),
             },
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(OneArgBuiltin {
@@ -9957,7 +9988,7 @@ pub fn initialize(env: &mut Env) {
                     }
                 }
             },
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -9969,7 +10000,7 @@ pub fn initialize(env: &mut Env) {
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
 
@@ -10028,7 +10059,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => {
                 Ok(Obj::from(rand::thread_rng().gen_bigint_range(&a, &b)))
             }
-            _ => Err(NErr::generic_argument_error()),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
 
@@ -10082,14 +10113,54 @@ pub fn initialize(env: &mut Env) {
                                 builder = builder.header(format!("{}", k), format!("{}", v))
                             }
                         }
-                        Some(k) => return Err(NErr::type_error(format!("bad headers: {}", k))),
+                        Some(k) => {
+                            return Err(NErr::type_error(format!(
+                                "bad headers, should be dict: {}",
+                                k
+                            )))
+                        }
+                        None => {}
+                    }
+                    match opts.get(&ObjKey::from("query")) {
+                        Some(Obj::Seq(Seq::Dict(d, _))) => {
+                            builder = builder.query(
+                                d.iter()
+                                    .map(|(k, v)| (format!("{}", k), format!("{}", v)))
+                                    .collect::<Vec<(String, String)>>()
+                                    .as_slice(),
+                            );
+                        }
+                        Some(k) => {
+                            return Err(NErr::type_error(format!(
+                                "bad query, should be dict: {}",
+                                k
+                            )))
+                        }
+                        None => {}
+                    }
+                    match opts.get(&ObjKey::from("form")) {
+                        Some(Obj::Seq(Seq::Dict(d, _))) => {
+                            builder = builder.form(
+                                d.iter()
+                                    .map(|(k, v)| (format!("{}", k), format!("{}", v)))
+                                    .collect::<Vec<(String, String)>>()
+                                    .as_slice(),
+                            );
+                        }
+                        Some(k) => {
+                            return Err(NErr::type_error(format!(
+                                "bad form, should be dict: {}",
+                                k
+                            )))
+                        }
                         None => {}
                     }
                     // builder = builder.header(key, value);
                     // builder = builder.query(&[(key, value)]);
+                    // builder = builder.form(&[(key, value)]);
                     builder
                         .send()
-                        .map_err(|e| NErr::io_error(format!("failed: {}", e)))
+                        .map_err(|e| NErr::io_error(format!("built request failed: {}", e)))
                 }
                 _ => Err(NErr::generic_argument_error()),
             }?;
@@ -10116,7 +10187,7 @@ pub fn initialize(env: &mut Env) {
                         Err(NErr::value_error("aes: bad sizes".to_string()))
                     }
                 }
-                _ => Err(NErr::generic_argument_error()),
+                (a, b) => Err(NErr::argument_error_2(&a, &b)),
             },
         });
         env.insert_builtin(TwoArgBuiltin {
@@ -10133,7 +10204,7 @@ pub fn initialize(env: &mut Env) {
                         Err(NErr::value_error("aes: bad sizes".to_string()))
                     }
                 }
-                _ => Err(NErr::generic_argument_error()),
+                (a, b) => Err(NErr::argument_error_2(&a, &b)),
             },
         });
     }
@@ -10158,7 +10229,7 @@ pub fn initialize(env: &mut Env) {
                     p,
                 ))
             }
-            _ => Err(NErr::generic_argument_error()),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
 
