@@ -3545,6 +3545,7 @@ pub enum Token {
     RightBracket,
     LeftBrace,
     RightBrace,
+    Null,
     And,
     Or,
     Coalesce,
@@ -3607,6 +3608,7 @@ pub struct LocExpr(CodeLoc, Expr);
 
 #[derive(Debug)]
 pub enum Expr {
+    Null,
     IntLit(BigInt),
     RatLit(BigRational),
     FloatLit(f64),
@@ -3786,6 +3788,7 @@ impl Display for EvaluatedLvalue {
 
 fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
     match expr.1 {
+        Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
         Expr::Underscore => Ok(Lvalue::Underscore),
         Expr::Index(e, i) => match to_lvalue(*e)? {
@@ -4262,6 +4265,7 @@ impl<'a> Lexer<'a> {
                                 "yield" => Token::Yield,
                                 "switch" => Token::Switch,
                                 "case" => Token::Case,
+                                "null" => Token::Null,
                                 "and" => Token::And,
                                 "or" => Token::Or,
                                 "coalesce" => Token::Coalesce,
@@ -4414,6 +4418,10 @@ impl Parser {
         {
             let loc = *start;
             match token {
+                Token::Null => {
+                    self.advance();
+                    Ok(LocExpr(loc, Expr::Null))
+                }
                 Token::IntLit(n) => {
                     let n = n.clone();
                     self.advance();
@@ -6918,6 +6926,7 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
 
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.1 {
+        Expr::Null => Ok(Obj::Null),
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::RatLit(n) => Ok(Obj::from(NNum::from(n.clone()))),
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
@@ -7577,6 +7586,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
     Ok(LocExpr(
         expr.0,
         match &expr.1 {
+            Expr::Null => Ok(Expr::Null),
             Expr::IntLit(x) => Ok(Expr::IntLit(x.clone())),
             Expr::RatLit(x) => Ok(Expr::RatLit(x.clone())),
             Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
@@ -8207,8 +8217,6 @@ fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
 }
 
 pub fn initialize(env: &mut Env) {
-    env.insert("null".to_string(), ObjType::Null, Obj::Null)
-        .unwrap();
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
     env.insert("false".to_string(), ObjType::Int, Obj::zero())
