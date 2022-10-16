@@ -8282,27 +8282,21 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "sum".to_string(),
         body: |mut arg| {
-            let mut acc = NNum::from(0);
+            let mut acc = Obj::zero();
             for x in mut_obj_into_iter(&mut arg, "sum")? {
-                match x {
-                    Obj::Num(n) => acc += &n,
-                    _ => Err(NErr::argument_error("non-number".to_string()))?,
-                }
+                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), acc, x)?;
             }
-            Ok(Obj::Num(acc))
+            Ok(acc)
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "product".to_string(),
         body: |mut arg| {
-            let mut acc = NNum::from(1);
+            let mut acc = Obj::one();
             for x in mut_obj_into_iter(&mut arg, "product")? {
-                match x {
-                    Obj::Num(n) => acc = acc * &n,
-                    _ => Err(NErr::argument_error("non-number".to_string()))?,
-                }
+                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), acc, x)?;
             }
-            Ok(Obj::Num(acc))
+            Ok(acc)
         },
     });
     env.insert_builtin(ComparisonOperator::of("==", |a, b| Ok(a == b)));
