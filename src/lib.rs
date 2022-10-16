@@ -1740,6 +1740,7 @@ pub enum Func {
     Type(ObjType),
     Struct(Struct),
     StructField(Struct, usize),
+    Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
 
 type REnv = Rc<RefCell<Env>>;
@@ -1917,6 +1918,22 @@ impl Func {
                 }
                 _ => Err(NErr::argument_error("fields can only take one argument".to_string()))
             }
+            Func::Memoized(f, memo) => {
+                let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
+                match memo.try_borrow() {
+                    Ok(memo) => match memo.get(&kargs) {
+                        Some(res) => return Ok(res.clone()),
+                        None => {}
+                    }
+                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
+                };
+                let res = f.run(env, kargs.iter().cloned().map(key_to_obj).collect())?;
+                match memo.try_borrow_mut() {
+                    Ok(mut memo) => memo.insert(kargs, res.clone()),
+                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
+                };
+                Ok(res)
+            }
         }
     }
 
@@ -1940,6 +1957,7 @@ impl Func {
             Func::Type(_) => None,
             Func::Struct(..) => None,
             Func::StructField(..) => None,
+            Func::Memoized(..) => None,
         }
     }
 }
@@ -1996,6 +2014,7 @@ impl Display for Func {
             Func::Type(t) => write!(formatter, "{}", t.name()),
             Func::Struct(..) => write!(formatter, "<struct>"),
             Func::StructField(..) => write!(formatter, "<struct field>"),
+            Func::Memoized(..) => write!(formatter, "<memoized>"),
         }
     }
 }
@@ -2413,14 +2432,11 @@ impl Builtin for Extremum {
             }
             Few::One(a) => Ok(clone_and_part_app_last(self, a)),
             Few::Many(mut t) => {
-                let mut func = None;
-                for i in 0..t.len() {
-                    match (&t[i], &func) {
-                        (Obj::Func(..), None) => {
-                            func = Some(match t.remove(i) {
-                                Obj::Func(f, _) => f,
-                                _ => panic!("no way"),
-                            });
+                let mut i_func = None;
+                for (i, e) in t.iter().enumerate() {
+                    match (&e, &i_func) {
+                        (Obj::Func(f, _), None) => {
+                            i_func = Some((i, f.clone()))
                         }
                         (Obj::Func(..), Some(_)) => {
                             return Err(NErr::argument_error(format!(
@@ -2431,7 +2447,11 @@ impl Builtin for Extremum {
                         _ => {}
                     }
                 }
-                match (func, few(t)) {
+                match i_func {
+                    Some((i, _)) => { t.remove(i); }
+                    None => {}
+                }
+                match (i_func, few(t)) {
                     (None, Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
                         for b in mut_obj_into_iter(&mut a, &self.name)? {
@@ -2460,7 +2480,7 @@ impl Builtin for Extremum {
                             .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
                             .clone())
                     }
-                    (Some(f), Few::One(mut a)) => {
+                    (Some((_, f)), Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
                         for b in mut_obj_into_iter(&mut a, &self.name)? {
                             if match &ret {
@@ -2477,7 +2497,7 @@ impl Builtin for Extremum {
                             .ok_or(NErr::empty_error(format!("{}: empty", self.name)))?
                             .clone())
                     }
-                    (Some(f), Few::Many(a)) => {
+                    (Some((_, f)), Few::Many(a)) => {
                         let mut ret: Option<Obj> = None;
                         for b in a {
                             if match &ret {
@@ -10264,6 +10284,17 @@ pub fn initialize(env: &mut Env) {
                     p,
                 ))
             }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "memoize".to_string(),
+        body: |a| match a {
+            Obj::Func(f, p) => Ok(Obj::Func(
+                Func::Memoized(Box::new(f), Rc::new(RefCell::new(HashMap::new()))),
+                p,
+            )),
             a => Err(NErr::argument_error_1(&a)),
         },
     });
