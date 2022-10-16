@@ -2435,9 +2435,7 @@ impl Builtin for Extremum {
                 let mut i_func = None;
                 for (i, e) in t.iter().enumerate() {
                     match (&e, &i_func) {
-                        (Obj::Func(f, _), None) => {
-                            i_func = Some((i, f.clone()))
-                        }
+                        (Obj::Func(f, _), None) => i_func = Some((i, f.clone())),
                         (Obj::Func(..), Some(_)) => {
                             return Err(NErr::argument_error(format!(
                                 "{}: two functions",
@@ -2448,7 +2446,9 @@ impl Builtin for Extremum {
                     }
                 }
                 match i_func {
-                    Some((i, _)) => { t.remove(i); }
+                    Some((i, _)) => {
+                        t.remove(i);
+                    }
                     None => {}
                 }
                 match (i_func, few(t)) {
@@ -3585,6 +3585,9 @@ pub enum Token {
     Bang,
     QuestionMark,
     Colon,
+    LeftArrow,
+    RightArrow,
+    DoubleLeftArrow,
     DoubleColon,
     Semicolon,
     Ellipsis,
@@ -3652,7 +3655,7 @@ pub enum Expr {
     And(Box<LocExpr>, Box<LocExpr>),
     Or(Box<LocExpr>, Box<LocExpr>),
     Coalesce(Box<LocExpr>, Box<LocExpr>),
-    Annotation(Box<LocExpr>, Option<Box<LocExpr>>),
+    Annotation(Box<LocExpr>, Option<Rc<LocExpr>>), // FIXME Rc? :(
     Consume(Box<Lvalue>),
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
@@ -3686,7 +3689,7 @@ pub enum Lvalue {
     Underscore,
     Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
-    Annotation(Box<Lvalue>, Option<Box<LocExpr>>),
+    Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
     Unannotation(Box<Lvalue>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
@@ -3849,7 +3852,7 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
     }
 }
 
-fn to_value_no_literals(expr: LocExpr) -> Result<Lvalue, String> {
+fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, String> {
     let lvalue = to_lvalue(expr)?;
     if lvalue.any_literals() {
         Err(format!("lvalue can't have any literals: {:?}", lvalue))
@@ -4331,6 +4334,9 @@ impl<'a> Lexer<'a> {
                                 self.emit(match acc.as_str() {
                                     "!" => Token::Bang,
                                     "..." => Token::Ellipsis,
+                                    "<-" => Token::LeftArrow,
+                                    "->" => Token::RightArrow,
+                                    "<<-" => Token::DoubleLeftArrow,
                                     _ => Token::Ident(acc),
                                 })
                             }
@@ -4500,21 +4506,21 @@ impl Parser {
                     self.advance();
                     Ok(LocExpr(
                         loc,
-                        Expr::Consume(Box::new(to_value_no_literals(self.single("consume")?)?)),
+                        Expr::Consume(Box::new(to_lvalue_no_literals(self.single("consume")?)?)),
                     ))
                 }
                 Token::Pop => {
                     self.advance();
                     Ok(LocExpr(
                         loc,
-                        Expr::Pop(Box::new(to_value_no_literals(self.single("pop")?)?)),
+                        Expr::Pop(Box::new(to_lvalue_no_literals(self.single("pop")?)?)),
                     ))
                 }
                 Token::Remove => {
                     self.advance();
                     Ok(LocExpr(
                         loc,
-                        Expr::Remove(Box::new(to_value_no_literals(self.single("remove")?)?)),
+                        Expr::Remove(Box::new(to_lvalue_no_literals(self.single("remove")?)?)),
                     ))
                 }
                 Token::Break => {
@@ -4619,15 +4625,18 @@ impl Parser {
                             ),
                         ))
                     } else {
-                        let params = if self.try_consume(&Token::Colon) {
+                        let params = if self.try_consume(&Token::RightArrow) {
                             Vec::new()
                         } else {
-                            let (params0, _) = self.comma_separated()?;
+                            // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
+                            // assignment the second unpacks.
+                            let params0 = self.annotated_comma_separated("lambda params")?;
                             let ps = params0
+                                .0
                                 .into_iter()
-                                .map(|p| Ok(Box::new(to_value_no_literals(*p)?)))
+                                .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
                                 .collect::<Result<Vec<Box<Lvalue>>, String>>()?;
-                            self.require(Token::Colon, "lambda start".to_string())?;
+                            self.require(Token::RightArrow, "lambda start: ->".to_string())?;
                             ps
                         };
                         let body = self.single("body of lambda")?;
@@ -4689,8 +4698,8 @@ impl Parser {
                     self.require(Token::RightParen, "switch end".to_string())?;
                     let mut v = Vec::new();
                     while self.try_consume(&Token::Case) {
-                        let pat = to_lvalue(self.single("switch pat")?)?;
-                        self.require(Token::Colon, "case mid".to_string())?;
+                        let pat = to_lvalue(self.annotated_pattern("switch pat")?)?;
+                        self.require(Token::RightArrow, "case mid: ->".to_string())?;
                         let res = self.single("switch body")?;
                         v.push((Box::new(pat), Box::new(res)));
                     }
@@ -4700,8 +4709,8 @@ impl Parser {
                     self.advance();
                     let body = self.expression()?;
                     self.require(Token::Catch, "try end".to_string())?;
-                    let pat = to_lvalue(self.pattern()?)?;
-                    self.require(Token::Colon, "catch mid".to_string())?;
+                    let pat = to_lvalue(self.annotated_pattern("catch pattern")?)?;
+                    self.require(Token::RightArrow, "catch mid: ->".to_string())?;
                     let catcher = self.single("catch body")?;
                     Ok(LocExpr(
                         loc,
@@ -4747,24 +4756,25 @@ impl Parser {
                 self.single("for iteration guard")?,
             )))
         } else {
-            let pat0 = self.pattern()?;
-            let pat = to_value_no_literals(pat0)?;
+            let pat0 = self.annotated_pattern("for iterator")?;
+            let pat = to_lvalue_no_literals(pat0)?;
             let ty = match self.peek() {
-                Some(Token::Colon) => {
+                Some(Token::LeftArrow) => {
                     self.advance();
-                    if self.try_consume(&Token::Assign) {
-                        ForIterationType::Declare
-                    } else {
-                        ForIterationType::Normal
-                    }
+                    ForIterationType::Normal
                 }
-                Some(Token::DoubleColon) => {
+                Some(Token::DoubleLeftArrow) => {
                     self.advance();
                     ForIterationType::Item
                 }
+                Some(Token::Assign) => {
+                    // FIXME?
+                    self.advance();
+                    ForIterationType::Declare
+                }
                 _ => {
                     return Err(format!(
-                        "for: require : or :: or :=, got {}",
+                        "for: require <- or <<- or =, got {}",
                         self.peek_err()
                     ))
                 }
@@ -4878,6 +4888,9 @@ impl Parser {
                 Some(Token::Colon) => true,
                 Some(Token::DoubleColon) => true,
                 Some(Token::Semicolon) => true,
+                Some(Token::LeftArrow) => true,
+                Some(Token::DoubleLeftArrow) => true,
+                Some(Token::RightArrow) => true,
                 _ => false,
             }
     }
@@ -5003,9 +5016,9 @@ impl Parser {
         }
     }
 
-    // Nonempty (caller should check empty condition); no semicolons allowed. List literals;
-    // function declarations; LHSes of assignments. Not for function calls, I think? f(x; y) might
-    // actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
+    // Nonempty (caller should check empty condition); no semicolons or annotations allowed. List
+    // literals; function declarations; LHSes of assignments. Not for function calls, I think? f(x;
+    // y) might actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
     fn comma_separated(&mut self) -> Result<(Vec<Box<LocExpr>>, bool), String> {
         let mut xs = vec![Box::new(self.single("comma-separated starter")?)];
         let mut comma = false;
@@ -5019,7 +5032,8 @@ impl Parser {
         return Ok((xs, comma));
     }
 
-    // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think.
+    // Nonempty comma-separated things, as above, but packaged as a single expr. No semicolons or
+    // assigns allowed. Should be nonempty I think. RHSes of assignments.
     fn pattern(&mut self) -> Result<LocExpr, String> {
         let loc = self.peek_loc();
         let (exs, comma) = self.comma_separated()?;
@@ -5034,21 +5048,72 @@ impl Parser {
         }
     }
 
-    // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think.
-    fn annotated_pattern(&mut self) -> Result<LocExpr, String> {
-        let loc = self.peek_loc();
-        let pat = self.pattern()?;
-        if self.try_consume(&Token::Colon) {
-            if self.peek_csc_stopper() {
-                Ok(LocExpr(loc, Expr::Annotation(Box::new(pat), None)))
-            } else {
-                Ok(LocExpr(
-                    loc,
-                    Expr::Annotation(Box::new(pat), Some(Box::new(self.single("annotation")?))),
-                ))
+    // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think, as
+    // above caller should handle empty case.
+    //
+    // This exists because we want commas and annotations to be "at the same level": it's important
+    // that the annotation in `a, b := 3, 4` covers a, but it also doesn't make sense if `a: int,
+    // b: list = 3, [4]` doesn't work. We trade one thing off for now: ideally `a, b: satisfying(3
+    // < _ < 5) = 4` would evaluate the type expression only once, so the translated Lvalue needs
+    // to be aware that substrings of variables in a flat list of things share the same annotation,
+    // but that's annoying. Let's just clone the type expression.
+    fn annotated_comma_separated(&mut self, msg: &str) -> Result<(Vec<Box<LocExpr>>, bool), String> {
+        let mut annotated = Vec::new();
+        let mut pending_annotation = vec![Box::new(
+            self.single(&format!("first expr in {}", msg))?,
+        )];
+        let mut comma = false;
+        loop {
+            match self.peek() {
+                Some(Token::Comma) => {
+                    self.advance();
+                    comma = true;
+                    if self.peek_csc_stopper() {
+                        annotated.extend(pending_annotation);
+                        return Ok((annotated, comma));
+                    }
+                    pending_annotation.push(Box::new(
+                        self.single("later expr in annotated-comma-separated")?,
+                    ));
+                }
+                Some(Token::Colon) => {
+                    self.advance();
+                    if pending_annotation.is_empty() {
+                        Err(format!(
+                            "annotated-comma-separated: extra colon covers nothing: {}",
+                            self.peek_err()
+                        ))?
+                    }
+                    let anno = if self.peek_csc_stopper() {
+                        None
+                    } else {
+                        Some(Rc::new(self.single("annotation")?))
+                    };
+                    annotated.extend(
+                        pending_annotation
+                            .drain(..)
+                            .map(|e| Box::new(LocExpr(e.0, Expr::Annotation(e, anno.clone())))),
+                    );
+                }
+                _ => {
+                    annotated.extend(pending_annotation);
+                    return Ok((annotated, comma));
+                }
             }
-        } else {
-            Ok(pat)
+        }
+    }
+    fn annotated_pattern(&mut self, msg: &str) -> Result<LocExpr, String> {
+        let loc = self.peek_loc();
+        let (exs, comma) = self.annotated_comma_separated(msg)?;
+        match (few(exs), comma) {
+            (Few::Zero, _) => Err(format!(
+                "Expected annotated pattern at {}, got nothing, next is {}",
+                msg,
+                self.peek_err()
+            )),
+            (Few::One(ex), false) => Ok(*ex),
+            (Few::One(ex), true) => Ok(LocExpr(loc, Expr::CommaSeq(vec![ex]))),
+            (Few::Many(exs), _) => Ok(LocExpr(loc, Expr::CommaSeq(exs))),
         }
     }
 
@@ -5056,17 +5121,17 @@ impl Parser {
         let loc = self.peek_loc();
         let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
-            let a = to_value_no_literals(self.single("swap target 1")?)?;
+            let a = to_lvalue_no_literals(self.single("swap target 1")?)?;
             self.require(
                 Token::Comma,
                 format!("swap between lvalues at {}", ag_start_err),
             )?;
-            let b = to_value_no_literals(self.single("swap target 2")?)?;
+            let b = to_lvalue_no_literals(self.single("swap target 2")?)?;
             Ok(LocExpr(loc, Expr::Swap(Box::new(a), Box::new(b))))
         } else {
             let every = self.try_consume(&Token::Every);
             // TODO: parsing can be different after Every
-            let pat = self.annotated_pattern()?;
+            let pat = self.annotated_pattern("every LHS")?;
 
             match self.peek() {
                 Some(Token::Assign) => {
@@ -5077,7 +5142,7 @@ impl Parser {
                                 loc,
                                 Expr::OpAssign(
                                     every,
-                                    Box::new(to_value_no_literals(*lhs)?),
+                                    Box::new(to_lvalue_no_literals(*lhs)?),
                                     Box::new(*op),
                                     Box::new(self.pattern()?),
                                 ),
@@ -5091,7 +5156,7 @@ impl Parser {
                             loc,
                             Expr::Assign(
                                 every,
-                                Box::new(to_value_no_literals(pat)?),
+                                Box::new(to_lvalue_no_literals(pat)?),
                                 Box::new(self.pattern()?),
                             ),
                         )),
@@ -5400,8 +5465,22 @@ fn assign_all(
                     )))
                 }
                 None => {
-                    splat = Some((i, inner));
+                    splat = Some((i, Ok(inner)));
                 }
+            },
+            // FIXME? probably another consequence of forcing annotations into CommaSeq
+            EvaluatedLvalue::Annotation(mid, anno) => match &**mid {
+                EvaluatedLvalue::Splat(inner) => match splat {
+                    Some(_) => {
+                        return Err(NErr::syntax_error(format!(
+                            "Can't have two splats in same sequence on left-hand side of assignment"
+                        )))
+                    }
+                    None => {
+                        splat = Some((i, Err((inner, anno))));
+                    }
+                }
+                _ => {}
             },
             _ => {}
         }
@@ -5412,7 +5491,16 @@ fn assign_all(
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, mode)?;
-            assign(env, inner, rt, Obj::list(srhs), mode)?;
+            match inner {
+                Ok(inner) => assign(env, inner, rt, Obj::list(srhs), mode)?,
+                Err((inner, anno)) => {
+                    let t = match anno {
+                        None => Some(ObjType::Any),
+                        Some(t) => Some(to_type(t, "splat anno")?),
+                    };
+                    assign(env, inner, t.as_ref(), Obj::list(srhs), mode)?
+                }
+            };
             assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode)
         }
         None => assign_all_basic(env, lhs, rt, rhs, mode),
@@ -7523,6 +7611,17 @@ fn opt_box_freeze(
     }
 }
 
+fn opt_rc_freeze(
+    bound: &HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    expr: &Option<Rc<LocExpr>>,
+) -> NRes<Option<Rc<LocExpr>>> {
+    match expr {
+        Some(x) => Ok(Some(Rc::new(freeze(bound, env, x)?))),
+        None => Ok(None),
+    }
+}
+
 fn box_freeze_lvalue(
     bound: &HashSet<String>,
     env: &Rc<RefCell<Env>>,
@@ -7553,7 +7652,7 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
         }
         Lvalue::Annotation(x, e) => Ok(Lvalue::Annotation(
             box_freeze_lvalue(bound, env, x)?,
-            opt_box_freeze(bound, env, e)?,
+            opt_rc_freeze(bound, env, e)?,
         )),
         Lvalue::Unannotation(x) => Ok(Lvalue::Unannotation(box_freeze_lvalue(bound, env, x)?)),
         Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
@@ -7660,7 +7759,7 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
             }
             Expr::Annotation(s, t) => Ok(Expr::Annotation(
                 box_freeze(bound, env, s)?,
-                opt_box_freeze(bound, env, t)?,
+                opt_rc_freeze(bound, env, t)?,
             )),
             Expr::Consume(pat) => Ok(Expr::Consume(box_freeze_lvalue(bound, env, pat)?)),
             Expr::Pop(pat) => Ok(Expr::Pop(box_freeze_lvalue(bound, env, pat)?)),

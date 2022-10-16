@@ -15,7 +15,7 @@ An attempt to give myself a new Pareto-optional choice for quick-and-dirty scrip
 - Operator precedence is customizable and resolved at runtime.
 
   ```
-  noulith> f := \: 2 + 5 * 3
+  noulith> f := \-> 2 + 5 * 3
   noulith> f()
   17
   noulith> swap +, *
@@ -43,18 +43,18 @@ An attempt to give myself a new Pareto-optional choice for quick-and-dirty scrip
 - I already said this, but operator precedence is resolved at runtime.
 - At the highest level, statements are C/Java/Scala-style `if (condition) body else body`, `for (thing) body` (not the modern `if cond { body }`). The `if ... else` is the ternary expression.
 - Lists and dictionaries should look familiar from Python. Lists are brackets: `[a, b, c]`. Dictionaries are curly braces: `{a, b, c}`. We don't bother with a separate set type, but dictionaries often behave quite like their sets of keys.
-- For loops use colons: `for (x : xs) ...`. Use a double-colon for index-value (or key-value) pairs: `for (i, x :: xs) ...`. (Do I actually want this feature? Not sure yet...)
+- For loops use left arrows: `for (x <- xs) ...`. Use a double-headed arrow for index-value or key-value pairs: `for (i, x <<- xs) ...`.
 - Prefix operators are wonky. When in doubt, parenthesize the operand: `a + -(b)`; `x and not(y)`.
-- Lambdas look like `\x, y: x + y`.
+- Lambdas look like `\x, y -> x + y`.
 
 ## Example
 
 Somewhat imperative:
 
 ```
-for (x : 1 to 100) (
+for (x <- 1 to 100) (
   o := '';
-  for (f, s : [[3, 'Fizz'], [5, 'Buzz']])
+  for (f, s <- [[3, 'Fizz'], [5, 'Buzz']])
     if (x % f == 0)
       o $= s;
   print(if (o == '') x else o)
@@ -64,7 +64,7 @@ for (x : 1 to 100) (
 Somewhat functional:
 
 ```
-for (x : 1 to 100) print([[3, 'Fizz'], [5, 'Buzz']] map (\(f, s): if (x % f == 0) s else "") join "" or x)
+for (x <- 1 to 100) print([[3, 'Fizz'], [5, 'Buzz']] map (\(f, s) -> if (x % f == 0) s else "") join "" or x)
 ```
 
 ## More in-depth tour
@@ -98,7 +98,7 @@ Data types:
 - Null
 - Numbers: big integers, floats, and complex numbers. Note that there are no booleans, we just use 0 and 1.
 - Lists (heterogeneous): `[a, b]`. Pythonic indexing and slicing, both in syntax and semantics of negative integers. Assigning to slices is indefinitely unimplemented.
-- Dictionaries (heterogeneous): `{a: b, c: d}`. Values can be omitted, in which case they're just `null`, and are used like sets. Index `my_dict[key]`, test `key in my_dict`.
+- Dictionaries (heterogeneous): `{a: b, c: d}`. (Valid JSON is valid Noulith, maybe modulo the same kind of weird whitespace issues that make valid JSON not valid JavaScript.) Values can be omitted, in which case they're just `null`, and are used like sets. Index `my_dict[key]`, test `key in my_dict`.
 - Strings: just what Rust has, always valid UTF-8 sequences of bytes
 - Bytes
 - Vectors: lists of numbers, notable in that most operations on these automatically vectorize/broadcast, e.g. `V(2, 3) + V(4, 5) == V(6, 8)`; `V(2, 3) + 4 == V(6, 7)`. (Note that comparison operators don't vectorize!)
@@ -107,7 +107,7 @@ Data types:
 
 ### Expressions
 
-Everything is a global function and can be used as an operator! For example `a + b` is really just `+(a, b)`; `a max b` is `max(a, b)`. As a special case, `a b` (when fenced by other syntax that prevents treating either as binary operator) is `a(b)`, but four or more evenly-many identifiers and similar things in a row like `(a b c d)` is illegal. (Also, beware that `a[b]` parses as indexing `b` into `a`, not `a([b])` like you might sometimes hope if you start relying on this too much.) Also:
+Everything is a global function and can be used as an operator! For example `a + b` is really just `+(a, b)`; `a max b` is `max(a, b)`. As a special case, `a b` (when fenced by other syntax that prevents treating either as binary operator) is `a(b)` (this is mainly to allow unary minus), but four or more evenly-many identifiers and similar things in a row like `(a b c d)` is illegal. (Also, beware that `a[b]` parses as indexing `b` into `a`, not `a([b])` like you might sometimes hope if you start relying on this too much.) Also:
 
 - Many functions/operators that normally accept two arguments also accept just one and partially-apply it as their second, e.g. `+(3)` (which, as above, can be written `+3` in the right context) is a function that adds 3. (This is not special syntax, just opt-in from many functions; `+` is defined to take one or two arguments and if it takes one it partially applies itself.) Since `-` and `~` have unary overloads, we provide alternatives `subtract` and `xor` that do partially apply when called with one argument, just like in Haskell.
 - If you call `a(b)` where `a` isn't a function but `b` is, `b` partially applies `a` as its first argument! It's just like Haskell sections. For a slightly more verbose / less mystical way to do this, you can use Scala-style `_`, see below.
@@ -116,7 +116,7 @@ Everything is a global function and can be used as an operator! For example `a +
 
 Operator precedence is determined at runtime! This is mainly to support chained comparisons: `1 < 2 < 3` works like in Python. Functions can decide at runtime when they chain (though there's no way for user-defined functions to do this yet), and we use this to make a few other functions nicer. For example, `zip` and `**` (cartesian product) chain with themselves; `a ** b ** c` and `a zip b zip c` will give you a list of triplets, instead of a bunch of `[[x, y], z]`-shaped things.
 
-Identifiers can consist of a letter or `_` followed by any number of alphanumerics, or any consecutive number of valid symbols for use in operators. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, and `...`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
+Identifiers can consist of a letter or `_` followed by any number of alphanumerics, `'`, or `?`; or any consecutive number of valid symbols for use in operators. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, and `...`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
 
 Almost all builtin functions' precedences are determined by this Scala-inspired rule: Look up each character in the function's name in this table, then take the *loosest* precedence of any individual character. But note that this isn't a rule in the syntax, it's just a strategy I decided to follow when selecting builtin functions' precedences. For example, `+`, `++`, `.+`, and `+.` all have the same precedence. As of time of writing, the only exceptions to this rule `<<` and `>>`, which have precedence like `^`.
 
@@ -191,7 +191,7 @@ x .= f
 
 This allows us to not have to keep an extra copy of the LHS variable in common cases where we "modify" it, so code like `x append= y` is actually efficient (see discussion of immutability below).
 
-The weird keyword `every` lets you assign to or operate on multiple variables or elements of a slice at once. This initializes three variables to `1`.
+The weird keyword `every` lets you assign to or operate on multiple variables or elements of a slice at once. This initializes three variables to `1`. This doesn't work with operator-assignments, though it might in the future.
 
 ```
 every a, b, c := 1
@@ -213,7 +213,7 @@ x[0] = 4
 
 `y` will still be `[1, 2, 3]`. You may wish to think of `x[0] = 4` as syntax sugar for `x = [4] ++ x[1:]`, although when nothing else refers to the same list, it's actually as fast as a mutation.
 
-As a consequence, calling a function on a data structure cannot mutate it. There are a few special keywords that mutate whatever they're given. There's `swap` like `swap x, y` for swapping two values, and there's `pop` and `remove` for mutating sequences. After
+As a consequence, calling a function on a data structure cannot mutate it. There are a few special keywords that mutate whatever they're given. There's `swap` like `swap x, y` for swapping two values; there's `pop` and `remove` for mutating sequences; and the crudest instrument of all, `consume` gives you the value after replacing it with `null`. After
 
 ```
 x := [1, 2, 3, 4, 5];
@@ -234,7 +234,7 @@ get_a, set_a := make_cell(0)
 
 As above: statements must be separated by semicolons.
 
-Everything is an expression, so the "ternary expression" and if/else statement are one and the same: `if (a) b else c`. Loops: `for (var : list) body`; `while (cond) body`. For loops can have many iteration clauses: `for (a : b; c : d)`. Several other clauses are supported: `for (p :: m)` iterates over index-value or key-value pairs (note: not sure I want to burn the `::` token here...), `for (x := y)` declares a variable in the middle, and `for (if x)` is a guard. Finally `for` loops can `yield` (only the entire body, not inside a more complicated expression) to turn into a list comprehension, like Scala: `for (x : xs) yield x + 1`.
+Everything is an expression, so the "ternary expression" and if/else statement are one and the same: `if (a) b else c`. Loops: `for (var <- list) body`; `while (cond) body`. For loops can have many iteration clauses: `for (a <- b; c <- d)`. Several other clauses are supported: `for (p <<- m)` iterates over index-value or key-value pairs, `for (x := y)` declares a variable in the middle, and `for (if x)` is a guard. Finally `for` loops can `yield` (only the entire body, not inside a more complicated expression) to turn into a list comprehension, like Scala: `for (x <- xs) yield x + 1`.
 
 There are no "blocks"; just use more parentheses: `if (a) (b; c; d)`.
 
@@ -252,25 +252,25 @@ Run-time type checking does some work here:
 
 ```
 switch (x)
-case (_: int): print("it's an int")
-case _: print("not sure")
+case _: int -> print("it's an int")
+case _ -> print("not sure")
 ```
 
 Stupid complicated runtime types with `satisfying`:
 
 ```
 switch (x)
-case (_: satisfying! 1 < _ < 9): print("it's between 1 and 9")
-case _: print("not sure")
+case _: satisfying! 1 < _ < 9 -> print("it's between 1 and 9")
+case _ -> print("not sure")
 ```
 
 Don't do weird things in the argument to `satisfying`, it's illegal.
 
-Try-catch: `try a catch x: y`.
+Try-catch: `try a catch x -> y`.
 
 `break` `continue` `return` work.
 
-Only lambdas exist, declare all functions this way: `\a, b: c`. You can annotate parameters and otherwise pattern match in functions as you'd expect: `\(a: int), (b, c): d`.
+Only lambdas exist, declare all functions this way: `\a, b -> c`. You can annotate parameters and otherwise pattern match in functions as you'd expect: `\a: int, (b, c) -> d`.
 
 ### Sequence operators
 

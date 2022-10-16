@@ -10,11 +10,11 @@ fn i(n: i32) -> Obj {
 #[test]
 fn demos() {
     assert_eq!(
-        simple_eval("fact := \\n: if (n == 0) 1 else n * fact(n - 1); fact 10"),
+        simple_eval("fact := \\n -> if (n == 0) 1 else n * fact(n - 1); fact 10"),
         i(3628800)
     );
     assert_eq!(
-        simple_eval("(for (x : 1 to 15) yield (o := ''; for (f, s : [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"),
+        simple_eval("(for (x <- 1 to 15) yield (o := ''; for (f, s <- [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"),
         Obj::from("1;2;Fizz;4;Buzz;Fizz;7;8;Fizz;Buzz;11;Fizz;13;14;FizzBuzz")
     );
 }
@@ -24,7 +24,7 @@ fn quick_operators() {
     assert_eq!(simple_eval("2 + 3"), i(5));
     assert_eq!(simple_eval("+(2, 3)"), i(5));
     assert_eq!(simple_eval("plus := +; 2 plus 3"), i(5));
-    assert_eq!(simple_eval("plus := \\x, y: x + y; 2 plus 3"), i(5));
+    assert_eq!(simple_eval("plus := \\x, y -> x + y; 2 plus 3"), i(5));
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn dicts() {
 fn fast_append_pop() {
     assert_eq!(
         simple_eval(
-            "x := []; for (i : 1 to 10000) x append= i; y := 0; for (i : 1 to 10000) y += pop x; y"
+            "x := []; for (i <- 1 to 10000) x append= i; y := 0; for (i <- 1 to 10000) y += pop x; y"
         ),
         i(50005000)
     );
@@ -229,13 +229,19 @@ fn opassigns() {
 
 #[test]
 fn for_loops() {
-    assert_eq!(simple_eval("x := 0; for (y : 1 to 5) x += y + 1; x"), i(20));
-    assert_eq!(simple_eval("sum (for (y : 1 to 5) yield y + 1)"), i(20));
     assert_eq!(
-        simple_eval("x := 0; for (i, y :: 1 to 5) x += i * y; x"),
+        simple_eval("x := 0; for (y <- 1 to 5) x += y + 1; x"),
+        i(20)
+    );
+    assert_eq!(simple_eval("sum (for (y <- 1 to 5) yield y + 1)"), i(20));
+    assert_eq!(
+        simple_eval("x := 0; for (i, y <<- 1 to 5) x += i * y; x"),
         i(40)
     );
-    assert_eq!(simple_eval("sum (for (i, x :: 1 to 5) yield i * x)"), i(40));
+    assert_eq!(
+        simple_eval("sum (for (i, x <<- 1 to 5) yield i * x)"),
+        i(40)
+    );
     assert_eq!(simple_eval("x := 0; for (y := 5) x += y + 1; x"), i(6));
 }
 
@@ -268,4 +274,22 @@ fn random() {
     assert_eq!(simple_eval("0 <= random() < 1"), i(1));
     assert_eq!(simple_eval("random() != random()"), i(1));
     assert_eq!(simple_eval("5 <= random_range(5, 10) < 10"), i(1));
+}
+
+#[test]
+fn try_() {
+    assert_eq!(simple_eval("try throw 3 catch x -> x + 4"), i(7));
+    assert_eq!(simple_eval("try throw 3 catch x: int -> x + 4"), i(7));
+    assert_eq!(simple_eval("try throw [4, 5] catch x, y -> x + y"), i(9));
+}
+
+#[test]
+fn switch() {
+    assert_eq!(simple_eval("switch (2) case 2 -> 8"), i(8));
+    assert_eq!(simple_eval("switch (2) case 5 -> 3"), Obj::Null);
+    assert_eq!(simple_eval("switch (2) case 4 -> 6 case 2 -> 1"), i(1));
+    assert_eq!(simple_eval("switch (2) case _ < 3 -> 8"), i(8));
+    assert_eq!(simple_eval("switch (3) case _ < 3 -> 8"), Obj::Null);
+    assert_eq!(simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"), i(4));
+    assert_eq!(simple_eval("switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"), i(4));
 }
