@@ -290,6 +290,9 @@ fn switch() {
     assert_eq!(simple_eval("switch (2) case 4 -> 6 case 2 -> 1"), i(1));
     assert_eq!(simple_eval("switch (2) case _ < 3 -> 8"), i(8));
     assert_eq!(simple_eval("switch (3) case _ < 3 -> 8"), Obj::Null);
-    assert_eq!(simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"), i(4));
+    assert_eq!(
+        simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"),
+        i(4)
+    );
     assert_eq!(simple_eval("switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"), i(4));
 }

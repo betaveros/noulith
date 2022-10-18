@@ -36,6 +36,12 @@ use reqwest;
 use aes;
 #[cfg(feature = "crypto")]
 use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
+#[cfg(feature = "crypto")]
+use md5::{Md5, Digest};
+#[cfg(feature = "crypto")]
+use sha2::Sha256;
+#[cfg(feature = "crypto")]
+use blake3;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -10430,6 +10436,34 @@ pub fn initialize(env: &mut Env) {
                     }
                 }
                 (a, b) => Err(NErr::argument_error_2(&a, &b)),
+            },
+        });
+        env.insert_builtin(OneArgBuiltin {
+            name: "md5".to_string(),
+            body: |a| match a {
+                Obj::Seq(Seq::Bytes(b)) => {
+                    Ok(Obj::Seq(Seq::Bytes(Rc::new(Md5::new().chain_update(&*b).finalize().to_vec()))))
+                }
+                a => Err(NErr::argument_error_1(&a)),
+            },
+        });
+        env.insert_builtin(OneArgBuiltin {
+            name: "sha256".to_string(),
+            body: |a| match a {
+                Obj::Seq(Seq::Bytes(b)) => {
+                    Ok(Obj::Seq(Seq::Bytes(Rc::new(Sha256::new().chain_update(&*b).finalize().to_vec()))))
+                }
+                a => Err(NErr::argument_error_1(&a)),
+            },
+        });
+        env.insert_builtin(OneArgBuiltin {
+            name: "blake3".to_string(),
+            body: |a| match a {
+                Obj::Seq(Seq::Bytes(b)) => {
+                    let h: [u8; 32] = blake3::Hasher::new().update(&*b).finalize().into();
+                    Ok(Obj::Seq(Seq::Bytes(Rc::new(h.to_vec()))))
+                }
+                a => Err(NErr::argument_error_1(&a)),
             },
         });
     }
