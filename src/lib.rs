@@ -5057,11 +5057,13 @@ impl Parser {
     // < _ < 5) = 4` would evaluate the type expression only once, so the translated Lvalue needs
     // to be aware that substrings of variables in a flat list of things share the same annotation,
     // but that's annoying. Let's just clone the type expression.
-    fn annotated_comma_separated(&mut self, msg: &str) -> Result<(Vec<Box<LocExpr>>, bool), String> {
+    fn annotated_comma_separated(
+        &mut self,
+        msg: &str,
+    ) -> Result<(Vec<Box<LocExpr>>, bool), String> {
         let mut annotated = Vec::new();
-        let mut pending_annotation = vec![Box::new(
-            self.single(&format!("first expr in {}", msg))?,
-        )];
+        let mut pending_annotation =
+            vec![Box::new(self.single(&format!("first expr in {}", msg))?)];
         let mut comma = false;
         loop {
             match self.peek() {
@@ -5479,7 +5481,7 @@ fn assign_all(
                     None => {
                         splat = Some((i, Err((inner, anno))));
                     }
-                }
+                },
                 _ => {}
             },
             _ => {}
@@ -8335,6 +8337,64 @@ fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, Ok(reversed_prefixes(v)))
 }
 
+fn json_encode(x: Obj) -> NRes<serde_json::Value> {
+    match x {
+        Obj::Null => Ok(serde_json::Value::Null),
+        Obj::Num(NNum::Int(x)) => {
+            if let Some(t) = x.to_i64() {
+                Ok(serde_json::Value::from(t))
+            } else {
+                Ok(serde_json::Value::from(x.to_f64()))
+            }
+        }
+        Obj::Num(x) => Ok(serde_json::Value::from(x.to_f64())),
+        Obj::Seq(s) => match s {
+            Seq::String(s) => Ok(serde_json::Value::String((&*s).clone())),
+            Seq::Dict(d, _) => Ok(serde_json::Value::Object(
+                unwrap_or_clone(d)
+                    .into_iter()
+                    .map(|(k, v)| Ok((format!("{}", k), json_encode(v.clone())?)))
+                    .collect::<NRes<Vec<(String, serde_json::Value)>>>()?
+                    .into_iter()
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            )),
+            mut s => Ok(serde_json::Value::Array(
+                mut_seq_into_iter(&mut s)
+                    .into_iter()
+                    .map(json_encode)
+                    .collect::<NRes<Vec<serde_json::Value>>>()?,
+            )),
+        },
+        s => Err(NErr::type_error(format!(
+            "Can't serialize into JSON: {}",
+            FmtObj::debug(&s)
+        ))),
+    }
+}
+
+fn json_decode(v: serde_json::Value) -> Obj {
+    match v {
+        serde_json::Value::Null => Obj::Null,
+        serde_json::Value::Bool(x) => Obj::from(x),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(k) => Obj::from(BigInt::from(k)),
+            None => Obj::from(n.as_f64().expect("json number should be f64 or i64")),
+        },
+        serde_json::Value::String(s) => Obj::from(s),
+        serde_json::Value::Array(a) => {
+            Obj::list(a.into_iter().map(json_decode).collect::<Vec<Obj>>())
+        }
+        serde_json::Value::Object(d) => Obj::Seq(Seq::Dict(
+            Rc::new(
+                d.into_iter()
+                    .map(|(k, v)| (ObjKey::String(Rc::new(k)), json_decode(v)))
+                    .collect::<HashMap<ObjKey, Obj>>(),
+            ),
+            None,
+        )),
+    }
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
@@ -10102,6 +10162,23 @@ pub fn initialize(env: &mut Env) {
                 ))),
             },
             _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "json_encode".to_string(),
+        body: |arg| match serde_json::to_string(&json_encode(arg)?) {
+            Ok(s) => Ok(Obj::from(s)),
+            Err(t) => Err(NErr::value_error(format!("json encoding failed: {}", t))),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "json_decode".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(Seq::String(s)) => match serde_json::from_str(&*s) {
+                Ok(k) => Ok(json_decode(k)),
+                Err(t) => Err(NErr::value_error(format!("json decoding failed: {}", t))),
+            },
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
 

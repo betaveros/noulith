@@ -604,6 +604,7 @@ dependencies = [
  "reqwest",
  "rustyline",
  "rustyline-derive",
+ "serde_json",
  "wasm-bindgen",
 ]
 
