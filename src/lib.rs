@@ -8670,6 +8670,12 @@ pub fn initialize(env: &mut Env) {
     // forward_f64!(ln_1p);
 
     env.insert_builtin(OneNumBuiltin {
+        name: "is_prime".to_string(),
+        body: |a| {
+            Ok(Obj::Num(NNum::iverson(nnum::lazy_is_prime(&into_bigint_ok(a)?))))
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
         name: "factorize".to_string(),
         body: |a| {
             Ok(Obj::list(

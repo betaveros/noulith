@@ -1007,7 +1007,7 @@ impl Shr<NNum> for NNum {
     }
 }
 
-fn lazy_is_prime(n: &BigInt) -> bool {
+pub fn lazy_is_prime(n: &BigInt) -> bool {
     if n <= &BigInt::from(1) {
         false
     } else if n <= &BigInt::from(3) {
