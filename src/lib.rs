@@ -37,11 +37,11 @@ use aes;
 #[cfg(feature = "crypto")]
 use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
 #[cfg(feature = "crypto")]
-use md5::{Md5, Digest};
+use blake3;
+#[cfg(feature = "crypto")]
+use md5::{Digest, Md5};
 #[cfg(feature = "crypto")]
 use sha2::Sha256;
-#[cfg(feature = "crypto")]
-use blake3;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -1355,11 +1355,27 @@ impl<'a, 'b> Display for FmtObj<'a, 'b> {
     }
 }
 
-const DEBUG_FMT: MyFmtFlags = MyFmtFlags::budgeted_repr(64);
+const DEBUG_FMT: MyFmtFlags = MyFmtFlags::budgeted_repr(6);
 
 impl FmtObj<'_, '_> {
     fn debug<'a>(t: &'a Obj) -> FmtObj<'a, 'static> {
         FmtObj(t, &DEBUG_FMT)
+    }
+}
+
+struct CommaSeparatedDebug<'a>(&'a [Obj]);
+
+impl<'a> Display for CommaSeparatedDebug<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let mut started = false;
+        for t in self.0 {
+            if started {
+                write!(formatter, ", ")?;
+            }
+            started = true;
+            write!(formatter, "{}", FmtObj::debug(t))?;
+        }
+        Ok(())
     }
 }
 
@@ -1613,6 +1629,9 @@ impl NErr {
     }
     fn syntax_error(s: String) -> NErr {
         NErr::throw(format!("syntax error: {}", s))
+    }
+    fn syntax_error_loc(s: String, msg: String, loc: CodeLoc) -> NErr {
+        NErr::Throw(Obj::from(format!("syntax error: {}", s)), vec![(msg, loc)])
     }
     fn type_error(s: String) -> NErr {
         NErr::throw(format!("type error: {}", s))
@@ -3542,7 +3561,14 @@ impl Closure {
             .map(|e| Ok(Box::new(eval_lvalue(&ee, e)?)))
             .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
         add_trace(
-            assign_all(&ee, &p, Some(&ObjType::Any), args, AssignMode::Assign),
+            assign_all(
+                &ee,
+                &p,
+                Some(&ObjType::Any),
+                args,
+                AssignMode::Assign,
+                "Wrong number of arguments",
+            ),
             "argument receiving".to_string(),
             self.body.0,
         )?;
@@ -5139,7 +5165,7 @@ impl Parser {
         } else {
             let every = self.try_consume(&Token::Every);
             // TODO: parsing can be different after Every
-            let pat = self.annotated_pattern("every LHS")?;
+            let pat = self.annotated_pattern("assign LHS")?;
 
             match self.peek() {
                 Some(Token::Assign) => {
@@ -5439,6 +5465,7 @@ fn assign_all_basic(
     rt: Option<&ObjType>,
     rhs: Vec<Obj>,
     mode: AssignMode,
+    err_msg: &str,
 ) -> NRes<()> {
     if lhs.len() == rhs.len() {
         for (lhs1, rhs1) in lhs.iter().zip(rhs.into_iter()) {
@@ -5447,11 +5474,12 @@ fn assign_all_basic(
         Ok(())
     } else {
         Err(NErr::value_error(format!(
-            "Can't unpack into mismatched length: ({}) {} != ({}) {}",
-            CommaSeparated(lhs),
+            "{}: expected {} ({}), got {} ({})",
+            err_msg,
             lhs.len(),
-            CommaSeparated(&rhs),
-            rhs.len()
+            CommaSeparated(lhs),
+            rhs.len(),
+            CommaSeparatedDebug(&rhs)
         )))
     }
 }
@@ -5462,6 +5490,7 @@ fn assign_all(
     rt: Option<&ObjType>,
     rhs: Vec<Obj>,
     mode: AssignMode,
+    err_msg: &str,
 ) -> NRes<()> {
     let mut splat = None;
     for (i, lhs1) in lhs.iter().enumerate() {
@@ -5498,7 +5527,7 @@ fn assign_all(
             let mut rhs = rhs;
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
-            assign_all_basic(env, &lhs[..si], rt, rhs, mode)?;
+            assign_all_basic(env, &lhs[..si], rt, rhs, mode, err_msg)?;
             match inner {
                 Ok(inner) => assign(env, inner, rt, Obj::list(srhs), mode)?,
                 Err((inner, anno)) => {
@@ -5509,9 +5538,9 @@ fn assign_all(
                     assign(env, inner, t.as_ref(), Obj::list(srhs), mode)?
                 }
             };
-            assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode)
+            assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode, err_msg)
         }
-        None => assign_all_basic(env, lhs, rt, rhs, mode),
+        None => assign_all_basic(env, lhs, rt, rhs, mode, err_msg),
     }
 }
 
@@ -5608,7 +5637,7 @@ fn set_index(
                             Some(vvv) => vvv,
                             None => Err(NErr::type_error(format!(
                                 "setting dictionary: nothing at key {}[{}]",
-                                FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                FmtDictPairs(mut_d.iter(), &DEBUG_FMT),
                                 k
                             )))?,
                         },
@@ -5733,7 +5762,7 @@ fn modify_existing_index(
                             None => {
                                 return Err(NErr::key_error(format!(
                                     "nothing at key {}[{}]",
-                                    FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                    FmtDictPairs(mut_d.iter(), &DEBUG_FMT),
                                     kk
                                 )))
                             }
@@ -5807,7 +5836,7 @@ fn modify_every_existing_index(
                             None => {
                                 return Err(NErr::key_error(format!(
                                     "nothing at key {}[{}]",
-                                    FmtDictPairs(mut_d.iter(), &MyFmtFlags::budgeted_repr(64)),
+                                    FmtDictPairs(mut_d.iter(), &DEBUG_FMT),
                                     kk
                                 )))
                             }
@@ -5934,13 +5963,21 @@ fn assign(
             }
         },
         EvaluatedLvalue::CommaSeq(ss) => match rhs {
-            Obj::Seq(Seq::List(ls)) => assign_all(env, ss, rt, unwrap_or_clone(ls), mode),
+            Obj::Seq(Seq::List(ls)) => assign_all(
+                env,
+                ss,
+                rt,
+                unwrap_or_clone(ls),
+                mode,
+                "Can't unpack into mismatched length",
+            ),
             rhs => assign_all(
                 env,
                 ss,
                 rt,
                 obj_to_cloning_iter(&rhs, "unpacking")?.collect::<Vec<Obj>>(),
                 mode,
+                "Can't unpack into mismatched length",
             ),
         },
         EvaluatedLvalue::Annotation(s, ann) => match ann {
@@ -5983,7 +6020,14 @@ fn assign(
                 .collect::<Vec<Option<Obj>>>();
             let res = f.destructure(rhs.clone(), known)?;
             if res.len() == args.len() {
-                assign_all(env, args, rt, res, mode)
+                assign_all(
+                    env,
+                    args,
+                    rt,
+                    res,
+                    mode,
+                    "Can't destructure into mismatched length",
+                )
             } else {
                 Err(NErr::type_error(format!(
                     "{} destructure length didn't match: {:?} {:?}",
@@ -6069,7 +6113,14 @@ fn assign_every(
                 .collect::<Vec<Option<Obj>>>();
             let res = f.destructure(rhs.clone(), known)?;
             if res.len() == args.len() {
-                assign_all(env, args, rt, res, mode)
+                assign_all(
+                    env,
+                    args,
+                    rt,
+                    res,
+                    mode,
+                    "Can't destructure into mismatched length",
+                )
             } else {
                 Err(NErr::type_error(format!(
                     "{} destructure length didn't match: {:?} {:?}",
@@ -6447,7 +6498,11 @@ fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
         return Ok(i2);
     }
 
-    Err(NErr::index_error(format!("Index out of bounds: {:?}", n)))
+    Err(NErr::index_error(format!(
+        "Index out of bounds for len {}: {}",
+        xs.len(),
+        n
+    )))
 }
 
 fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
@@ -6460,8 +6515,8 @@ fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
             ))),
         },
         _ => Err(NErr::index_error(format!(
-            "Invalid (non-numeric) index: {:?}",
-            i
+            "Invalid (non-numeric) index: {}",
+            FmtObj::debug(i)
         ))),
     }
 }
@@ -6506,8 +6561,8 @@ fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
             n
         )))?)),
         Some(x) => Err(NErr::index_error(format!(
-            "Invalid (non-numeric) slice index: {:?}",
-            x
+            "Invalid (non-numeric) slice index: {}",
+            FmtObj::debug(x)
         ))),
     }
 }
@@ -6534,8 +6589,8 @@ fn cyclic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
             ))),
         },
         _ => Err(NErr::index_error(format!(
-            "Invalid (non-numeric) index: {:?}",
-            i
+            "Invalid (non-numeric) index: {}",
+            FmtObj::debug(i)
         ))),
     }
 }
@@ -6564,7 +6619,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
             Ok(soft_from_utf8(bs[i..i + 1].to_vec()))
         }
         Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!(
-            "Can't index stream {:?} {:?}",
+            "Can't index stream {:?}[{:?}]",
             v, i
         ))),
         Seq::Dict(..) => Err(NErr::type_error(
@@ -6590,7 +6645,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                         Some(d) => Ok((&**d).clone()),
                         None => Err(NErr::key_error(format!(
                             "Dictionary lookup: nothing at key {}[{}]",
-                            FmtDictPairs(xx.iter(), &MyFmtFlags::budgeted_repr(64)),
+                            FmtDictPairs(xx.iter(), &MyFmtFlags::budgeted_repr(6)),
                             k
                         ))),
                     },
@@ -6601,7 +6656,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             Seq::Stream(v) => match ii {
                 Obj::Num(ii) => match ii.to_isize() {
                     Some(n) => v.pythonic_index_isize(n).ok_or(NErr::type_error(format!(
-                        "Can't index stream {:?} {:?}",
+                        "Can't index stream {:?}[{:?}]",
                         v, ii
                     ))),
                     _ => Err(NErr::index_error(format!(
@@ -6610,8 +6665,8 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     ))),
                 },
                 _ => Err(NErr::index_error(format!(
-                    "Invalid (non-numeric) index: {:?}",
-                    ii
+                    "Invalid (non-numeric) index: {}",
+                    FmtObj::debug(&ii)
                 ))),
             },
         },
@@ -6644,19 +6699,22 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 Ok(weird_string_as_bytes_index(bs, i))
             }
             Seq::Dict(..) => Err(NErr::type_error(format!(
-                "can't cyclically index {:?} {:?}",
-                xr, ii
+                "can't cyclically index {}[{}]",
+                FmtObj::debug(&xr),
+                FmtObj::debug(&ii)
             ))),
             Seq::Vector(xx) => Ok(Obj::Num(xx[cyclic_index(xx, &ii)?].clone())),
             Seq::Bytes(xx) => Ok(Obj::from(xx[cyclic_index(xx, &ii)?] as usize)),
             Seq::Stream(v) => Err(NErr::type_error(format!(
-                "Can't cyclically index stream {:?} {:?}",
-                v, ii
+                "Can't cyclically index stream {:?}[{}]",
+                v,
+                FmtObj::debug(&ii)
             ))),
         },
         (xr, ir) => Err(NErr::type_error(format!(
-            "can't cyclically index {:?} {:?}",
-            xr, ir
+            "can't cyclically index {}[{}]",
+            FmtObj::debug(xr),
+            FmtObj::debug(&ir)
         ))),
     }
 }
@@ -6688,8 +6746,10 @@ fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
             )?))
         }
         (xr, lo, hi) => Err(NErr::type_error(format!(
-            "can't slice {:?} {:?} {:?}",
-            xr, lo, hi
+            "can't slice {} {:?} {:?}",
+            FmtObj::debug(xr),
+            lo,
+            hi
         ))),
     }
 }
@@ -6745,13 +6805,15 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
             Seq::Stream(v) => Err(NErr::type_error(format!(
-                "Can't safe index stream {:?} {:?}",
-                v, ir
+                "Can't safe index stream {:?}[{}]",
+                v,
+                FmtObj::debug(&ir)
             ))),
         },
         _ => Err(NErr::type_error(format!(
-            "Can't safe index {:?} {:?}",
-            xr, ir
+            "Can't safe index {}[{}]",
+            FmtObj::debug(&xr),
+            FmtObj::debug(&ir)
         ))),
     }
 }
@@ -6775,12 +6837,13 @@ fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
                 Precedence::zero(),
             )),
             Few::One(f2) => Err(NErr::type_error(format!(
-                "Can't call non-function {:?} (and argument {:?} not callable)",
-                f, f2
+                "Can't call non-function {} (and argument {} not callable)",
+                FmtObj::debug(&f),
+                FmtObj::debug(&f2)
             ))),
             _ => Err(NErr::type_error(format!(
-                "Can't call non-function {:?} (and more than one argument)",
-                f
+                "Can't call non-function {} (and more than one argument)",
+                FmtObj::debug(&f)
             ))),
         },
     }
@@ -7065,7 +7128,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Ok(Obj::from(acc))
         }
         Expr::Ident(s) => Env::try_borrow_get_var(env, s),
-        Expr::Underscore => Err(NErr::syntax_error("Can't evaluate underscore".to_string())),
+        Expr::Underscore => Err(NErr::syntax_error_loc(
+            "Can't evaluate underscore".to_string(),
+            "_".to_string(),
+            expr.0,
+        )),
         Expr::Index(x, i) => match (&**x, i) {
             (LocExpr(_, Expr::Underscore), IndexOrSlice::Index(i)) => match &**i {
                 LocExpr(_, Expr::Underscore) => Ok(Obj::Func(
@@ -7352,14 +7419,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 // no section
                 (Some(f), Ok(v)) => {
                     let fs = format!("call to {}", f);
-                    match call_or_part_apply(env, f, v) {
-                        Ok(e) => Ok(e),
-                        Err(NErr::Throw(e, mut trace)) => {
-                            trace.push((fs, expr.0));
-                            Err(NErr::Throw(e, trace))
-                        }
-                        Err(e) => Err(e),
-                    }
+                    add_trace(call_or_part_apply(env, f, v), fs, expr.0)
                 }
 
                 // some section
@@ -7376,11 +7436,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 )),
             }
         }
-        Expr::CommaSeq(_) => Err(NErr::syntax_error(
+        Expr::CommaSeq(_) => Err(NErr::syntax_error_loc(
             "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
+            "seq".to_string(),
+            expr.0,
         )),
-        Expr::Splat(_) => Err(NErr::syntax_error(
+        Expr::Splat(_) => Err(NErr::syntax_error_loc(
             "Splats only allowed on an assignment-related place or in call or list (?)".to_string(),
+            "splat".to_string(),
+            expr.0,
         )),
         Expr::List(xs) => {
             let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
@@ -7443,10 +7507,18 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Ok(Obj::dict(acc, dv))
         }
         Expr::Sequence(xs, ending_semicolon) => {
-            for x in &xs[..xs.len() - 1] {
-                evaluate(env, x)?;
+            for (i, x) in xs[..xs.len() - 1].iter().enumerate() {
+                add_trace(
+                    evaluate(env, x),
+                    format!(";-sequence({}/{})", i + 1, xs.len()),
+                    expr.0,
+                )?;
             }
-            let ret = evaluate(env, xs.last().unwrap())?;
+            let ret = add_trace(
+                evaluate(env, xs.last().unwrap()),
+                format!(";-sequence({}/{})", xs.len(), xs.len()),
+                expr.0,
+            )?;
             if *ending_semicolon {
                 Ok(Obj::Null)
             } else {
@@ -7454,41 +7526,45 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::If(cond, if_body, else_body) => {
-            let cr = evaluate(env, cond)?;
+            let cr = add_trace(evaluate(env, cond), "if-cond".to_string(), expr.0)?;
             if cr.truthy() {
-                evaluate(env, if_body)
+                add_trace(evaluate(env, if_body), "if-branch".to_string(), expr.0)
             } else {
                 match else_body {
-                    Some(b) => evaluate(env, b),
+                    Some(b) => add_trace(evaluate(env, b), "else-branch".to_string(), expr.0),
                     None => Ok(Obj::Null),
                 }
             }
         }
         Expr::For(iteratees, do_yield, body) => {
-            if *do_yield {
-                let mut acc = Vec::new();
-                let mut f = |e| acc.push(e);
-                match evaluate_for(env, iteratees.as_slice(), body, &mut f) {
-                    Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::list(acc)),
-                    Err(NErr::Break(e)) => Ok(e), // ??????
-                    Err(e) => Err(e),
-                }
-            } else {
-                match evaluate_for(env, iteratees.as_slice(), body, &mut |_| ()) {
-                    Ok(()) => Ok(Obj::Null),
-                    Err(NErr::Break(e)) => Ok(e),
-                    Err(e) => Err(e),
-                }
-            }
+            add_trace(
+                if *do_yield {
+                    let mut acc = Vec::new();
+                    let mut f = |e| acc.push(e);
+                    match evaluate_for(env, iteratees.as_slice(), body, &mut f) {
+                        Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::list(acc)),
+                        Err(NErr::Break(e)) => Ok(e), // ??????
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    match evaluate_for(env, iteratees.as_slice(), body, &mut |_| ()) {
+                        Ok(()) => Ok(Obj::Null),
+                        Err(NErr::Break(e)) => Ok(e),
+                        Err(e) => Err(e),
+                    }
+                },
+                "for loop".to_string(),
+                expr.0,
+            )
         }
         Expr::While(cond, body) => {
             // FIXME :(
             loop {
                 let ee = Env::with_parent(env);
-                if !(evaluate(&ee, cond)?.truthy()) {
+                if !(add_trace(evaluate(&ee, cond), "while-cond".to_string(), expr.0)?.truthy()) {
                     return Ok(Obj::Null);
                 }
-                match evaluate(&ee, body) {
+                match add_trace(evaluate(&ee, body), "while-body".to_string(), expr.0) {
                     Ok(_) => (),
                     Err(NErr::Break(e)) => return Ok(e),
                     Err(NErr::Continue) => continue,
@@ -7497,13 +7573,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Switch(scrutinee, arms) => {
-            let s = evaluate(env, scrutinee)?;
+            let s = add_trace(evaluate(env, scrutinee), "switchee".to_string(), expr.0)?;
             for (pat, body) in arms {
                 let ee = Env::with_parent(env);
                 let p = eval_lvalue(&ee, pat)?;
                 // drop asap
                 // TODO this clone isn't great but isn't trivial to eliminate. maybe pattern match
                 // errors should return the assigned object back or something?? idk
+                // TODO: only catch pattern match errors tbh
                 let ret = assign(
                     &ee,
                     &p,
@@ -7512,7 +7589,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     AssignMode::PatternMatch,
                 );
                 match ret {
-                    Ok(()) => return evaluate(&ee, body),
+                    Ok(()) => {
+                        std::mem::drop(s);
+                        return add_trace(evaluate(&ee, body), "switch-case".to_string(), expr.0);
+                    }
                     Err(_) => continue,
                 };
             }
@@ -7535,7 +7615,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         AssignMode::PatternMatch,
                     );
                     match ret {
-                        Ok(()) => evaluate(&ee, catcher),
+                        Ok(()) => {
+                            std::mem::drop(e);
+                            return evaluate(&ee, catcher);
+                        }
                         Err(_) => Err(NErr::Throw(e, trace)),
                     }
                 }
@@ -8672,7 +8755,9 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneNumBuiltin {
         name: "is_prime".to_string(),
         body: |a| {
-            Ok(Obj::Num(NNum::iverson(nnum::lazy_is_prime(&into_bigint_ok(a)?))))
+            Ok(Obj::Num(NNum::iverson(nnum::lazy_is_prime(
+                &into_bigint_ok(a)?,
+            ))))
         },
     });
     env.insert_builtin(OneNumBuiltin {
@@ -9401,6 +9486,7 @@ pub fn initialize(env: &mut Env) {
             _ => Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
         },
     });
+    // TODO: split with limit
     env.insert_builtin(TwoArgBuiltin {
         name: "split".to_string(),
         body: |a, b| match (a, b) {
@@ -10447,18 +10533,18 @@ pub fn initialize(env: &mut Env) {
         env.insert_builtin(OneArgBuiltin {
             name: "md5".to_string(),
             body: |a| match a {
-                Obj::Seq(Seq::Bytes(b)) => {
-                    Ok(Obj::Seq(Seq::Bytes(Rc::new(Md5::new().chain_update(&*b).finalize().to_vec()))))
-                }
+                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                    Md5::new().chain_update(&*b).finalize().to_vec(),
+                )))),
                 a => Err(NErr::argument_error_1(&a)),
             },
         });
         env.insert_builtin(OneArgBuiltin {
             name: "sha256".to_string(),
             body: |a| match a {
-                Obj::Seq(Seq::Bytes(b)) => {
-                    Ok(Obj::Seq(Seq::Bytes(Rc::new(Sha256::new().chain_update(&*b).finalize().to_vec()))))
-                }
+                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                    Sha256::new().chain_update(&*b).finalize().to_vec(),
+                )))),
                 a => Err(NErr::argument_error_1(&a)),
             },
         });
