@@ -3961,6 +3961,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn emit(&mut self, token: Token) {
+        // eprintln!("emitting: {:?} {:?} {:?}", token, self.start, self.cur);
         self.tokens.push(LocToken {
             token,
             start: self.start,
@@ -4089,41 +4090,7 @@ impl<'a> Lexer<'a> {
                 '}' => self.emit(Token::RightBrace),
                 '\\' => self.emit(Token::Lambda),
                 ',' => self.emit(Token::Comma),
-                ';' => {
-                    let mut semis = 1;
-                    while self.peek() == Some(&';') {
-                        self.next();
-                        semis += 1;
-                    }
-                    if semis == 1 {
-                        self.emit(Token::Semicolon)
-                    } else {
-                        let mut comm = String::new();
-                        let mut cur = 0;
-                        loop {
-                            match self.next() {
-                                Some(';') => {
-                                    comm.push(c);
-                                    cur += 1;
-
-                                    if cur == semis {
-                                        comm.truncate(comm.len() - semis);
-                                        self.emit(Token::Comment(comm));
-                                        break;
-                                    }
-                                }
-                                Some(c) => {
-                                    comm.push(c);
-                                    cur = 0;
-                                }
-                                None => {
-                                    self.emit(Token::Invalid("range comment: EOF".to_string()));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                ';' => self.emit(Token::Semicolon),
                 ':' => {
                     if self.peek() == Some(&':') {
                         self.next();
@@ -4135,10 +4102,41 @@ impl<'a> Lexer<'a> {
                 ' ' | '\n' => self.start = self.cur,
                 '#' => {
                     let mut comment = String::new();
-                    loop {
-                        match self.next() {
-                            None | Some('\n') => break,
-                            Some(c) => comment.push(c),
+                    match self.next() {
+                        None | Some('\n') => {}
+                        Some('(') => {
+                            let mut depth = 1;
+                            loop {
+                                match self.next() {
+                                    None => {
+                                        self.emit(Token::Invalid(
+                                            "lexing: runaway range comment".to_string(),
+                                        ));
+                                        return;
+                                    }
+                                    Some(c) => {
+                                        if c == '(' {
+                                            depth += 1;
+                                        }
+                                        if c == ')' {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                        }
+                                        comment.push(c);
+                                    }
+                                }
+                            }
+                        }
+                        Some(c) => {
+                            comment.push(c);
+                            loop {
+                                match self.next() {
+                                    None | Some('\n') => break,
+                                    Some(c) => comment.push(c),
+                                }
+                            }
                         }
                     }
                     self.emit(Token::Comment(comment))
@@ -7958,9 +7956,11 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
             }
             Expr::Lambda(params, body) => {
                 let mut bound2 = bound.clone();
-                bound2.extend(params
-                    .iter()
-                    .flat_map(|x| x.collect_identifiers(false /* declared_only */)));
+                bound2.extend(
+                    params
+                        .iter()
+                        .flat_map(|x| x.collect_identifiers(false /* declared_only */)),
+                );
                 Ok(Expr::Lambda(
                     params.clone(),
                     Rc::new(freeze(&mut bound2, env, body)?),
