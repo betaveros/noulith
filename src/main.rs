@@ -50,7 +50,7 @@ fn repl() {
                     );
                 }
                 Err(e) => {
-                    println!("ERROR: {}", e);
+                    println!("ERROR: {}", e.render(&input));
                 }
             },
             Ok(None) => {}
@@ -77,7 +77,7 @@ fn run_code(code: &str) {
                 println!("{}", e);
             }
             Err(e) => {
-                println!("ERROR: {}", e);
+                println!("ERROR: {}", e.render(&code));
             }
         },
         Ok(None) => {}

@@ -1630,13 +1630,87 @@ impl Seq {
 
 #[derive(Debug)]
 pub enum NErr {
-    Throw(Obj, Vec<(String, CodeLoc)>),
+    Throw(
+        Obj,
+        Vec<(String, CodeLoc, Option<(Rc<String>, Rc<String>)>)>,
+    ),
+    // Optional (source file, source code), added when we pass through an eval boundary roughly
+    // speaking. Is this bonkers? Idk.
     Break(Obj),
     Return(Obj),
     Continue,
 }
 
 impl NErr {
+    fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
+        match self {
+            NErr::Throw(_, trace) => {
+                for tup in trace {
+                    if tup.2.is_none() {
+                        tup.2 = Some((src_file.clone(), src.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // slow
+    pub fn render(self: NErr, src: &str) -> String {
+        match self {
+            NErr::Throw(e, trace) => {
+                use std::fmt::Write;
+                let mut out = String::new();
+                // I'm fairly confident these writes can't fail, at least at time of writing. But
+                // since we are already error handling let's just ignore errors.
+                writeln!(out, "{}", e).ok();
+                match trace.first() {
+                    Some((_, loc, tsrc)) => {
+                        let real_src_code = match tsrc {
+                            Some((_, f)) => f,
+                            None => src,
+                        };
+                        let mut line = 1;
+                        for (i, c) in real_src_code.chars().enumerate() {
+                            if c == '\n' {
+                                line += 1;
+                                if line > loc.line {
+                                    break;
+                                }
+                            } else {
+                                if i == loc.index {
+                                    write!(out, "\x1b[1;31m").ok();
+                                }
+                                if line == loc.line {
+                                    write!(out, "{}", c).ok();
+                                }
+                                if i == loc.index {
+                                    write!(out, "\x1b[0m").ok();
+                                }
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                for (thing, loc, tsrc) in trace {
+                    match tsrc {
+                        Some((src_file, _)) => write!(
+                            out,
+                            "\n    at {} ({}:{}:{})",
+                            thing, src_file, loc.line, loc.col
+                        )
+                        .ok(),
+                        None => write!(out, "\n    at {} ({}:{})", thing, loc.line, loc.col).ok(),
+                    };
+                }
+                out
+            }
+            NErr::Break(e) => format!("break {}", e),
+            NErr::Continue => format!("continue"),
+            NErr::Return(e) => format!("return {}", e),
+        }
+    }
+
     fn throw(s: String) -> NErr {
         NErr::Throw(Obj::from(s), Vec::new())
     }
@@ -1659,7 +1733,10 @@ impl NErr {
         NErr::throw(format!("syntax error: {}", s))
     }
     fn syntax_error_loc(s: String, msg: String, loc: CodeLoc) -> NErr {
-        NErr::Throw(Obj::from(format!("syntax error: {}", s)), vec![(msg, loc)])
+        NErr::Throw(
+            Obj::from(format!("syntax error: {}", s)),
+            vec![(msg, loc, None)],
+        )
     }
     fn type_error(s: String) -> NErr {
         NErr::throw(format!("type error: {}", s))
@@ -1718,7 +1795,7 @@ impl NErr {
 fn add_trace<T>(res: NRes<T>, thing: String, loc: CodeLoc) -> NRes<T> {
     match res {
         Err(NErr::Throw(e, mut trace)) => {
-            trace.push((thing, loc));
+            trace.push((thing, loc, None));
             Err(NErr::Throw(e, trace))
         }
         e => e,
@@ -1742,8 +1819,15 @@ impl fmt::Display for NErr {
         match self {
             NErr::Throw(e, trace) => {
                 write!(formatter, "{}", e)?;
-                for (thing, loc) in trace {
-                    write!(formatter, " at {} ({}:{})", thing, loc.line, loc.col)?;
+                for (thing, loc, src) in trace {
+                    match src {
+                        Some(srcp) => write!(
+                            formatter,
+                            " at {} ({}:{}:{})",
+                            thing, srcp.0, loc.line, loc.col
+                        )?,
+                        None => write!(formatter, " at {} ({}:{})", thing, loc.line, loc.col)?,
+                    }
                 }
                 Ok(())
             }
@@ -5910,7 +5994,8 @@ fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     if !is_type(&ty, &rhs) {
         Err(NErr::name_error(format!(
             "Declaring, type mismatch: {} is not of type {}",
-            rhs, ty.name()
+            rhs,
+            ty.name()
         )))
     } else {
         try_borrow_mut_nres(env, "variable declaration", s)?.insert(s.to_string(), ty, rhs)
@@ -5963,7 +6048,8 @@ fn assign(
                     if !is_type(&ty, &rhs) {
                         return Err(NErr::type_error(format!(
                             "Assigning to underscore type mismatch: {} is not of type {}",
-                            rhs, ty.name()
+                            rhs,
+                            ty.name()
                         )));
                     }
                 }
@@ -6013,17 +6099,15 @@ fn assign(
                 "Can't unpack into mismatched length",
             ),
             Obj::Seq(seq) => match seq.len() {
-                Some(len) => {
-                    assign_all(
-                        env,
-                        ss,
-                        rt,
-                        len,
-                        || seq_to_cloning_iter(&seq).collect::<Vec<Obj>>(),
-                        mode,
-                        "Can't unpack into mismatched length",
-                    )
-                }
+                Some(len) => assign_all(
+                    env,
+                    ss,
+                    rt,
+                    len,
+                    || seq_to_cloning_iter(&seq).collect::<Vec<Obj>>(),
+                    mode,
+                    "Can't unpack into mismatched length",
+                ),
                 None => Err(NErr::type_error(
                     "Can't unpack from infinite sequence".to_string(),
                 )),
@@ -7666,7 +7750,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Throw(body) => Err(NErr::Throw(
             evaluate(&env, body)?,
-            vec![("throw".to_string(), expr.0)],
+            vec![("throw".to_string(), expr.0, None)],
         )),
         Expr::Lambda(params, body) => Ok(Obj::Func(
             Func::Closure(Closure {
@@ -10101,10 +10185,16 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
         body: |env, a| match a {
-            Obj::Seq(Seq::String(r)) => match parse(&r) {
+            Obj::Seq(Seq::String(r)) => match match parse(&r) {
                 Ok(Some(code)) => evaluate(env, &code),
                 Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
                 Err(s) => Err(NErr::value_error(s)),
+            } {
+                Ok(x) => Ok(x),
+                Err(mut e) => {
+                    e.supply_source(Rc::new("<eval>".to_string()), r);
+                    Err(e)
+                }
             },
             s => Err(NErr::value_error(format!("can't eval {:?}", s))),
         },
@@ -10482,10 +10572,16 @@ pub fn initialize(env: &mut Env) {
             for arg in args {
                 ret = match arg {
                     Obj::Seq(Seq::String(f)) => match fs::read_to_string(&*f) {
-                        Ok(c) => match parse(&c) {
+                        Ok(c) => match match parse(&c) {
                             Ok(Some(code)) => evaluate(env, &code),
                             Ok(None) => Err(NErr::value_error("empty file".to_string())),
                             Err(s) => Err(NErr::value_error(format!("lex failed: {}", s))),
+                        } {
+                            Ok(x) => Ok(x),
+                            Err(mut e) => {
+                                e.supply_source(f.clone(), Rc::new(c));
+                                Err(e)
+                            }
                         },
                         Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
                     },

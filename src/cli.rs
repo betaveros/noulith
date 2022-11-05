@@ -181,7 +181,7 @@ pub fn repl() {
                             );
                         }
                         Err(e) => {
-                            println!("ERROR: {}", e);
+                            println!("ERROR: {}", e.render(&line));
                         }
                     },
                     Ok(None) => {}
