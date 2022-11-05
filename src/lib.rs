@@ -3632,6 +3632,7 @@ pub enum Token {
     Swap,
     Every,
     Struct,
+    Freeze,
     Underscore,
 
     // strip me before parsing
@@ -3705,11 +3706,11 @@ pub enum Expr {
     Return(Option<Box<LocExpr>>),
     Throw(Box<LocExpr>),
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
+    Struct(Rc<String>, Vec<Rc<String>>),
+    Freeze(Box<LocExpr>),
+
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
-    // meaningful in lvalues
-    Paren(Box<LocExpr>),
-    Struct(Rc<String>, Vec<Rc<String>>),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
@@ -3722,7 +3723,6 @@ pub enum Lvalue {
     Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
-    Unannotation(Box<Lvalue>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
@@ -3737,7 +3737,6 @@ impl Lvalue {
             Lvalue::Literal(_) => true,
             Lvalue::IndexedIdent(..) => false,
             Lvalue::Annotation(x, _) => x.any_literals(),
-            Lvalue::Unannotation(x) => x.any_literals(),
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
@@ -3748,25 +3747,37 @@ impl Lvalue {
         }
     }
 
-    fn collect_identifiers(&self) -> HashSet<String> {
+    fn collect_identifiers(&self, declared_only: bool) -> HashSet<String> {
         match self {
             Lvalue::Underscore => HashSet::new(),
             Lvalue::Literal(_) => HashSet::new(),
-            Lvalue::IndexedIdent(x, _) => HashSet::from([x.clone()]),
-            Lvalue::Annotation(x, _) => x.collect_identifiers(),
-            Lvalue::Unannotation(x) => x.collect_identifiers(),
-            Lvalue::CommaSeq(x) => x.iter().flat_map(|e| e.collect_identifiers()).collect(),
-            Lvalue::Splat(x) => x.collect_identifiers(),
+            Lvalue::IndexedIdent(x, _) => {
+                if declared_only {
+                    HashSet::new()
+                } else {
+                    HashSet::from([x.clone()])
+                }
+            }
+            Lvalue::Annotation(x, _) => x.collect_identifiers(false),
+            Lvalue::CommaSeq(x) => x
+                .iter()
+                .flat_map(|e| e.collect_identifiers(declared_only))
+                .collect(),
+            Lvalue::Splat(x) => x.collect_identifiers(declared_only),
             Lvalue::Or(a, b) => {
-                let mut s = a.collect_identifiers();
-                s.extend(b.collect_identifiers());
+                // sus
+                let mut s = a.collect_identifiers(declared_only);
+                s.extend(b.collect_identifiers(declared_only));
                 s
             }
-            Lvalue::Destructure(_, b) => b.iter().flat_map(|e| e.collect_identifiers()).collect(),
+            Lvalue::Destructure(_, b) => b
+                .iter()
+                .flat_map(|e| e.collect_identifiers(declared_only))
+                .collect(),
             Lvalue::ChainDestructure(lv, vs) => {
-                let mut s = lv.collect_identifiers();
+                let mut s = lv.collect_identifiers(declared_only);
                 for x in vs {
-                    s.extend(x.1.collect_identifiers());
+                    s.extend(x.1.collect_identifiers(declared_only));
                 }
                 s
             }
@@ -3785,7 +3796,6 @@ enum EvaluatedLvalue {
     Underscore,
     IndexedIdent(String, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
-    Unannotation(Box<EvaluatedLvalue>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
@@ -3810,9 +3820,6 @@ impl Display for EvaluatedLvalue {
             }
             EvaluatedLvalue::Annotation(s, None) => {
                 write!(formatter, "({}:)", s)
-            }
-            EvaluatedLvalue::Unannotation(s) => {
-                write!(formatter, "({})", s)
             }
             EvaluatedLvalue::CommaSeq(vs) => {
                 write!(formatter, "(")?;
@@ -3860,7 +3867,6 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
                 .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
-        Expr::Paren(p) => Ok(Lvalue::Unannotation(Box::new(to_lvalue(*p)?))),
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
@@ -4336,6 +4342,7 @@ impl<'a> Lexer<'a> {
                                 "swap" => Token::Swap,
                                 "every" => Token::Every,
                                 "struct" => Token::Struct,
+                                "freeze" => Token::Freeze,
                                 "_" => Token::Underscore,
                                 _ => Token::Ident(acc),
                             })
@@ -4582,17 +4589,15 @@ impl Parser {
                         ))
                     }
                 }
+                Token::Freeze => {
+                    self.advance();
+                    Ok(LocExpr(loc, Expr::Freeze(Box::new(self.single("throw")?))))
+                }
                 Token::LeftParen => {
                     self.advance();
                     let e = self.expression()?;
                     self.require(Token::RightParen, "normal parenthesized expr".to_string())?;
-                    // Only add the paren if it looks important in lvalues.
-                    match &e.1 {
-                        Expr::Ident(_) | Expr::Index(..) => {
-                            Ok(LocExpr(loc, Expr::Paren(Box::new(e))))
-                        }
-                        _ => Ok(e),
-                    }
+                    Ok(e)
                 }
                 Token::VLeftParen => {
                     self.advance();
@@ -5981,7 +5986,6 @@ fn assign(
             None => assign(env, s, Some(&ObjType::Any), rhs, mode),
             Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
         },
-        EvaluatedLvalue::Unannotation(s) => assign(env, s, None, rhs, mode),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
@@ -6005,13 +6009,6 @@ fn assign(
                 .iter()
                 .map(|e| match &**e {
                     EvaluatedLvalue::Literal(obj) => Some(obj.clone()),
-                    EvaluatedLvalue::Unannotation(v) => match &**v {
-                        // FIXME what to do even
-                        EvaluatedLvalue::IndexedIdent(..) => {
-                            Some(eval_lvalue_as_obj(env, v).ok()?.clone())
-                        }
-                        _ => None,
-                    },
                     _ => None,
                 })
                 .collect::<Vec<Option<Obj>>>();
@@ -6081,7 +6078,6 @@ fn assign_every(
             None => assign_every(env, s, Some(&ObjType::Any), rhs, mode),
             Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
         },
-        EvaluatedLvalue::Unannotation(s) => assign_every(env, s, None, rhs, mode),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
@@ -6189,7 +6185,6 @@ fn modify_every(
             "No annotations in modify every: {:?}",
             lhs
         ))),
-        EvaluatedLvalue::Unannotation(s) => modify_every(env, s, rhs),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't modify raw splat {:?}",
             lhs
@@ -6440,9 +6435,6 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
                 None => None,
             },
         )),
-        Lvalue::Unannotation(s) => Ok(EvaluatedLvalue::Unannotation(Box::new(eval_lvalue(
-            env, s,
-        )?))),
         Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
             v.iter()
                 .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
@@ -6859,7 +6851,6 @@ fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             Ok(sr)
         }
         EvaluatedLvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
-        EvaluatedLvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
         EvaluatedLvalue::CommaSeq(v) => Ok(Obj::list(
             v.iter()
                 .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
@@ -6893,7 +6884,6 @@ fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<
             Ok(sr)
         },
         Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
-        Lvalue::Unannotation(s) => eval_lvalue_as_obj(env, s),
         Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
@@ -7665,7 +7655,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::Null)
         }
-        Expr::Paren(p) => evaluate(env, &*p),
+        Expr::Freeze(expr) => {
+            let mut bound = HashSet::new();
+            evaluate(env, &freeze(&mut bound, env, expr)?)
+        }
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
         Expr::Continue => Err(NErr::Continue),
@@ -7675,21 +7668,21 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
 }
 
 fn vec_box_freeze(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     expr: &Vec<Box<LocExpr>>,
 ) -> NRes<Vec<Box<LocExpr>>> {
     expr.iter().map(|x| box_freeze(bound, env, x)).collect()
 }
 fn box_freeze(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     expr: &Box<LocExpr>,
 ) -> NRes<Box<LocExpr>> {
     Ok(Box::new(freeze(bound, env, expr)?))
 }
 fn opt_box_freeze(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     expr: &Option<Box<LocExpr>>,
 ) -> NRes<Option<Box<LocExpr>>> {
@@ -7700,7 +7693,7 @@ fn opt_box_freeze(
 }
 
 fn opt_rc_freeze(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     expr: &Option<Rc<LocExpr>>,
 ) -> NRes<Option<Rc<LocExpr>>> {
@@ -7711,14 +7704,18 @@ fn opt_rc_freeze(
 }
 
 fn box_freeze_lvalue(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     lvalue: &Box<Lvalue>,
 ) -> NRes<Box<Lvalue>> {
     Ok(Box::new(freeze_lvalue(bound, env, lvalue)?))
 }
 
-fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalue) -> NRes<Lvalue> {
+fn freeze_lvalue(
+    bound: &mut HashSet<String>,
+    env: &Rc<RefCell<Env>>,
+    lvalue: &Lvalue,
+) -> NRes<Lvalue> {
     match lvalue {
         Lvalue::Underscore => Ok(Lvalue::Underscore),
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
@@ -7742,7 +7739,6 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
             box_freeze_lvalue(bound, env, x)?,
             opt_rc_freeze(bound, env, e)?,
         )),
-        Lvalue::Unannotation(x) => Ok(Lvalue::Unannotation(box_freeze_lvalue(bound, env, x)?)),
         Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
             x.iter()
                 .map(|e| box_freeze_lvalue(bound, env, e))
@@ -7774,7 +7770,7 @@ fn freeze_lvalue(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, lvalue: &Lvalu
 }
 
 fn freeze_ios(
-    bound: &HashSet<String>,
+    bound: &mut HashSet<String>,
     env: &Rc<RefCell<Env>>,
     ios: &IndexOrSlice,
 ) -> NRes<IndexOrSlice> {
@@ -7787,9 +7783,20 @@ fn freeze_ios(
     }
 }
 
-// TODO most of this code is wrong, we need to bind variables as we see them (or have a separate
-// earlier binding step?)
-fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<LocExpr> {
+// OK what's the actual contract of this function
+//
+// Given an expression, go through it and resolve all free variables (those not bound by
+// declarations internal to the expression) to their values in the outer env. Also collect
+// bound variables. Error if
+//
+// - any free variable isn't found in the outer env
+// - any free variables are assigned to
+// - (??) any bound variable is redeclared
+//
+// This is fragile because it has its own idea of what things introduce scopes and one day it wil
+// get out of sync with the actual evaluation code. Shrug.
+
+fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<LocExpr> {
     Ok(LocExpr(
         expr.0,
         match &expr.1 {
@@ -7842,8 +7849,13 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
                 box_freeze(bound, env, lhs)?,
                 box_freeze(bound, env, rhs)?,
             )),
-            Expr::Assign(_every, _pat, _rhs) => {
-                Err(NErr::type_error(format!("assign not implemented")))
+            Expr::Assign(every, pat, rhs) => {
+                // have to bind first so box_freeze_lvalue works
+                // also recursive functions work ig
+                bound.extend(pat.collect_identifiers(true /* declared_only */));
+
+                let lvalue = box_freeze_lvalue(bound, env, pat)?;
+                Ok(Expr::Assign(*every, lvalue, box_freeze(bound, env, rhs)?))
             }
             Expr::Annotation(s, t) => Ok(Expr::Annotation(
                 box_freeze(bound, env, s)?,
@@ -7856,18 +7868,18 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
                 box_freeze_lvalue(bound, env, a)?,
                 box_freeze_lvalue(bound, env, b)?,
             )),
-            Expr::OpAssign(..) => Err(NErr::type_error(format!("opassign not implemented"))),
+            Expr::OpAssign(every, pat, op, rhs) => Ok(Expr::OpAssign(
+                *every,
+                box_freeze_lvalue(bound, env, pat)?,
+                box_freeze(bound, env, op)?,
+                box_freeze(bound, env, rhs)?,
+            )),
             Expr::Call(f, args) => Ok(Expr::Call(
                 box_freeze(bound, env, f)?,
                 vec_box_freeze(bound, env, args)?,
             )),
-            Expr::CommaSeq(_) => Err(NErr::syntax_error(
-                "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
-            )),
-            Expr::Splat(_) => Err(NErr::syntax_error(
-                "Splats only allowed on an assignment-related place or in call or list (?)"
-                    .to_string(),
-            )),
+            Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(bound, env, s)?)),
+            Expr::Splat(s) => Ok(Expr::Splat(box_freeze(bound, env, s)?)),
             Expr::List(xs) => Ok(Expr::List(vec_box_freeze(bound, env, xs)?)),
             Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(bound, env, xs)?)),
             Expr::Dict(def, xs) => Ok(Expr::Dict(
@@ -7882,56 +7894,80 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
                 box_freeze(bound, env, b)?,
                 opt_box_freeze(bound, env, c)?,
             )),
-            Expr::For(iteratees, do_yield, body) => Ok(Expr::For(
-                iteratees
-                    .iter()
-                    .map(|x| match x {
-                        ForIteration::Iteration(ty, lv, expr) => Ok(ForIteration::Iteration(
-                            *ty,
-                            box_freeze_lvalue(bound, env, lv)?,
-                            box_freeze(bound, env, expr)?,
-                        )),
-                        ForIteration::Guard(expr) => {
-                            Ok(ForIteration::Guard(box_freeze(bound, env, expr)?))
-                        }
-                    })
-                    .collect::<NRes<Vec<ForIteration>>>()?,
-                *do_yield,
-                box_freeze(bound, env, body)?,
-            )),
-            Expr::While(cond, body) => Ok(Expr::While(
-                box_freeze(bound, env, cond)?,
-                box_freeze(bound, env, body)?,
-            )),
+            Expr::For(iteratees, do_yield, body) => {
+                let mut bound2 = bound.clone();
+                Ok(Expr::For(
+                    iteratees
+                        .iter()
+                        .map(|x| match x {
+                            ForIteration::Iteration(ty, lv, expr) => {
+                                // have to bind first so box_freeze_lvalue works
+                                // also recursive functions work ig
+                                bound2.extend(lv.collect_identifiers(
+                                    match ty {
+                                        ForIterationType::Normal => false,
+                                        ForIterationType::Item => false,
+                                        ForIterationType::Declare => true, // thonk
+                                    }, /* declared_only */
+                                ));
+                                Ok(ForIteration::Iteration(
+                                    *ty,
+                                    box_freeze_lvalue(&mut bound2, env, lv)?,
+                                    box_freeze(&mut bound2, env, expr)?,
+                                ))
+                            }
+                            ForIteration::Guard(expr) => {
+                                Ok(ForIteration::Guard(box_freeze(&mut bound2, env, expr)?))
+                            }
+                        })
+                        .collect::<NRes<Vec<ForIteration>>>()?,
+                    *do_yield,
+                    box_freeze(&mut bound2, env, body)?,
+                ))
+            }
+            Expr::While(cond, body) => {
+                let mut bound2 = bound.clone();
+                Ok(Expr::While(
+                    box_freeze(&mut bound2, env, cond)?,
+                    box_freeze(&mut bound2, env, body)?,
+                ))
+            }
             Expr::Switch(scrutinee, arms) => Ok(Expr::Switch(
                 box_freeze(bound, env, scrutinee)?,
                 arms.iter()
                     .map(|(pat, rhs)| {
+                        let mut bound2 = bound.clone();
+                        bound2.extend(pat.collect_identifiers(false /* declared_only */));
                         Ok((
-                            box_freeze_lvalue(bound, env, pat)?,
-                            box_freeze(bound, env, rhs)?,
+                            box_freeze_lvalue(&mut bound2, env, pat)?,
+                            box_freeze(&mut bound2, env, rhs)?,
                         ))
                     })
                     .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>)>>>()?,
             )),
-            Expr::Try(a, b, c) => Ok(Expr::Try(
-                box_freeze(bound, env, a)?,
-                box_freeze_lvalue(bound, env, b)?,
-                box_freeze(bound, env, c)?,
-            )),
-            Expr::Lambda(params, body) => {
-                let mut bound2 = params
-                    .iter()
-                    .flat_map(|x| x.collect_identifiers())
-                    .collect::<HashSet<String>>();
-                bound2.extend(bound.iter().cloned());
-                Ok(Expr::Lambda(
-                    params.clone(),
-                    Rc::new(freeze(&bound2, env, body)?),
+            Expr::Try(a, pat, catcher) => {
+                // FIXME hmmm is the main try branch really scoped this way
+                let body = box_freeze(bound, env, a)?;
+                let mut bound2 = bound.clone();
+                bound2.extend(pat.collect_identifiers(false /* declared_only */));
+                Ok(Expr::Try(
+                    body,
+                    box_freeze_lvalue(&mut bound2, env, pat)?,
+                    box_freeze(&mut bound2, env, catcher)?,
                 ))
             }
+            Expr::Lambda(params, body) => {
+                let mut bound2 = bound.clone();
+                bound2.extend(params
+                    .iter()
+                    .flat_map(|x| x.collect_identifiers(false /* declared_only */)));
+                Ok(Expr::Lambda(
+                    params.clone(),
+                    Rc::new(freeze(&mut bound2, env, body)?),
+                ))
+            }
+            Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(bound, env, e)?)),
 
-            Expr::Paren(p) => Ok(Expr::Paren(box_freeze(bound, env, p)?)),
             Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(bound, env, e)?)),
             Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(bound, env, e)?)),
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(bound, env, e)?)),
@@ -10556,30 +10592,6 @@ pub fn initialize(env: &mut Env) {
             },
         });
     }
-
-    env.insert_builtin(OneArgBuiltin {
-        name: "freeze".to_string(),
-        body: |a| match a {
-            Obj::Func(Func::Closure(c), p) => {
-                let bound = c
-                    .params
-                    .iter()
-                    .flat_map(|x| x.collect_identifiers())
-                    .collect::<HashSet<String>>();
-                let b = freeze(&bound, &c.env, &c.body)?;
-                // FIXME
-                Ok(Obj::Func(
-                    Func::Closure(Closure {
-                        params: c.params,
-                        body: Rc::new(b),
-                        env: Rc::new(RefCell::new(Env::empty())),
-                    }),
-                    p,
-                ))
-            }
-            a => Err(NErr::argument_error_1(&a)),
-        },
-    });
 
     env.insert_builtin(OneArgBuiltin {
         name: "memoize".to_string(),

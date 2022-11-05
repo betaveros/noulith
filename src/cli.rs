@@ -56,7 +56,11 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Throw
                 | Token::Lambda
                 | Token::Bang
+                | Token::QuestionMark
                 | Token::Colon
+                | Token::LeftArrow
+                | Token::RightArrow
+                | Token::DoubleLeftArrow
                 | Token::DoubleColon
                 | Token::Ellipsis
                 | Token::Assign
@@ -66,6 +70,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Swap
                 | Token::Every
                 | Token::Struct
+                | Token::Freeze
                 | Token::Underscore => Some("\x1b[1;34m"),
                 _ => None,
             };
