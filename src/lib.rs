@@ -88,13 +88,15 @@ static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 pub struct Struct {
     id: usize,
     size: usize,
+    name: Rc<String>,
 }
 
 impl Struct {
-    fn new(size: usize) -> Self {
+    fn new(size: usize, name: Rc<String>) -> Self {
         Struct {
             id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             size,
+            name,
         }
     }
 }
@@ -657,6 +659,7 @@ pub enum ObjType {
     Type,
     Any,
     StructInstance,
+    Struct(Struct),
     Satisfying(REnv, Box<Func>),
 }
 
@@ -678,6 +681,7 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
+            ObjType::Struct(s) => (&**s.name).clone(),
             ObjType::StructInstance => "struct_instance",
             ObjType::Satisfying(..) => "satisfying(???)",
         }
@@ -720,6 +724,7 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::Func, Obj::Func(..)) => true,
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
+        (ObjType::Struct(s1), Obj::Instance(s2, _)) => s1.id == s2.id,
         (ObjType::Satisfying(renv, func), x) => match func.run(renv, vec![x.clone()]) {
             Ok(res) => res.truthy(),
             Err(e) => {
@@ -731,9 +736,16 @@ fn is_type(ty: &ObjType, arg: &Obj) -> bool {
     }
 }
 
-fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
+fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
+    match few(args) {
+        Few::One(arg) => Ok(arg),
+        _ => Err(NErr::type_error(format!("{} expected one argument", msg))),
+    }
+}
+
+fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
     match ty {
-        ObjType::Int => match arg {
+        ObjType::Int => match expect_one(arg, "int")? {
             Obj::Num(n) => Ok(Obj::Num(
                 n.trunc()
                     .ok_or(NErr::value_error("can't coerce to int".to_string()))?,
@@ -746,7 +758,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 "int: expected number or string".to_string(),
             )),
         },
-        ObjType::Float => match arg {
+        ObjType::Float => match expect_one(arg, "float")? {
             Obj::Num(n) => Ok(Obj::from(to_f64_ok(&n)?)),
             Obj::Seq(Seq::String(s)) => match s.parse::<f64>() {
                 Ok(x) => Ok(Obj::from(x)),
@@ -756,7 +768,7 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 "float: expected number or string".to_string(),
             )),
         },
-        ObjType::Number => match arg {
+        ObjType::Number => match expect_one(arg, "number")? {
             Obj::Num(n) => Ok(Obj::Num(n)),
             Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
                 Ok(x) => Ok(Obj::from(x)),
@@ -769,14 +781,14 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 "number: expected number or string".to_string(),
             )),
         },
-        ObjType::List => match arg {
+        ObjType::List => match expect_one(arg, "list")? {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(
                 mut_obj_into_iter(&mut arg, "list conversion")?.collect(),
             )),
         },
-        ObjType::String => Ok(Obj::from(format!("{}", arg))),
-        ObjType::Bytes => match arg {
+        ObjType::String => Ok(Obj::from(format!("{}", expect_one(arg, "str")?))),
+        ObjType::Bytes => match expect_one(arg, "bytes")? {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
@@ -785,11 +797,11 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                     .collect::<NRes<Vec<u8>>>()?,
             )))),
         },
-        ObjType::Vector => match arg {
+        ObjType::Vector => match expect_one(arg, "vector")? {
             Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
             mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?.map(Ok)),
         },
-        ObjType::Dict => match arg {
+        ObjType::Dict => match expect_one(arg, "dict")? {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
             // nonsensical but maybe this is something some day
             /*
@@ -809,7 +821,23 @@ fn call_type(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 None,
             )),
         },
-        ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
+        ObjType::Type => Ok(Obj::Func(
+            Func::Type(type_of(&expect_one(arg, "type")?)),
+            Precedence::zero(),
+        )),
+        ObjType::Struct(s) => {
+            if arg.len() == 0 {
+                Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
+            } else if arg.len() == s.size {
+                Ok(Obj::Instance(s.clone(), arg))
+            } else {
+                Err(NErr::argument_error(format!(
+                    "struct construction: wrong number of arguments: {}, wanted {}",
+                    arg.len(),
+                    s.size
+                )))
+            }
+        }
         // TODO: complex
         _ => Err(NErr::type_error(
             "that type can't be called (maybe not implemented)".to_string(),
@@ -1762,8 +1790,7 @@ pub enum Func {
         Vec<(CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
     ),
     CallSection(Option<Box<Obj>>, Vec<Option<Obj>>),
-    Type(ObjType),
-    Struct(Struct),
+    Type(ObjType), // includes Struct now
     StructField(Struct, usize),
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
@@ -1920,19 +1947,7 @@ impl Func {
                 };
                 slice(x, lo, hi)
             }
-            Func::Type(t) => match few(args) {
-                Few::One(arg) => call_type(t, arg),
-                _ => Err(NErr::argument_error("Types can only take one argument".to_string()))
-            }
-            Func::Struct(s) => {
-                if args.len() == 0 {
-                    Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
-                } else if args.len() == s.size {
-                    Ok(Obj::Instance(s.clone(), args))
-                } else {
-                    Err(NErr::argument_error(format!("struct construction: wrong number of arguments: {}, wanted {}", args.len(), s.size)))
-                }
-            }
+            Func::Type(t) => call_type(t, args),
             Func::StructField(struc, field_index) => match few(args) {
                 Few::One(Obj::Instance(s, fields)) => {
                     if *struc == s {
@@ -1980,7 +1995,6 @@ impl Func {
             Func::IndexSection(..) => None,
             Func::SliceSection(..) => None,
             Func::Type(_) => None,
-            Func::Struct(..) => None,
             Func::StructField(..) => None,
             Func::Memoized(..) => None,
         }
@@ -2037,8 +2051,7 @@ impl Display for Func {
                 )
             }
             Func::Type(t) => write!(formatter, "{}", t.name()),
-            Func::Struct(..) => write!(formatter, "<struct>"),
-            Func::StructField(..) => write!(formatter, "<struct field>"),
+            Func::StructField(s, i) => write!(formatter, "<{} field {}>", s.name, i),
             Func::Memoized(..) => write!(formatter, "<memoized>"),
         }
     }
@@ -2611,7 +2624,7 @@ impl Builtin for ToBuiltin {
                     BigInt::from(1),
                 )))))
             }
-            Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, a), // sugar lmao
+            Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, vec![a]), // sugar lmao
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
@@ -3565,7 +3578,8 @@ impl Closure {
                 &ee,
                 &p,
                 Some(&ObjType::Any),
-                args,
+                args.len(),
+                || args,
                 AssignMode::Assign,
                 "Wrong number of arguments",
             ),
@@ -5484,11 +5498,14 @@ fn assign_all_basic(
     }
 }
 
+// Delay computing the rhs if possible because it might be a big vector for which cloning is
+// expensive and our pattern might blatantly not match (this is pretty ad hoc lol)
 fn assign_all(
     env: &REnv,
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
-    rhs: Vec<Obj>,
+    rhs_len: usize,
+    lazy_rhs: impl FnOnce() -> Vec<Obj>,
     mode: AssignMode,
     err_msg: &str,
 ) -> NRes<()> {
@@ -5524,7 +5541,9 @@ fn assign_all(
     }
     match splat {
         Some((si, inner)) => {
-            let mut rhs = rhs;
+            // mmm we could compare against rhs len eagerly to not call it, but the bad cases don't
+            // involve a splat
+            let mut rhs = lazy_rhs();
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, mode, err_msg)?;
@@ -5540,7 +5559,28 @@ fn assign_all(
             };
             assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode, err_msg)
         }
-        None => assign_all_basic(env, lhs, rt, rhs, mode, err_msg),
+        None => {
+            if lhs.len() == rhs_len {
+                assign_all_basic(env, lhs, rt, lazy_rhs(), mode, err_msg)
+            } else if rhs_len <= 8 {
+                Err(NErr::value_error(format!(
+                    "{}: expected {} ({}), got {} ({})",
+                    err_msg,
+                    lhs.len(),
+                    CommaSeparated(lhs),
+                    rhs_len,
+                    CommaSeparatedDebug(&lazy_rhs())
+                )))
+            } else {
+                Err(NErr::value_error(format!(
+                    "{}: expected {} ({}), got {}",
+                    err_msg,
+                    lhs.len(),
+                    CommaSeparated(lhs),
+                    rhs_len
+                )))
+            }
+        }
     }
 }
 
@@ -5869,8 +5909,8 @@ fn modify_every_existing_index(
 fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
     if !is_type(&ty, &rhs) {
         Err(NErr::name_error(format!(
-            "Declaring/assigning variable of incorrect type: {} is not of type {:?}",
-            rhs, ty
+            "Declaring, type mismatch: {} is not of type {}",
+            rhs, ty.name()
         )))
     } else {
         try_borrow_mut_nres(env, "variable declaration", s)?.insert(s.to_string(), ty, rhs)
@@ -5922,8 +5962,8 @@ fn assign(
                 Some(ty) => {
                     if !is_type(&ty, &rhs) {
                         return Err(NErr::type_error(format!(
-                            "Assigning to underscore of incorrect type: {} is not of type {:?}",
-                            rhs, ty
+                            "Assigning to underscore type mismatch: {} is not of type {}",
+                            rhs, ty.name()
                         )));
                     }
                 }
@@ -5967,18 +6007,30 @@ fn assign(
                 env,
                 ss,
                 rt,
-                unwrap_or_clone(ls),
+                ls.len(),
+                || unwrap_or_clone(ls),
                 mode,
                 "Can't unpack into mismatched length",
             ),
-            rhs => assign_all(
-                env,
-                ss,
-                rt,
-                obj_to_cloning_iter(&rhs, "unpacking")?.collect::<Vec<Obj>>(),
-                mode,
-                "Can't unpack into mismatched length",
-            ),
+            Obj::Seq(seq) => match seq.len() {
+                Some(len) => {
+                    assign_all(
+                        env,
+                        ss,
+                        rt,
+                        len,
+                        || seq_to_cloning_iter(&seq).collect::<Vec<Obj>>(),
+                        mode,
+                        "Can't unpack into mismatched length",
+                    )
+                }
+                None => Err(NErr::type_error(
+                    "Can't unpack from infinite sequence".to_string(),
+                )),
+            },
+            _ => Err(NErr::type_error(
+                "Unpacking failed: not iterable".to_string(),
+            )),
         },
         EvaluatedLvalue::Annotation(s, ann) => match ann {
             None => assign(env, s, Some(&ObjType::Any), rhs, mode),
@@ -5998,7 +6050,8 @@ fn assign(
             } else {
                 Err(NErr::type_error(format!(
                     "Literal pattern didn't match: {} {}",
-                    obj, rhs
+                    FmtObj::debug(obj),
+                    FmtObj::debug(&rhs)
                 )))
             }
         }
@@ -6016,7 +6069,8 @@ fn assign(
                     env,
                     args,
                     rt,
-                    res,
+                    res.len(),
+                    || res,
                     mode,
                     "Can't destructure into mismatched length",
                 )
@@ -6108,7 +6162,8 @@ fn assign_every(
                     env,
                     args,
                     rt,
-                    res,
+                    res.len(),
+                    || res,
                     mode,
                     "Can't destructure into mismatched length",
                 )
@@ -7634,12 +7689,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             })
         }
         Expr::Struct(name, field_names) => {
-            let s = Struct::new(field_names.len());
+            let s = Struct::new(field_names.len(), name.clone());
             assign(
                 &env,
                 &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
                 Some(&ObjType::Func),
-                Obj::Func(Func::Struct(s.clone()), Precedence::zero()),
+                Obj::Func(Func::Type(ObjType::Struct(s.clone())), Precedence::zero()),
                 AssignMode::Assign,
             )?;
             for (i, field) in field_names.iter().enumerate() {
