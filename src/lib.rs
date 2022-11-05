@@ -3670,7 +3670,7 @@ pub enum Expr {
     ImaginaryFloatLit(f64),
     StringLit(Rc<String>),
     BytesLit(Rc<Vec<u8>>),
-    FormatString(Rc<Vec<Result<char, (LocExpr, MyFmtFlags)>>>),
+    FormatString(Vec<Result<char, (LocExpr, MyFmtFlags)>>),
     Ident(String),
     Underscore,
     Backref(usize),
@@ -4513,10 +4513,7 @@ impl Parser {
                 Token::FormatString(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::FormatString(Rc::new(parse_format_string(&s)?)),
-                    ))
+                    Ok(LocExpr(loc, Expr::FormatString(parse_format_string(&s)?)))
                 }
                 Token::Underscore => {
                     self.advance();
@@ -7807,14 +7804,14 @@ fn freeze(bound: &HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NR
             Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
             Expr::Struct(name, field_names) => Ok(Expr::Struct(name.clone(), field_names.clone())),
 
-            Expr::FormatString(s) => Ok(Expr::FormatString(Rc::new(
+            Expr::FormatString(s) => Ok(Expr::FormatString(
                 s.iter()
                     .map(|x| match x {
                         Ok(c) => Ok(Ok(*c)),
                         Err((e, ff)) => Ok(Err((freeze(bound, env, e)?, ff.clone()))),
                     })
                     .collect::<NRes<Vec<Result<char, (LocExpr, MyFmtFlags)>>>>()?,
-            ))),
+            )),
             Expr::Ident(s) => {
                 if bound.contains(s) {
                     Ok(Expr::Ident(s.clone()))
