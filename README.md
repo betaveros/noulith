@@ -37,7 +37,7 @@ An attempt to give myself a new Pareto-optional choice for quick-and-dirty scrip
 - Not whitespace- or indentation-sensitive (except for delimiting tokens, of course, but that does matter more than is common: operator symbols can be strung together freely like Haskell or Scala). In particular, newlines don't mean anything; semicolons everywhere. (I can foresee myself regretting this choice so we might revisit it later.)
 - Declare variables with `:=`. (I never would have considered this on my own, but then I read the [Crafting Interpreters design note](https://craftinginterpreters.com/statements-and-state.html#design-note) and was just totally convinced.)
 - List concatenation is `++`. String concatenation is `$`. Maybe? Not sure yet.
-- Functions and `for` loops introduce scopes, apparently.
+- Things that introduce scopes: functions, loops, `switch`, `try`, apparently.
 - Everything is an expression.
 - No classes or members or whatever, it's just global functions all the way down. Or up.
 - I already said this, but operator precedence is resolved at runtime.
@@ -74,7 +74,7 @@ NOTE: I will probably keep changing the language and may not keep all this total
 Numbers, arithmetic operators, and comparisons mostly work as you'd expect, including C-style bitwise operators, except that:
 
 - `^` is exponentiation. Instead, `~` as a binary operator is xor (but can still be unary as bitwise complement). Or you can just use `xor`.
-- `/` always does floating-point division like in Python, though `%` does C-style signed modulo. `//` does integer division rounding down, and `%%` does the paired modulo (roughly).
+- `/` does perfect rational division like in Common Lisp or something. `%` does C-style signed modulo. `//` does integer division rounding down, and `%%` does the paired modulo (roughly).
 - The precedence is something somewhat reasonable and simpler, inspired by Go's precedence, rather than following C's legacy:
 
 ```
@@ -89,7 +89,7 @@ We support arbitrary radixes up to 36 with syntax `36r1000 == 36^3`, plus specif
 
 Like in Python and mathematics, comparison operators can be chained like `1 < 2 < 3`; we explain how this works later. We also have `min`, `max`, and the three-valued comparison operator `<=>` and its reverse `>=<`.
 
-End-of-line comments: `#`. Range comments: at least three `=`s, end with the same number, because normal operators that end with `=` parse weird.
+End-of-line comments: `#`. Range comments: `#( ... )`. Those count parentheses so can be nested.
 
 Strings: `"` or `'`. (What will we use the backtick for one day, I wonder.) Also like in Python, we don't have a separate character type; iterating over a string just gives single-character strings.
 
@@ -104,6 +104,7 @@ Data types:
 - Vectors: lists of numbers, notable in that most operations on these automatically vectorize/broadcast, e.g. `V(2, 3) + V(4, 5) == V(6, 8)`; `V(2, 3) + 4 == V(6, 7)`. (Note that comparison operators don't vectorize!)
 - Streams: lazy lists, only generated in a few specific situations for now. Most higher-order functions are eager.
 - Functions, which carry with them a precedence. Fun!
+- Structs!
 
 ### Expressions
 
@@ -116,9 +117,9 @@ Everything is a global function and can be used as an operator! For example `a +
 
 Operator precedence is determined at runtime! This is mainly to support chained comparisons: `1 < 2 < 3` works like in Python. Functions can decide at runtime when they chain (though there's no way for user-defined functions to do this yet), and we use this to make a few other functions nicer. For example, `zip` and `**` (cartesian product) chain with themselves; `a ** b ** c` and `a zip b zip c` will give you a list of triplets, instead of a bunch of `[[x, y], z]`-shaped things.
 
-Identifiers can consist of a letter or `_` followed by any number of alphanumerics, `'`, or `?`; or any consecutive number of valid symbols for use in operators. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, and `...`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
+Identifiers can consist of a letter or `_` followed by any number of alphanumerics, `'`, or `?`; or any consecutive number of valid symbols for use in operators, including `?`. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters and tokens beginning with single-letter uppercase letters immediately followed by a single quote (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, and `...`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
 
-Almost all builtin functions' precedences are determined by this Scala-inspired rule: Look up each character in the function's name in this table, then take the *loosest* precedence of any individual character. But note that this isn't a rule in the syntax, it's just a strategy I decided to follow when selecting builtin functions' precedences. For example, `+`, `++`, `.+`, and `+.` all have the same precedence. As of time of writing, the only exceptions to this rule `<<` and `>>`, which have precedence like `^`.
+Almost all builtin functions' precedences are determined by this Scala-inspired rule: Look up each character in the function's name in this table, then take the *loosest* precedence of any individual character. But note that this isn't a rule in the syntax, it's just a strategy I decided to follow when selecting builtin functions' precedences. For example, `+`, `++`, `.+`, and `+.` all have the same precedence. As of time of writing, the only exceptions to this rule are `<<` and `>>`, which have precedence like `^`.
 
 ```
 Tighter . (every other symbol, mainly @ which I haven't allocated yet)
@@ -140,7 +141,9 @@ Looser  (alphanumerics)
 
 Types double as conversion functions: `str(3)` `int(3)` `dict([[1, 2], [3, 4]])` etc. Bending internal consistency for pure syntax sweetness, `to` is overloaded to takes a type as its second argument to call the same conversion. Test types explicitly with `is`: `3 is int`, `int is type`. The type of `null` is `nulltype`. Strings are `str` and functions are `func`. The "top" type is `anything`.
 
-We got `eval`, a dumb dynamic guy; `import`, a stupid transclusion right now; `vars` for examining local variables; `assert`, which is currently a silly function and will probably become a keyword so it can inspect the expression being asserted; and `freeze`, a totally wonky guy who goes through a lambda and resolves each identifier to what it points to, except it doesn't really work yet.
+We got `eval`, a dumb dynamic guy; `import`, a stupid transclusion right now; `vars` for examining local variables; `assert`, which is currently a silly function and will probably become a keyword so it can inspect the expression being asserted.
+
+`freeze` is a wonky keyword that goes through an expression and eagerly resolves each free variable to what it points to outside. It can slightly optimize some functions, surface some name errors earlier, and more elegantly(??) handle some binding acrobatics that you might have to write IIFEs for in other languages.
 
 ### Variables and assignments
 
@@ -162,13 +165,12 @@ Pythonically, sequences can be unpacked with commas, including a single trailing
 x, y : int
 ```
 
-You can assign in a declaration with a pair of extra parentheses, or declare in an assignment with a parenthesized annotation. You can nest these although why would you.
+You can declare in an assignment with a parenthesized annotation.
 
 ```
 a := 0
-(a), b := 1, 2
-a, (c:) = 3, 4
-a, (d:int) = 5, 6
+a, (c:) = 1, 2
+a, (d:int) = 3, 4
 ```
 
 These are checked at runtime! Assigning non-`int`s to x will throw an error. Hopefully. This is useful in other scenarios.
@@ -200,7 +202,7 @@ every a, b, c := 1
 After this, `x == [0, 0, 1, 1, 0]`.
 
 ```
-x := [0] ** 10; every x[2:4] = 1
+x := [0] ** 5; every x[2:4] = 1
 ```
 
 Important note about assignment: **All data structures are immutable.** When we mutate indexes, we make a fresh copy to mutate if anything else points to the same data structure. So for example, after
@@ -244,8 +246,8 @@ Switch:
 
 ```
 switch (x)
-case 1: b
-case 2: d
+case 1 -> b
+case 2 -> d
 ```
 
 Run-time type checking does some work here:
@@ -264,13 +266,29 @@ case _: satisfying! 1 < _ < 9 -> print("it's between 1 and 9")
 case _ -> print("not sure")
 ```
 
-Don't do weird things in the argument to `satisfying`, it's illegal.
+Don't do weird things in the argument to `satisfying`, it's illegal. (Also actually you can just write this because the comparison operators `<` have yet another layer of magic — `1 < _ < 9` is *not* a lambda here; you could have actually replaced `_` with a named variable to bind it.)
+
+```
+switch (x)
+case 1 < _ < 9 -> print("it's between 1 and 9")
+case _ -> print("not sure")
+```
 
 Try-catch: `try a catch x -> y`.
 
 `break` `continue` `return` work.
 
 Only lambdas exist, declare all functions this way: `\a, b -> c`. You can annotate parameters and otherwise pattern match in functions as you'd expect: `\a: int, (b, c) -> d`.
+
+### Structs
+
+Super bare-bones product types right now. No methods or namespaces or anything. (Haskell survived without them for a few decades, we can procrastinate.) You can't even give fields types or default values.
+
+```
+struct Foo (bar, baz);
+```
+
+Then you can construct an all-null instance `Foo()` or all values with `Foo(a, b)`. `bar` and `baz` are now member access functions, or if you have a `foo` of type `Foo`, you can access, assign, or modify the fields as `foo[bar]` and `foo[baz]`. To be clear, these names really are not namespaced at all; `bar` and `baz` are new variables holding functions in whatever scope you declared this struct in, and can be passed around as functions in their own right, assigned to variables, etc. (but won't work on any other struct).
 
 ### Sequence operators
 
@@ -295,7 +313,7 @@ Some functions to make streams: `repeat` `cycle` `permutations` `combinations` `
 `start iterate func` swallows, plus you can cause weird borrow errors if the function is weird. Don't do this:
 
 ```
-x := iterate! 0, \t: x const t
+x := iterate! 0, \t -> x const t
 x[0] = 0
 ```
 
@@ -309,7 +327,7 @@ All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject
 
 `fold`/`reduce` (which are the same) require a nonempty sequence with two arguments, but also chain with an optional `from` starting value, e.g. `x fold * from 1`.
 
-`sort_by` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards.
+`sort_by` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards. Sorry, no built-in Schwartzian transform yet.
 
 ```
 [[1], [2, 3, 4], [5, 6]] sort_by (<=> on len)
