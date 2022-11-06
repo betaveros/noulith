@@ -186,7 +186,7 @@ pub fn repl() {
                     },
                     Ok(None) => {}
                     Err(e) => {
-                        println!("PARSE ERROR: {}", e);
+                        println!("PARSE ERROR: {}", e.render(&line));
                     }
                 }
             }

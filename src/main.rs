@@ -55,7 +55,7 @@ fn repl() {
             },
             Ok(None) => {}
             Err(e) => {
-                println!("PARSE ERROR: {}", e);
+                println!("PARSE ERROR: {}", e.render(&input));
             }
         }
     }
@@ -82,7 +82,7 @@ fn run_code(code: &str) {
         },
         Ok(None) => {}
         Err(e) => {
-            println!("PARSE ERROR: {}", e);
+            println!("PARSE ERROR: {}", e.render(&code));
         }
     }
 }

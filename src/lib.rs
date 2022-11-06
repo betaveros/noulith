@@ -1641,6 +1641,43 @@ pub enum NErr {
     Continue,
 }
 
+fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: Option<&CodeLoc>) {
+    use std::fmt::Write;
+
+    let end: CodeLoc = match end {
+        Some(k) => k.clone(),
+        None => CodeLoc {
+            line: start.line,
+            col: start.col + 1,
+            index: start.index + 1,
+        },
+    };
+    let mut line = 1;
+    let mut ended = false;
+    for (i, c) in src.chars().enumerate() {
+        if c == '\n' {
+            line += 1;
+            if line > end.line {
+                break;
+            }
+        } else {
+            if i == start.index {
+                write!(out, "\x1b[1;31m").ok();
+            }
+            if line >= start.line && line <= end.line {
+                write!(out, "{}", c).ok();
+            }
+            if i == end.index {
+                write!(out, "\x1b[0m").ok();
+                ended = true;
+            }
+        }
+    }
+    if !ended {
+        write!(out, "\x1b[0m").ok();
+    }
+}
+
 impl NErr {
     fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
         match self {
@@ -1670,25 +1707,7 @@ impl NErr {
                             Some((_, f)) => f,
                             None => src,
                         };
-                        let mut line = 1;
-                        for (i, c) in real_src_code.chars().enumerate() {
-                            if c == '\n' {
-                                line += 1;
-                                if line > loc.line {
-                                    break;
-                                }
-                            } else {
-                                if i == loc.index {
-                                    write!(out, "\x1b[1;31m").ok();
-                                }
-                                if line == loc.line {
-                                    write!(out, "{}", c).ok();
-                                }
-                                if i == loc.index {
-                                    write!(out, "\x1b[0m").ok();
-                                }
-                            }
-                        }
+                        write_source_error(&mut out, real_src_code, loc, None)
                     }
                     None => {}
                 }
@@ -3946,7 +3965,8 @@ impl Display for EvaluatedLvalue {
     }
 }
 
-fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
+fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
+    let loc = expr.0;
     match expr.1 {
         Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
@@ -3956,13 +3976,16 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
                 ixs.push(i);
                 Ok(Lvalue::IndexedIdent(idn, ixs))
             }
-            ee => Err(format!("can't to_lvalue index of nonident {:?}", ee)),
+            ee => Err(ParseError::expr(
+                format!("can't to_lvalue index of nonident {:?}", ee),
+                loc,
+            )),
         },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
         Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
             es.into_iter()
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
-                .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
+                .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?,
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
@@ -3976,22 +3999,26 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, String> {
             f,
             args.into_iter()
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
-                .collect::<Result<Vec<Box<Lvalue>>, String>>()?,
+                .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?,
         )),
         Expr::Chain(lhs, args) => Ok(Lvalue::ChainDestructure(
             Box::new(to_lvalue(*lhs)?),
             args.into_iter()
                 .map(|(e, v)| Ok((e, Box::new(to_lvalue(*v)?))))
-                .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, String>>()?,
+                .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
-        _ => Err(format!("can't to_lvalue {:?}", expr)),
+        _ => Err(ParseError::expr(format!("can't to_lvalue"), expr.0)),
     }
 }
 
-fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, String> {
+fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
+    let loc = expr.0;
     let lvalue = to_lvalue(expr)?;
     if lvalue.any_literals() {
-        Err(format!("lvalue can't have any literals: {:?}", lvalue))
+        Err(ParseError::expr(
+            format!("lvalue can't have any literals"),
+            loc,
+        ))
     } else {
         Ok(lvalue)
     }
@@ -4004,6 +4031,7 @@ pub struct CodeLoc {
     pub index: usize,
 }
 
+#[derive(Clone, Debug)]
 pub struct LocToken {
     pub token: Token,
     pub start: CodeLoc,
@@ -4506,16 +4534,84 @@ struct Parser {
     i: usize,
 }
 
-fn err_add_context(a: Result<LocExpr, String>, ctx: &str, loc: CodeLoc) -> Result<LocExpr, String> {
+fn err_add_context(
+    a: Result<LocExpr, ParseError>,
+    ctx: &str,
+    loc: CodeLoc,
+) -> Result<LocExpr, ParseError> {
     match a {
         Ok(t) => Ok(t),
-        Err(s) => Err(format!("{} at {} {}:{}", s, ctx, loc.line, loc.col)),
+        Err(mut s) => {
+            s.2.push((ctx.to_string(), loc));
+            Err(s)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ParseErrorLoc {
+    Token(LocToken),
+    Expr(CodeLoc),
+    Eof,
+}
+#[derive(Debug)]
+pub struct ParseError(String, ParseErrorLoc, Vec<(String, CodeLoc)>);
+impl ParseError {
+    fn token(msg: String, token: LocToken) -> Self {
+        ParseError(msg, ParseErrorLoc::Token(token), Vec::new())
+    }
+    fn expr(msg: String, loc: CodeLoc) -> Self {
+        ParseError(msg, ParseErrorLoc::Expr(loc), Vec::new())
+    }
+    fn eof(msg: String) -> Self {
+        ParseError(msg, ParseErrorLoc::Eof, Vec::new())
+    }
+
+    pub fn render(self: ParseError, src: &str) -> String {
+        let ParseError(msg, loc, trace) = self;
+        use std::fmt::Write;
+        let mut out = String::new();
+        // I'm fairly confident these writes can't fail, at least at time of writing. But
+        // since we are already error handling let's just ignore errors.
+        writeln!(out, "{}", msg).ok();
+        match loc {
+            ParseErrorLoc::Token(tok) => {
+                write_source_error(&mut out, src, &tok.start, Some(&tok.end));
+                write!(
+                    out,
+                    "\n    {:?} (at {}:{}-{})",
+                    tok.token, tok.start.line, tok.start.col, tok.end.col
+                )
+                .ok();
+            }
+            ParseErrorLoc::Expr(loc) => {
+                write_source_error(&mut out, src, &loc, None);
+                write!(out, "\n    (expr starting {}:{})", loc.line, loc.col).ok();
+            }
+            ParseErrorLoc::Eof => {
+                write!(out, "\n    at EOF").ok();
+            }
+        }
+        for (ctx, loc) in trace {
+            write!(out, "\n    at {} ({}:{})", ctx, loc.line, loc.col).ok();
+        }
+        out
     }
 }
 
 impl Parser {
     fn peek_loc_token(&self) -> Option<&LocToken> {
         self.tokens.get(self.i)
+    }
+    fn error_here(&self, msg: String) -> ParseError {
+        ParseError(
+            msg,
+            match self.peek_loc_token() {
+                Some(token) => ParseErrorLoc::Token(token.clone()),
+                None => ParseErrorLoc::Eof,
+            },
+            Vec::new(),
+        )
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -4556,28 +4652,26 @@ impl Parser {
         }
     }
 
-    fn require(&mut self, expected: Token, message: String) -> Result<(), String> {
+    fn require(&mut self, expected: Token, message: String) -> Result<(), ParseError> {
         if self.try_consume(&expected) {
             // wat
             Ok(())
         } else {
-            Err(format!(
-                "{}; required {:?}, got {:?}",
-                message,
-                expected,
-                self.peek_err()
-            ))
+            Err(self.error_here(format!("{}; required {:?}", message, expected)))
         }
     }
 
-    fn atom(&mut self) -> Result<LocExpr, String> {
-        if let Some(LocToken {
-            start,
-            end: _,
-            token,
-        }) = self.peek_loc_token()
+    fn atom(&mut self) -> Result<LocExpr, ParseError> {
+        if let Some(
+            ltref @ LocToken {
+                start,
+                end: _,
+                token,
+            },
+        ) = self.peek_loc_token()
         {
             let loc = *start;
+            let loc_token = ltref.clone();
             match token {
                 Token::Null => {
                     self.advance();
@@ -4616,7 +4710,10 @@ impl Parser {
                 Token::FormatString(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::FormatString(parse_format_string(&s)?)))
+                    Ok(LocExpr(
+                        loc,
+                        Expr::FormatString(parse_format_string(&s, &loc_token)?),
+                    ))
                 }
                 Token::Underscore => {
                     self.advance();
@@ -4743,17 +4840,15 @@ impl Parser {
                     self.require(Token::RightBrace, "dict expr end".to_string())?;
                     Ok(LocExpr(loc, Expr::Dict(def, xs)))
                 }
-                Token::RightParen => Err(format!("atom: Unexpected {}", self.peek_err())),
+                Token::RightParen => Err(self.error_here(format!("atom: unexpected"))),
                 Token::Lambda => {
                     self.advance();
                     if let Some(Token::IntLit(x)) = self.peek().cloned() {
+                        let us = x
+                            .to_usize()
+                            .ok_or(self.error_here(format!("backref: not usize: {}", x)))?;
                         self.advance();
-                        Ok(LocExpr(
-                            loc,
-                            Expr::Backref(
-                                x.to_usize().ok_or(format!("backref: not usize: {}", x))?,
-                            ),
-                        ))
+                        Ok(LocExpr(loc, Expr::Backref(us)))
                     } else {
                         let params = if self.try_consume(&Token::RightArrow) {
                             Vec::new()
@@ -4765,7 +4860,7 @@ impl Parser {
                                 .0
                                 .into_iter()
                                 .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
-                                .collect::<Result<Vec<Box<Lvalue>>, String>>()?;
+                                .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
                             self.require(Token::RightArrow, "lambda start: ->".to_string())?;
                             ps
                         };
@@ -4803,10 +4898,9 @@ impl Parser {
                             Some(Token::Semicolon) => {
                                 self.advance();
                             }
-                            _ => Err(format!(
-                                "for: expected right paren or semicolon after iteration, got {}",
-                                self.peek_err()
-                            ))?,
+                            _ => Err(self.error_here(format!(
+                                "for: expected right paren or semicolon after iteration"
+                            )))?,
                         }
                     }
                     let do_yield = self.try_consume(&Token::Yield);
@@ -4862,7 +4956,7 @@ impl Parser {
                                     fields.push(Rc::new(field.clone()));
                                     self.advance();
                                 } else {
-                                    Err(format!("bad struct field {}", self.peek_err()))?
+                                    Err(self.error_here(format!("bad struct field")))?
                                 }
                             }
                         }
@@ -4870,17 +4964,19 @@ impl Parser {
 
                         Ok(LocExpr(loc, Expr::Struct(name, fields)))
                     } else {
-                        Err(format!("bad struct name {}", self.peek_err()))?
+                        Err(self.error_here(format!("bad struct name")))?
                     }
                 }
-                _ => Err(format!("atom: Unexpected {}", self.peek_err())),
+                _ => Err(self.error_here(format!("atom: Unexpected"))),
             }
         } else {
-            Err("atom: ran out of stuff to parse".to_string())
+            Err(ParseError::eof(
+                "atom: ran out of stuff to parse".to_string(),
+            ))
         }
     }
 
-    fn for_iteration(&mut self) -> Result<ForIteration, String> {
+    fn for_iteration(&mut self) -> Result<ForIteration, ParseError> {
         if self.try_consume(&Token::If) {
             Ok(ForIteration::Guard(Box::new(
                 self.single("for iteration guard")?,
@@ -4902,12 +4998,7 @@ impl Parser {
                     self.advance();
                     ForIterationType::Declare
                 }
-                _ => {
-                    return Err(format!(
-                        "for: require <- or <<- or =, got {}",
-                        self.peek_err()
-                    ))
-                }
+                _ => return Err(self.error_here(format!("for: require <- or <<- or ="))),
             };
             let iteratee = self.pattern()?;
             Ok(ForIteration::Iteration(
@@ -4918,7 +5009,7 @@ impl Parser {
         }
     }
 
-    fn operand(&mut self) -> Result<LocExpr, String> {
+    fn operand(&mut self) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let mut cur = self.atom()?;
 
@@ -5036,7 +5127,7 @@ impl Parser {
             }
     }
 
-    fn chain(&mut self) -> Result<LocExpr, String> {
+    fn chain(&mut self) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let op1 = self.operand()?;
         if self.peek_chain_stopper() {
@@ -5061,7 +5152,7 @@ impl Parser {
                             ),
                         );
                         if self.peek() == Some(&Token::Comma) {
-                            Err("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string())
+                            Err(self.error_here("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string()))
                         } else {
                             Ok(ret)
                         }
@@ -5098,7 +5189,9 @@ impl Parser {
                 _ => {
                     let ret = LocExpr(loc, Expr::Call(Box::new(op1), vec![Box::new(second)]));
                     if !self.peek_chain_stopper() {
-                        Err(format!("saw non-identifier in operator position: these chains must be short, got {} after", self.peek_err()))
+                        Err(self.error_here(format!(
+                            "saw non-identifier in operator position: these chains must be short"
+                        )))
                     } else {
                         Ok(ret)
                     }
@@ -5107,7 +5200,7 @@ impl Parser {
         }
     }
 
-    fn logic_and(&mut self) -> Result<LocExpr, String> {
+    fn logic_and(&mut self) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let mut op1 = self.chain()?;
         while self.try_consume(&Token::And) {
@@ -5116,7 +5209,7 @@ impl Parser {
         Ok(op1)
     }
 
-    fn single(&mut self, ctx: &str) -> Result<LocExpr, String> {
+    fn single(&mut self, ctx: &str) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let mut op1 = err_add_context(self.logic_and(), ctx, loc)?;
         loop {
@@ -5149,7 +5242,7 @@ impl Parser {
     // Nonempty (caller should check empty condition); no semicolons or annotations allowed. List
     // literals; function declarations; LHSes of assignments. Not for function calls, I think? f(x;
     // y) might actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
-    fn comma_separated(&mut self) -> Result<(Vec<Box<LocExpr>>, bool), String> {
+    fn comma_separated(&mut self) -> Result<(Vec<Box<LocExpr>>, bool), ParseError> {
         let mut xs = vec![Box::new(self.single("comma-separated starter")?)];
         let mut comma = false;
         while self.try_consume(&Token::Comma) {
@@ -5164,14 +5257,11 @@ impl Parser {
 
     // Nonempty comma-separated things, as above, but packaged as a single expr. No semicolons or
     // assigns allowed. Should be nonempty I think. RHSes of assignments.
-    fn pattern(&mut self) -> Result<LocExpr, String> {
+    fn pattern(&mut self) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let (exs, comma) = self.comma_separated()?;
         match (few(exs), comma) {
-            (Few::Zero, _) => Err(format!(
-                "Expected pattern, got nothing, next is {}",
-                self.peek_err()
-            )),
+            (Few::Zero, _) => Err(self.error_here(format!("Expected pattern, got nothing"))),
             (Few::One(ex), false) => Ok(*ex),
             (Few::One(ex), true) => Ok(LocExpr(loc, Expr::CommaSeq(vec![ex]))),
             (Few::Many(exs), _) => Ok(LocExpr(loc, Expr::CommaSeq(exs))),
@@ -5190,7 +5280,7 @@ impl Parser {
     fn annotated_comma_separated(
         &mut self,
         msg: &str,
-    ) -> Result<(Vec<Box<LocExpr>>, bool), String> {
+    ) -> Result<(Vec<Box<LocExpr>>, bool), ParseError> {
         let mut annotated = Vec::new();
         let mut pending_annotation =
             vec![Box::new(self.single(&format!("first expr in {}", msg))?)];
@@ -5211,10 +5301,9 @@ impl Parser {
                 Some(Token::Colon) => {
                     self.advance();
                     if pending_annotation.is_empty() {
-                        Err(format!(
-                            "annotated-comma-separated: extra colon covers nothing: {}",
-                            self.peek_err()
-                        ))?
+                        Err(self.error_here(format!(
+                            "annotated-comma-separated: extra colon covers nothing"
+                        )))?
                     }
                     let anno = if self.peek_csc_stopper() {
                         None
@@ -5234,22 +5323,21 @@ impl Parser {
             }
         }
     }
-    fn annotated_pattern(&mut self, msg: &str) -> Result<LocExpr, String> {
+    fn annotated_pattern(&mut self, msg: &str) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let (exs, comma) = self.annotated_comma_separated(msg)?;
         match (few(exs), comma) {
-            (Few::Zero, _) => Err(format!(
-                "Expected annotated pattern at {}, got nothing, next is {}",
-                msg,
-                self.peek_err()
-            )),
+            (Few::Zero, _) => Err(self.error_here(format!(
+                "Expected annotated pattern at {}, got nothing",
+                msg
+            ))),
             (Few::One(ex), false) => Ok(*ex),
             (Few::One(ex), true) => Ok(LocExpr(loc, Expr::CommaSeq(vec![ex]))),
             (Few::Many(exs), _) => Ok(LocExpr(loc, Expr::CommaSeq(exs))),
         }
     }
 
-    fn assignment(&mut self) -> Result<LocExpr, String> {
+    fn assignment(&mut self) -> Result<LocExpr, ParseError> {
         let loc = self.peek_loc();
         let ag_start_err = self.peek_err();
         if self.try_consume(&Token::Swap) {
@@ -5279,10 +5367,10 @@ impl Parser {
                                     Box::new(self.pattern()?),
                                 ),
                             )),
-                            _ => Err(format!(
+                            _ => Err(self.error_here(format!(
                                 "call w not 1 arg is not assignop, at {}",
                                 ag_start_err
-                            )),
+                            ))),
                         },
                         _ => Ok(LocExpr(
                             loc,
@@ -5302,11 +5390,8 @@ impl Parser {
                 */
                 _ => {
                     if every {
-                        Err(format!(
-                            "`every` as not assignment at {} now {}",
-                            ag_start_err,
-                            self.peek_err()
-                        ))
+                        Err(self
+                            .error_here(format!("`every` as not assignment at {}", ag_start_err)))
                     } else {
                         Ok(pat)
                     }
@@ -5315,7 +5400,7 @@ impl Parser {
         }
     }
 
-    fn expression(&mut self) -> Result<LocExpr, String> {
+    fn expression(&mut self) -> Result<LocExpr, ParseError> {
         let mut ags = vec![Box::new(self.assignment()?)];
         let mut ending_semicolon = false;
         let start = self.peek_loc();
@@ -5342,7 +5427,7 @@ impl Parser {
 }
 
 // allow the empty expression
-pub fn parse(code: &str) -> Result<Option<LocExpr>, String> {
+pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
     let (tokens, _) = strip_comments(lex(code));
     if tokens.is_empty() {
         Ok(None)
@@ -5353,7 +5438,7 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, String> {
                 if p.is_at_end() {
                     Ok(Some(ret))
                 } else {
-                    Err(format!("Didn't finish parsing: got {}", p.peek_err()))
+                    Err(p.error_here(format!("Didn't finish parsing")))
                 }
             }
             Err(err) => Err(err),
@@ -5480,7 +5565,7 @@ impl Env {
                         {
                             msg += &format!(" Did you mean: \"{}\"?", k);
                         }
-                        Err(NErr::name_error(msg))
+                        Err(NErr::throw(msg))
                     }
                     x => x,
                 }
@@ -7102,7 +7187,10 @@ fn evaluate_for(
     }
 }
 
-fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)>>, String> {
+fn parse_format_string(
+    s: &str,
+    outer_token: &LocToken,
+) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)>>, ParseError> {
     let mut nesting_level = 0;
     let mut ret: Vec<Result<char, (LocExpr, MyFmtFlags)>> = Vec::new();
     let mut expr_acc = String::new(); // accumulate
@@ -7122,7 +7210,10 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
                     p.next();
                     ret.push(Ok('}'));
                 } else {
-                    return Err("format string: unmatched right brace".to_string());
+                    return Err(ParseError::token(
+                        "format string: unmatched right brace".to_string(),
+                        outer_token.clone(),
+                    ));
                 }
             }
             (0, c) => {
@@ -7140,7 +7231,10 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
                 let mut flags = MyFmtFlags::new();
                 let (tokens, comments) = strip_comments(lexer.tokens);
                 if tokens.is_empty() {
-                    return Err("format string: empty format expr".to_string());
+                    return Err(ParseError::token(
+                        "format string: empty format expr".to_string(),
+                        outer_token.clone(),
+                    ));
                 } else {
                     for com in comments {
                         let mut it = com.chars().peekable();
@@ -7189,9 +7283,12 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
                                     match acc.parse::<usize>() {
                                         Ok(s) => flags.pad_length = s,
                                         Err(e) => {
-                                            return Err(format!(
-                                                "format string: pad length couldn't parse: {}",
-                                                e
+                                            return Err(ParseError::token(
+                                                format!(
+                                                    "format string: pad length couldn't parse: {}",
+                                                    e
+                                                ),
+                                                outer_token.clone(),
                                             ))
                                         }
                                     }
@@ -7201,15 +7298,17 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
                         }
                     }
                     let mut p = Parser { tokens, i: 0 };
-                    let fex = p
-                        .expression()
-                        .map_err(|e| format!("format string: failed to parse expr: {}", e))?;
+                    let fex = p.expression().map_err(|mut e| {
+                        e.0 = format!("format string: failed to parse expr: {}", e.0);
+                        e
+                    })?;
                     if p.is_at_end() {
                         ret.push(Err((fex, flags)));
                     } else {
-                        return Err(
-                            "format string: couldn't finish parsing format expr".to_string()
-                        );
+                        return Err(ParseError::token(
+                            "format string: couldn't finish parsing format expr".to_string(),
+                            outer_token.clone(),
+                        ));
                     }
                 }
                 expr_acc.clear();
@@ -7222,7 +7321,10 @@ fn parse_format_string(s: &str) -> Result<Vec<Result<char, (LocExpr, MyFmtFlags)
         }
     }
     if nesting_level != 0 {
-        return Err("format string: unmatched left brace".to_string());
+        return Err(ParseError::token(
+            "format string: unmatched left brace".to_string(),
+            outer_token.clone(),
+        ));
     }
     Ok(ret)
 }
@@ -7251,7 +7353,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::from(acc))
         }
-        Expr::Ident(s) => Env::try_borrow_get_var(env, s),
+        Expr::Ident(s) => add_trace(Env::try_borrow_get_var(env, s), format!("ident"), expr.0),
         Expr::Underscore => Err(NErr::syntax_error_loc(
             "Can't evaluate underscore".to_string(),
             "_".to_string(),
@@ -10188,7 +10290,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::String(r)) => match match parse(&r) {
                 Ok(Some(code)) => evaluate(env, &code),
                 Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
-                Err(s) => Err(NErr::value_error(s)),
+                Err(s) => Err(NErr::value_error(s.render(&r))),
             } {
                 Ok(x) => Ok(x),
                 Err(mut e) => {
@@ -10575,7 +10677,9 @@ pub fn initialize(env: &mut Env) {
                         Ok(c) => match match parse(&c) {
                             Ok(Some(code)) => evaluate(env, &code),
                             Ok(None) => Err(NErr::value_error("empty file".to_string())),
-                            Err(s) => Err(NErr::value_error(format!("lex failed: {}", s))),
+                            Err(s) => {
+                                Err(NErr::value_error(format!("lex failed: {}", s.render(&c))))
+                            }
                         } {
                             Ok(x) => Ok(x),
                             Err(mut e) => {
@@ -10809,7 +10913,7 @@ pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
     match parse(code) {
         Err(p) => WasmOutputs {
             output: String::new(),
-            error: p,
+            error: p.render(code),
         },
         Ok(None) => WasmOutputs {
             output: String::new(),
