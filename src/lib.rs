@@ -876,12 +876,7 @@ impl Obj {
         match self {
             Obj::Null => false,
             Obj::Num(x) => x.is_nonzero(),
-            Obj::Seq(Seq::String(x)) => !x.is_empty(),
-            Obj::Seq(Seq::List(x)) => !x.is_empty(),
-            Obj::Seq(Seq::Dict(x, _)) => !x.is_empty(),
-            Obj::Seq(Seq::Vector(x)) => !x.is_empty(),
-            Obj::Seq(Seq::Bytes(x)) => !x.is_empty(),
-            Obj::Seq(Seq::Stream(x)) => x.len() == Some(0),
+            Obj::Seq(s) => !s.is_empty(),
             Obj::Func(..) => true,
             Obj::Instance(..) => true,
         }
@@ -1616,6 +1611,16 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 }
 
 impl Seq {
+    fn is_empty(&self) -> bool {
+        match self {
+            Seq::String(x) => x.is_empty(),
+            Seq::List(x) => x.is_empty(),
+            Seq::Dict(x, _) => x.is_empty(),
+            Seq::Vector(x) => x.is_empty(),
+            Seq::Bytes(x) => x.is_empty(),
+            Seq::Stream(x) => x.len() == Some(0),
+        }
+    }
     fn len(&self) -> Option<usize> {
         match self {
             Seq::List(d) => Some(d.len()),
@@ -6930,35 +6935,44 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     }
 }
 
-fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
+fn slice_seq(xr: Seq, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
     match (&xr, lo, hi) {
-        (Obj::Seq(Seq::List(xx)), lo, hi) => {
+        (Seq::List(xx), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(xx, lo.as_ref(), hi.as_ref())?;
             Ok(Obj::list(xx[lo..hi].to_vec()))
         }
-        (Obj::Seq(Seq::String(s)), lo, hi) => {
+        (Seq::String(s), lo, hi) => {
             let bs = s.as_bytes();
             let (lo, hi) = pythonic_slice_obj(bs, lo.as_ref(), hi.as_ref())?;
             Ok(soft_from_utf8(bs[lo..hi].to_vec()))
         }
-        (Obj::Seq(Seq::Vector(s)), lo, hi) => {
+        (Seq::Vector(s), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(s, lo.as_ref(), hi.as_ref())?;
             Ok(Obj::Seq(Seq::Vector(Rc::new(s[lo..hi].to_vec()))))
         }
-        (Obj::Seq(Seq::Bytes(s)), lo, hi) => {
+        (Seq::Bytes(s), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(s, lo.as_ref(), hi.as_ref())?;
             Ok(Obj::Seq(Seq::Bytes(Rc::new(s[lo..hi].to_vec()))))
         }
-        (Obj::Seq(Seq::Stream(s)), lo, hi) => {
+        (Seq::Stream(s), lo, hi) => {
             let lo = obj_to_isize_slice_index(lo.as_ref())?;
             let hi = obj_to_isize_slice_index(hi.as_ref())?;
             Ok(Obj::Seq(s.pythonic_slice(lo, hi).ok_or(
                 NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)),
             )?))
         }
-        (xr, lo, hi) => Err(NErr::type_error(format!(
+        (Seq::Dict(..), _, _) => Err(NErr::type_error(
+            "can't slice dictionary".to_string()
+        )),
+    }
+}
+
+fn slice(xr: Obj, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
+    match xr {
+        Obj::Seq(s) => slice_seq(s, lo, hi),
+        xr => Err(NErr::type_error(format!(
             "can't slice {} {:?} {:?}",
-            FmtObj::debug(xr),
+            FmtObj::debug(&xr),
             lo,
             hi
         ))),
@@ -8614,6 +8628,89 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
     }
 }
 
+// also doesn't fit...
+fn uncons(s: Seq) -> Option<(Obj, Seq)> {
+    match s {
+        Seq::List(mut s) => {
+            if s.is_empty() {
+                None
+            } else {
+                let head = Rc::make_mut(&mut s).remove(0);
+                Some((head, Seq::List(s)))
+            }
+        }
+
+        Seq::String(mut s) => {
+            if s.is_empty() {
+                None
+            } else {
+                let head = Rc::make_mut(&mut s).remove(0);
+                Some((Obj::from(head), Seq::String(s)))
+            }
+        }
+        Seq::Dict(mut s, def) => match s.keys().next().cloned() {
+            Some(k) => match Rc::make_mut(&mut s).remove_entry(&k) {
+                Some((kk, v)) => Some((Obj::list(vec![key_to_obj(kk), v]), Seq::Dict(s, def))),
+                None => panic!("no"),
+            },
+            None => None,
+        },
+        Seq::Vector(mut s) => {
+            if s.is_empty() {
+                None
+            } else {
+                let head = Rc::make_mut(&mut s).remove(0);
+                Some((Obj::from(head), Seq::Vector(s)))
+            }
+        }
+        Seq::Bytes(mut s) => {
+            if s.is_empty() {
+                None
+            } else {
+                let head = Rc::make_mut(&mut s).remove(0);
+                Some((Obj::from(head), Seq::Bytes(s)))
+            }
+        }
+        Seq::Stream(s) => {
+            let mut t = s.clone_box();
+            match t.next() {
+                None => None,
+                Some(e) => Some((e, Seq::Stream(Rc::from(t)))),
+            }
+        }
+    }
+}
+fn unsnoc(s: Seq) -> Option<(Seq, Obj)> {
+    match s {
+        Seq::List(mut s) => match Rc::make_mut(&mut s).pop() {
+            None => None,
+            Some(e) => Some((Seq::List(s), e)),
+        },
+        Seq::String(mut s) => match Rc::make_mut(&mut s).pop() {
+            None => None,
+            Some(e) => Some((Seq::String(s), Obj::from(e))),
+        },
+        dd @ Seq::Dict(..) => match uncons(dd) {
+            None => None,
+            Some((e, s)) => Some((s, e)),
+        },
+        Seq::Vector(mut s) => match Rc::make_mut(&mut s).pop() {
+            None => None,
+            Some(e) => Some((Seq::Vector(s), Obj::from(e))),
+        },
+        Seq::Bytes(mut s) => match Rc::make_mut(&mut s).pop() {
+            None => None,
+            Some(e) => Some((Seq::Bytes(s), Obj::from(e))),
+        },
+        Seq::Stream(s) => {
+            match s.force() {
+                None => None, // ???
+                Some(v) => unsnoc(Seq::List(Rc::new(v))),
+            }
+        }
+    }
+}
+
 fn prefixes<T: Clone>(mut it: impl Iterator<Item = T>) -> Vec<Vec<T>> {
     let mut prefix = Vec::new();
     let mut acc = vec![Vec::new()];
@@ -10042,6 +10139,50 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "tail".to_string(),
         body: |a| slice(a, Some(Obj::one()), None),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "butlast".to_string(),
+        body: |a| slice(a, None, Some(Obj::from(BigInt::from(-1)))),
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "uncons".to_string(),
+        body: |a| match a {
+            Obj::Seq(s) => match uncons(s) {
+                None => Err(NErr::index_error("Can't uncons empty (or infinite) seq".to_string())),
+                Some((e, s)) => Ok(Obj::list(vec![e, Obj::Seq(s)])),
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "unsnoc".to_string(),
+        body: |a| match a {
+            Obj::Seq(s) => match unsnoc(s) {
+                None => Err(NErr::index_error("Can't unsnoc empty (or infinite) seq".to_string())),
+                Some((s, e)) => Ok(Obj::list(vec![Obj::Seq(s), e])),
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "uncons?".to_string(),
+        body: |a| match a {
+            Obj::Seq(s) => match uncons(s) {
+                None => Ok(Obj::Null),
+                Some((e, s)) => Ok(Obj::list(vec![e, Obj::Seq(s)])),
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "unsnoc?".to_string(),
+        body: |a| match a {
+            Obj::Seq(s) => match unsnoc(s) {
+                None => Ok(Obj::Null),
+                Some((s, e)) => Ok(Obj::list(vec![Obj::Seq(s), e])),
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "take".to_string(),
