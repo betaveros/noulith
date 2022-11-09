@@ -3692,11 +3692,11 @@ impl Closure {
                 "Wrong number of arguments",
             ),
             "argument receiving".to_string(),
-            self.body.0,
+            self.body.start,
         )?;
         match evaluate(&ee, &self.body) {
             Err(NErr::Return(k)) => Ok(k),
-            x => add_trace(x, "closure call".to_string(), self.body.0),
+            x => add_trace(x, "closure call".to_string(), self.body.start),
         }
     }
 }
@@ -3783,7 +3783,11 @@ pub enum IndexOrSlice {
 }
 
 #[derive(Debug)]
-pub struct LocExpr(CodeLoc, Expr);
+pub struct LocExpr {
+    pub start: CodeLoc,
+    pub end: CodeLoc,
+    pub expr: Expr,
+}
 
 #[derive(Debug)]
 pub enum Expr {
@@ -3977,8 +3981,8 @@ impl Display for EvaluatedLvalue {
 }
 
 fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
-    let loc = expr.0;
-    match expr.1 {
+    let loc = expr.start;
+    match expr.expr {
         Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
         Expr::Underscore => Ok(Lvalue::Underscore),
@@ -4019,12 +4023,12 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
         Expr::Literally(e) => Ok(Lvalue::Literally(e)),
-        _ => Err(ParseError::expr(format!("can't to_lvalue"), expr.0)),
+        _ => Err(ParseError::expr(format!("can't to_lvalue"), expr.start)),
     }
 }
 
 fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
-    let loc = expr.0;
+    let loc = expr.start;
     let lvalue = to_lvalue(expr)?;
     if lvalue.any_literals() {
         Err(ParseError::expr(
@@ -4635,12 +4639,18 @@ impl Parser {
         self.i += 1;
     }
 
-    fn try_consume(&mut self, desired: &Token) -> bool {
-        if self.peek() == Some(desired) {
-            self.advance();
-            true
-        } else {
-            false
+    fn try_consume(&mut self, desired: &Token) -> Option<CodeLoc> {
+        match self.peek_loc_token() {
+            Some(LocToken { token, start: _, end }) => {
+                let end = *end;
+                if token == desired {
+                    self.advance();
+                    Some(end)
+                } else {
+                    None
+                }
+            }
+            None => None,
         }
     }
 
@@ -4665,146 +4675,213 @@ impl Parser {
         }
     }
 
-    fn require(&mut self, expected: Token, message: String) -> Result<(), ParseError> {
-        if self.try_consume(&expected) {
+    fn require(&mut self, expected: Token, message: String) -> Result<CodeLoc, ParseError> {
+        if let Some(end) = self.try_consume(&expected) {
             // wat
-            Ok(())
+            Ok(end)
         } else {
             Err(self.error_here(format!("{}; required {:?}", message, expected)))
         }
     }
 
     fn atom(&mut self) -> Result<LocExpr, ParseError> {
-        if let Some(
-            ltref @ LocToken {
-                start,
-                end: _,
-                token,
-            },
-        ) = self.peek_loc_token()
-        {
-            let loc = *start;
+        if let Some(ltref @ LocToken { start, end, token }) = self.peek_loc_token() {
+            let start = *start;
+            let end = *end;
             let loc_token = ltref.clone();
             match token {
                 Token::Null => {
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Null))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::Null,
+                    })
                 }
                 Token::IntLit(n) => {
                     let n = n.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::IntLit(n)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::IntLit(n),
+                    })
                 }
                 Token::RatLit(n) => {
                     let n = n.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::RatLit(n)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::RatLit(n),
+                    })
                 }
                 Token::FloatLit(n) => {
                     let n = *n;
                     self.advance();
-                    Ok(LocExpr(loc, Expr::FloatLit(n)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::FloatLit(n),
+                    })
                 }
                 Token::ImaginaryFloatLit(n) => {
                     let n = *n;
                     self.advance();
-                    Ok(LocExpr(loc, Expr::ImaginaryFloatLit(n)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::ImaginaryFloatLit(n),
+                    })
                 }
                 Token::StringLit(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::StringLit(s)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::StringLit(s),
+                    })
                 }
                 Token::BytesLit(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::BytesLit(s)))
+                    Ok(LocExpr {
+                        expr: Expr::BytesLit(s),
+                        start,
+                        end,
+                    })
                 }
                 Token::FormatString(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::FormatString(parse_format_string(&s, &loc_token)?),
-                    ))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::FormatString(parse_format_string(&s, &loc_token)?),
+                    })
                 }
                 Token::Underscore => {
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Underscore))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::Underscore,
+                    })
                 }
                 Token::Ident(s) => {
                     let s = s.clone();
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Ident(s)))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::Ident(s),
+                    })
                 }
                 Token::Ellipsis => {
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Splat(Box::new(self.single("ellipsis")?)),
-                    ))
+                    let s = self.single("ellipsis")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Splat(Box::new(s)),
+                    })
                 }
                 Token::Consume => {
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Consume(Box::new(to_lvalue_no_literals(self.single("consume")?)?)),
-                    ))
+                    let s = self.single("consume")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Consume(Box::new(to_lvalue_no_literals(s)?)),
+                    })
                 }
                 Token::Pop => {
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Pop(Box::new(to_lvalue_no_literals(self.single("pop")?)?)),
-                    ))
+                    let s = self.single("pop")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Pop(Box::new(to_lvalue_no_literals(s)?)),
+                    })
                 }
                 Token::Remove => {
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Remove(Box::new(to_lvalue_no_literals(self.single("remove")?)?)),
-                    ))
+                    let s = self.single("remove")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Remove(Box::new(to_lvalue_no_literals(s)?)),
+                    })
                 }
                 Token::Break => {
                     self.advance();
                     if self.peek_csc_stopper() {
-                        Ok(LocExpr(loc, Expr::Break(None)))
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Break(None),
+                        })
                     } else {
-                        Ok(LocExpr(
-                            loc,
-                            Expr::Break(Some(Box::new(self.single("break")?))),
-                        ))
+                        let s = self.single("break")?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Break(Some(Box::new(s))),
+                        })
                     }
                 }
                 Token::Throw => {
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Throw(Box::new(self.single("throw")?))))
+                    let s = self.single("throw")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Throw(Box::new(s)),
+                    })
                 }
                 Token::Continue => {
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Continue))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::Continue,
+                    })
                 }
                 Token::Return => {
                     self.advance();
                     if self.peek_csc_stopper() {
-                        Ok(LocExpr(loc, Expr::Return(None)))
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Return(None),
+                        })
                     } else {
-                        Ok(LocExpr(
-                            loc,
-                            Expr::Return(Some(Box::new(self.single("return")?))),
-                        ))
+                        let s = self.single("return")?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Return(Some(Box::new(s))),
+                        })
                     }
                 }
                 Token::Literally => {
                     self.advance();
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Literally(Box::new(self.single("literally")?)),
-                    ))
+                    let s = self.single("literally")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Literally(Box::new(s)),
+                    })
                 }
                 Token::Freeze => {
                     self.advance();
-                    Ok(LocExpr(loc, Expr::Freeze(Box::new(self.single("throw")?))))
+                    let s = self.single("freeze")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Freeze(Box::new(s)),
+                    })
                 }
                 Token::LeftParen => {
                     self.advance();
@@ -4814,22 +4891,38 @@ impl Parser {
                 }
                 Token::VLeftParen => {
                     self.advance();
-                    if self.try_consume(&Token::RightParen) {
-                        Ok(LocExpr(loc, Expr::Vector(Vec::new())))
+                    if let Some(end) = self.try_consume(&Token::RightParen) {
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Vector(Vec::new()),
+                        })
                     } else {
                         let (exs, _) = self.comma_separated()?;
-                        self.require(Token::RightParen, "vector expr".to_string())?;
-                        Ok(LocExpr(loc, Expr::Vector(exs)))
+                        let end = self.require(Token::RightParen, "vector expr".to_string())?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Vector(exs),
+                        })
                     }
                 }
                 Token::LeftBracket => {
                     self.advance();
-                    if self.try_consume(&Token::RightBracket) {
-                        Ok(LocExpr(loc, Expr::List(Vec::new())))
+                    if let Some(end) = self.try_consume(&Token::RightBracket) {
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::List(Vec::new()),
+                        })
                     } else {
                         let (exs, _) = self.comma_separated()?;
-                        self.require(Token::RightBracket, "list expr".to_string())?;
-                        Ok(LocExpr(loc, Expr::List(exs)))
+                        let end = self.require(Token::RightBracket, "list expr".to_string())?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::List(exs),
+                        })
                     }
                 }
                 Token::LeftBrace => {
@@ -4837,7 +4930,7 @@ impl Parser {
                     // Dict(Vec<(Box<Expr>, Option<Box<Expr>>)>),
                     let mut xs = Vec::new();
                     let mut def = None;
-                    if self.try_consume(&Token::Colon) {
+                    if let Some(_) = self.try_consume(&Token::Colon) {
                         def = Some(Box::new(self.single("default of dict literal")?));
                         if !self.peek_csc_stopper() {
                             self.require(Token::Comma, "dict expr".to_string())?;
@@ -4846,7 +4939,7 @@ impl Parser {
 
                     while !self.peek_csc_stopper() {
                         let c1 = Box::new(self.single("key of dict literal")?);
-                        let c2 = if self.try_consume(&Token::Colon) {
+                        let c2 = if let Some(_) = self.try_consume(&Token::Colon) {
                             Some(Box::new(self.single("value of dict literal")?))
                         } else {
                             None
@@ -4857,35 +4950,55 @@ impl Parser {
                             self.require(Token::Comma, "dict expr".to_string())?;
                         }
                     }
-                    self.require(Token::RightBrace, "dict expr end".to_string())?;
-                    Ok(LocExpr(loc, Expr::Dict(def, xs)))
+                    let end = self.require(Token::RightBrace, "dict expr end".to_string())?;
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::Dict(def, xs),
+                    })
                 }
                 Token::RightParen => Err(self.error_here(format!("atom: unexpected"))),
                 Token::Lambda => {
                     self.advance();
-                    if let Some(Token::IntLit(x)) = self.peek().cloned() {
-                        let us = x
-                            .to_usize()
-                            .ok_or(self.error_here(format!("backref: not usize: {}", x)))?;
-                        self.advance();
-                        Ok(LocExpr(loc, Expr::Backref(us)))
-                    } else {
-                        let params = if self.try_consume(&Token::RightArrow) {
-                            Vec::new()
-                        } else {
-                            // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
-                            // assignment the second unpacks.
-                            let params0 = self.annotated_comma_separated("lambda params")?;
-                            let ps = params0
-                                .0
-                                .into_iter()
-                                .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
-                                .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
-                            self.require(Token::RightArrow, "lambda start: ->".to_string())?;
-                            ps
-                        };
-                        let body = self.single("body of lambda")?;
-                        Ok(LocExpr(loc, Expr::Lambda(Rc::new(params), Rc::new(body))))
+                    match self.peek_loc_token() {
+                        Some(LocToken {
+                            token: Token::IntLit(x),
+                            start: _,
+                            end,
+                        }) => {
+                            let us = x
+                                .to_usize()
+                                .ok_or(self.error_here(format!("backref: not usize: {}", x)))?;
+                            let end = *end;
+                            self.advance();
+                            Ok(LocExpr {
+                                start,
+                                end,
+                                expr: Expr::Backref(us),
+                            })
+                        }
+                        _ => {
+                            let params = if self.try_consume(&Token::RightArrow).is_some() {
+                                Vec::new()
+                            } else {
+                                // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
+                                // assignment the second unpacks.
+                                let params0 = self.annotated_comma_separated("lambda params")?;
+                                let ps = params0
+                                    .0
+                                    .into_iter()
+                                    .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
+                                    .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
+                                self.require(Token::RightArrow, "lambda start: ->".to_string())?;
+                                ps
+                            };
+                            let body = self.single("body of lambda")?;
+                            Ok(LocExpr {
+                                start,
+                                end: body.end,
+                                expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
+                            })
+                        }
                     }
                 }
                 Token::If => {
@@ -4894,15 +5007,16 @@ impl Parser {
                     let cond = self.expression()?;
                     self.require(Token::RightParen, "if cond end".to_string())?;
                     let body = self.assignment()?;
-                    let else_body = if self.try_consume(&Token::Else) {
-                        Some(Box::new(self.assignment()?))
+                    let (end, else_body) = if let Some(end) = self.try_consume(&Token::Else) {
+                        (end, Some(Box::new(self.assignment()?)))
                     } else {
-                        None
+                        (body.end, None)
                     };
-                    Ok(LocExpr(
-                        loc,
-                        Expr::If(Box::new(cond), Box::new(body), else_body),
-                    ))
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::If(Box::new(cond), Box::new(body), else_body),
+                    })
                 }
                 Token::For => {
                     self.advance();
@@ -4923,9 +5037,13 @@ impl Parser {
                             )))?,
                         }
                     }
-                    let do_yield = self.try_consume(&Token::Yield);
+                    let do_yield = self.try_consume(&Token::Yield).is_some();
                     let body = self.assignment()?;
-                    Ok(LocExpr(loc, Expr::For(its, do_yield, Box::new(body))))
+                    Ok(LocExpr {
+                        start,
+                        end: body.end,
+                        expr: Expr::For(its, do_yield, Box::new(body)),
+                    })
                 }
                 Token::While => {
                     self.advance();
@@ -4933,7 +5051,11 @@ impl Parser {
                     let cond = self.expression()?;
                     self.require(Token::RightParen, "while end".to_string())?;
                     let body = self.assignment()?;
-                    Ok(LocExpr(loc, Expr::While(Box::new(cond), Box::new(body))))
+                    Ok(LocExpr {
+                        start,
+                        end: body.end,
+                        expr: Expr::While(Box::new(cond), Box::new(body)),
+                    })
                 }
                 Token::Switch => {
                     self.advance();
@@ -4941,13 +5063,20 @@ impl Parser {
                     let scrutinee = self.expression()?;
                     self.require(Token::RightParen, "switch end".to_string())?;
                     let mut v = Vec::new();
-                    while self.try_consume(&Token::Case) {
+                    while let Some(_) = self.try_consume(&Token::Case) {
                         let pat = to_lvalue(self.annotated_pattern("switch pat")?)?;
                         self.require(Token::RightArrow, "case mid: ->".to_string())?;
                         let res = self.single("switch body")?;
                         v.push((Box::new(pat), Box::new(res)));
                     }
-                    Ok(LocExpr(loc, Expr::Switch(Box::new(scrutinee), v)))
+                    match v.last() {
+                        Some((_, e)) => Ok(LocExpr {
+                            start,
+                            end: e.end,
+                            expr: Expr::Switch(Box::new(scrutinee), v),
+                        }),
+                        None => Err(self.error_here(format!("switch: no cases")))?,
+                    }
                 }
                 Token::Try => {
                     self.advance();
@@ -4956,10 +5085,11 @@ impl Parser {
                     let pat = to_lvalue(self.annotated_pattern("catch pattern")?)?;
                     self.require(Token::RightArrow, "catch mid: ->".to_string())?;
                     let catcher = self.single("catch body")?;
-                    Ok(LocExpr(
-                        loc,
-                        Expr::Try(Box::new(body), Box::new(pat), Box::new(catcher)),
-                    ))
+                    Ok(LocExpr {
+                        start,
+                        end: body.end,
+                        expr: Expr::Try(Box::new(body), Box::new(pat), Box::new(catcher)),
+                    })
                 }
                 Token::Struct => {
                     self.advance();
@@ -4971,7 +5101,7 @@ impl Parser {
                         if let Some(Token::Ident(field1)) = self.peek() {
                             fields.push(Rc::new(field1.clone()));
                             self.advance();
-                            while self.try_consume(&Token::Comma) {
+                            while self.try_consume(&Token::Comma).is_some() {
                                 if let Some(Token::Ident(field)) = self.peek() {
                                     fields.push(Rc::new(field.clone()));
                                     self.advance();
@@ -4980,9 +5110,13 @@ impl Parser {
                                 }
                             }
                         }
-                        self.require(Token::RightParen, "struct end".to_string())?;
+                        let end = self.require(Token::RightParen, "struct end".to_string())?;
 
-                        Ok(LocExpr(loc, Expr::Struct(name, fields)))
+                        Ok(LocExpr {
+                            expr: Expr::Struct(name, fields),
+                            start,
+                            end,
+                        })
                     } else {
                         Err(self.error_here(format!("bad struct name")))?
                     }
@@ -4997,7 +5131,7 @@ impl Parser {
     }
 
     fn for_iteration(&mut self) -> Result<ForIteration, ParseError> {
-        if self.try_consume(&Token::If) {
+        if self.try_consume(&Token::If).is_some() {
             Ok(ForIteration::Guard(Box::new(
                 self.single("for iteration guard")?,
             )))
@@ -5030,78 +5164,108 @@ impl Parser {
     }
 
     fn operand(&mut self) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let mut cur = self.atom()?;
 
         loop {
             match self.peek() {
                 Some(Token::LeftParen) => {
                     self.advance();
-                    if self.try_consume(&Token::RightParen) {
-                        cur = LocExpr(loc, Expr::Call(Box::new(cur), Vec::new()));
+                    if let Some(end) = self.try_consume(&Token::RightParen) {
+                        cur = LocExpr {
+                            expr: Expr::Call(Box::new(cur), Vec::new()),
+                            start,
+                            end,
+                        };
                     } else {
                         let (cs, _) = self.comma_separated()?;
-                        self.require(Token::RightParen, "call expr".to_string())?;
-                        cur = LocExpr(loc, Expr::Call(Box::new(cur), cs));
+                        let end = self.require(Token::RightParen, "call expr".to_string())?;
+                        cur = LocExpr {
+                            expr: Expr::Call(Box::new(cur), cs),
+                            start,
+                            end,
+                        };
                     }
                 }
                 Some(Token::LeftBracket) => {
                     self.advance();
-                    if self.try_consume(&Token::Colon) {
-                        if self.try_consume(&Token::RightBracket) {
-                            cur = LocExpr(
-                                loc,
-                                Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, None)),
-                            );
+                    if self.try_consume(&Token::Colon).is_some() {
+                        if let Some(end) = self.try_consume(&Token::RightBracket) {
+                            cur = LocExpr {
+                                expr: Expr::Index(Box::new(cur), IndexOrSlice::Slice(None, None)),
+                                start,
+                                end,
+                            };
                         } else {
                             let c = self.single("slice end")?;
-                            self.require(Token::RightBracket, "index expr".to_string())?;
-                            cur = LocExpr(
-                                loc,
-                                Expr::Index(
+                            let end =
+                                self.require(Token::RightBracket, "index expr".to_string())?;
+                            cur = LocExpr {
+                                expr: Expr::Index(
                                     Box::new(cur),
                                     IndexOrSlice::Slice(None, Some(Box::new(c))),
                                 ),
-                            );
+                                start,
+                                end,
+                            };
                         }
                     } else {
                         let c = self.single("index/slice start")?;
-                        if self.try_consume(&Token::Colon) {
-                            if self.try_consume(&Token::RightBracket) {
-                                cur = LocExpr(
-                                    loc,
-                                    Expr::Index(
+                        if self.try_consume(&Token::Colon).is_some() {
+                            if let Some(end) = self.try_consume(&Token::RightBracket) {
+                                cur = LocExpr {
+                                    expr: Expr::Index(
                                         Box::new(cur),
                                         IndexOrSlice::Slice(Some(Box::new(c)), None),
                                     ),
-                                );
+                                    start,
+                                    end,
+                                };
                             } else {
                                 let cc = self.single("slice end")?;
-                                self.require(Token::RightBracket, "index expr".to_string())?;
-                                cur = LocExpr(
-                                    loc,
-                                    Expr::Index(
+                                let end =
+                                    self.require(Token::RightBracket, "index expr".to_string())?;
+                                cur = LocExpr {
+                                    expr: Expr::Index(
                                         Box::new(cur),
                                         IndexOrSlice::Slice(Some(Box::new(c)), Some(Box::new(cc))),
                                     ),
-                                );
+                                    start,
+                                    end,
+                                };
                             }
                         } else {
-                            self.require(Token::RightBracket, "index expr".to_string())?;
-                            cur = LocExpr(
-                                loc,
-                                Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c))),
-                            );
+                            let end =
+                                self.require(Token::RightBracket, "index expr".to_string())?;
+                            cur = LocExpr {
+                                expr: Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c))),
+                                start,
+                                end,
+                            };
                         }
                     }
                 }
                 Some(Token::Bang) => {
+                    // FIXME
+                    let bang_end = self.peek_loc_token().unwrap().end;
                     self.advance();
                     if self.peek_csc_stopper() {
-                        cur = LocExpr(loc, Expr::Call(Box::new(cur), Vec::new()));
+                        cur = LocExpr {
+                            expr: Expr::Call(Box::new(cur), Vec::new()),
+                            start,
+                            end: bang_end,
+                        };
                     } else {
                         let (cs, _) = self.comma_separated()?;
-                        cur = LocExpr(loc, Expr::Call(Box::new(cur), cs));
+                        let end = match cs.last() {
+                            Some(c) => c.end,
+                            None => bang_end,
+                        };
+                        cur = LocExpr {
+                            expr: Expr::Call(Box::new(cur), cs),
+                            start,
+                            end,
+                        };
                     }
                 }
                 _ => break Ok(cur),
@@ -5148,7 +5312,7 @@ impl Parser {
     }
 
     fn chain(&mut self) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let op1 = self.operand()?;
         if self.peek_chain_stopper() {
             Ok(op1)
@@ -5158,56 +5322,90 @@ impl Parser {
             // aggressive-ish about checking that the chain ends afterwards so we don't get runaway
             // syntax errors.
             let second = self.atom()?;
-            match second.1 {
+            match second.expr {
                 Expr::Ident(op) => {
-                    if self.try_consume(&Token::Bang) {
-                        let ret = LocExpr(
-                            loc,
-                            Expr::Chain(
+                    if let Some(bang_end) = self.try_consume(&Token::Bang) {
+                        let ret = LocExpr {
+                            expr: Expr::Chain(
                                 Box::new(op1),
                                 vec![(
-                                    Box::new(LocExpr(second.0, Expr::Ident(op))),
+                                    Box::new(LocExpr {
+                                        expr: Expr::Ident(op),
+                                        start: second.start,
+                                        end: second.end,
+                                    }),
                                     Box::new(self.single("operator-bang operand")?),
                                 )],
                             ),
-                        );
+                            start,
+                            end: bang_end,
+                        };
                         if self.peek() == Some(&Token::Comma) {
                             Err(self.error_here("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string()))
                         } else {
                             Ok(ret)
                         }
                     } else if self.peek_chain_stopper() {
-                        Ok(LocExpr(
-                            loc,
-                            Expr::Call(
+                        Ok(LocExpr {
+                            expr: Expr::Call(
                                 Box::new(op1),
-                                vec![Box::new(LocExpr(second.0, Expr::Ident(op)))],
+                                vec![Box::new(LocExpr {
+                                    expr: Expr::Ident(op),
+                                    start: second.start,
+                                    end: second.end,
+                                })],
                             ),
-                        ))
+                            start,
+                            end: second.end,
+                        })
                     } else {
                         let mut ops = vec![(
-                            Box::new(LocExpr(second.0, Expr::Ident(op))),
+                            Box::new(LocExpr {
+                                expr: Expr::Ident(op),
+                                start: second.start,
+                                end: second.end,
+                            }),
                             Box::new(self.operand()?),
                         )];
 
-                        while let Some(Token::Ident(op)) = self.peek() {
-                            let oploc = self.peek_loc();
+                        while let Some(LocToken {
+                            token: Token::Ident(op),
+                            start: op_start,
+                            end: op_end,
+                        }) = self.peek_loc_token()
+                        {
                             let op = op.to_string();
+                            let op_start = *op_start;
+                            let op_end = *op_end;
                             self.advance();
                             ops.push((
-                                Box::new(LocExpr(oploc, Expr::Ident(op))),
-                                Box::new(if self.try_consume(&Token::Bang) {
+                                Box::new(LocExpr {
+                                    start: op_start,
+                                    end: op_end,
+                                    expr: Expr::Ident(op),
+                                }),
+                                Box::new(if self.try_consume(&Token::Bang).is_some() {
                                     self.single("operator-bang operand")?
                                 } else {
                                     self.operand()?
                                 }),
                             ));
                         }
-                        Ok(LocExpr(loc, Expr::Chain(Box::new(op1), ops)))
+
+                        Ok(LocExpr {
+                            start,
+                            end: ops.last().unwrap().1.end,
+                            expr: Expr::Chain(Box::new(op1), ops),
+                        })
                     }
                 }
                 _ => {
-                    let ret = LocExpr(loc, Expr::Call(Box::new(op1), vec![Box::new(second)]));
+                    // second was not an identifier, only allowed to be a short chain
+                    let ret = LocExpr {
+                        start,
+                        end: second.end,
+                        expr: Expr::Call(Box::new(op1), vec![Box::new(second)]),
+                    };
                     if !self.peek_chain_stopper() {
                         Err(self.error_here(format!(
                             "saw non-identifier in operator position: these chains must be short"
@@ -5221,38 +5419,41 @@ impl Parser {
     }
 
     fn logic_and(&mut self) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let mut op1 = self.chain()?;
-        while self.try_consume(&Token::And) {
-            op1 = LocExpr(loc, Expr::And(Box::new(op1), Box::new(self.chain()?)));
+        while self.try_consume(&Token::And).is_some() {
+            let rhs = self.chain()?;
+            op1 = LocExpr {
+                start,
+                end: rhs.end,
+                expr: Expr::And(Box::new(op1), Box::new(rhs)),
+            };
         }
         Ok(op1)
     }
 
     fn single(&mut self, ctx: &str) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
-        let mut op1 = err_add_context(self.logic_and(), ctx, loc)?;
+        let start = self.peek_loc();
+        let mut op1 = err_add_context(self.logic_and(), ctx, start)?;
         loop {
             match self.peek() {
                 Some(Token::Or) => {
                     self.advance();
-                    op1 = LocExpr(
-                        loc,
-                        Expr::Or(
-                            Box::new(op1),
-                            Box::new(err_add_context(self.logic_and(), ctx, loc)?),
-                        ),
-                    );
+                    let rhs = err_add_context(self.logic_and(), ctx, start)?;
+                    op1 = LocExpr {
+                        start,
+                        end: rhs.end,
+                        expr: Expr::Or(Box::new(op1), Box::new(rhs)),
+                    };
                 }
                 Some(Token::Coalesce) => {
                     self.advance();
-                    op1 = LocExpr(
-                        loc,
-                        Expr::Coalesce(
-                            Box::new(op1),
-                            Box::new(err_add_context(self.logic_and(), ctx, loc)?),
-                        ),
-                    );
+                    let rhs = err_add_context(self.logic_and(), ctx, start)?;
+                    op1 = LocExpr {
+                        start,
+                        end: rhs.end,
+                        expr: Expr::Coalesce(Box::new(op1), Box::new(rhs)),
+                    };
                 }
                 _ => return Ok(op1),
             }
@@ -5265,7 +5466,7 @@ impl Parser {
     fn comma_separated(&mut self) -> Result<(Vec<Box<LocExpr>>, bool), ParseError> {
         let mut xs = vec![Box::new(self.single("comma-separated starter")?)];
         let mut comma = false;
-        while self.try_consume(&Token::Comma) {
+        while self.try_consume(&Token::Comma).is_some() {
             comma = true;
             if self.peek_csc_stopper() {
                 return Ok((xs, comma));
@@ -5278,13 +5479,21 @@ impl Parser {
     // Nonempty comma-separated things, as above, but packaged as a single expr. No semicolons or
     // assigns allowed. Should be nonempty I think. RHSes of assignments.
     fn pattern(&mut self) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let (exs, comma) = self.comma_separated()?;
         match (few(exs), comma) {
             (Few::Zero, _) => Err(self.error_here(format!("Expected pattern, got nothing"))),
             (Few::One(ex), false) => Ok(*ex),
-            (Few::One(ex), true) => Ok(LocExpr(loc, Expr::CommaSeq(vec![ex]))),
-            (Few::Many(exs), _) => Ok(LocExpr(loc, Expr::CommaSeq(exs))),
+            (Few::One(ex), true) => Ok(LocExpr {
+                start,
+                end: ex.end,
+                expr: Expr::CommaSeq(vec![ex]),
+            }),
+            (Few::Many(exs), _) => Ok(LocExpr {
+                start,
+                end: exs.last().unwrap().end,
+                expr: Expr::CommaSeq(exs),
+            }),
         }
     }
 
@@ -5330,11 +5539,14 @@ impl Parser {
                     } else {
                         Some(Rc::new(self.single("annotation")?))
                     };
-                    annotated.extend(
-                        pending_annotation
-                            .drain(..)
-                            .map(|e| Box::new(LocExpr(e.0, Expr::Annotation(e, anno.clone())))),
-                    );
+                    // lol annotated expressions may not be contiguous
+                    annotated.extend(pending_annotation.drain(..).map(|e| {
+                        Box::new(LocExpr {
+                            start: e.start,
+                            end: e.end,
+                            expr: Expr::Annotation(e, anno.clone()),
+                        })
+                    }));
                 }
                 _ => {
                     annotated.extend(pending_annotation);
@@ -5344,7 +5556,7 @@ impl Parser {
         }
     }
     fn annotated_pattern(&mut self, msg: &str) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let (exs, comma) = self.annotated_comma_separated(msg)?;
         match (few(exs), comma) {
             (Few::Zero, _) => Err(self.error_here(format!(
@@ -5352,54 +5564,78 @@ impl Parser {
                 msg
             ))),
             (Few::One(ex), false) => Ok(*ex),
-            (Few::One(ex), true) => Ok(LocExpr(loc, Expr::CommaSeq(vec![ex]))),
-            (Few::Many(exs), _) => Ok(LocExpr(loc, Expr::CommaSeq(exs))),
+            (Few::One(ex), true) => Ok(LocExpr {
+                start,
+                end: ex.end,
+                expr: Expr::CommaSeq(vec![ex]),
+            }),
+            (Few::Many(exs), _) => Ok(LocExpr {
+                start,
+                end: exs.last().unwrap().end,
+                expr: Expr::CommaSeq(exs),
+            }),
         }
     }
 
     fn assignment(&mut self) -> Result<LocExpr, ParseError> {
-        let loc = self.peek_loc();
+        let start = self.peek_loc();
         let ag_start_err = self.peek_err();
-        if self.try_consume(&Token::Swap) {
+        if self.try_consume(&Token::Swap).is_some() {
             let a = to_lvalue_no_literals(self.single("swap target 1")?)?;
             self.require(
                 Token::Comma,
                 format!("swap between lvalues at {}", ag_start_err),
             )?;
-            let b = to_lvalue_no_literals(self.single("swap target 2")?)?;
-            Ok(LocExpr(loc, Expr::Swap(Box::new(a), Box::new(b))))
+            let bs = self.single("swap target 2")?;
+            let end = bs.end;
+            let b = to_lvalue_no_literals(bs)?;
+            Ok(LocExpr {
+                expr: Expr::Swap(Box::new(a), Box::new(b)),
+                start,
+                end,
+            })
         } else {
-            let every = self.try_consume(&Token::Every);
+            let every = self.try_consume(&Token::Every).is_some();
             // TODO: parsing can be different after Every
             let pat = self.annotated_pattern("assign LHS")?;
 
             match self.peek() {
                 Some(Token::Assign) => {
                     self.advance();
-                    match pat.1 {
+                    match pat.expr {
                         Expr::Call(lhs, op) => match few(op) {
-                            Few::One(op) => Ok(LocExpr(
-                                loc,
-                                Expr::OpAssign(
-                                    every,
-                                    Box::new(to_lvalue_no_literals(*lhs)?),
-                                    Box::new(*op),
-                                    Box::new(self.pattern()?),
-                                ),
-                            )),
+                            Few::One(op) => {
+                                let rhs = self.pattern()?;
+                                let end = rhs.end;
+                                Ok(LocExpr {
+                                    expr: Expr::OpAssign(
+                                        every,
+                                        Box::new(to_lvalue_no_literals(*lhs)?),
+                                        Box::new(*op),
+                                        Box::new(rhs),
+                                    ),
+                                    start,
+                                    end,
+                                })
+                            }
                             _ => Err(self.error_here(format!(
                                 "call w not 1 arg is not assignop, at {}",
                                 ag_start_err
                             ))),
                         },
-                        _ => Ok(LocExpr(
-                            loc,
-                            Expr::Assign(
-                                every,
-                                Box::new(to_lvalue_no_literals(pat)?),
-                                Box::new(self.pattern()?),
-                            ),
-                        )),
+                        _ => {
+                            let rhs = self.pattern()?;
+                            let end = rhs.end;
+                            Ok(LocExpr {
+                                expr: Expr::Assign(
+                                    every,
+                                    Box::new(to_lvalue_no_literals(pat)?),
+                                    Box::new(rhs),
+                                ),
+                                start,
+                                end,
+                            })
+                        }
                     }
                 }
                 /*
@@ -5424,20 +5660,24 @@ impl Parser {
         let mut ags = vec![Box::new(self.assignment()?)];
         let mut ending_semicolon = false;
         let start = self.peek_loc();
+        let mut end = start; // fake
 
-        while self.try_consume(&Token::Semicolon) {
+        while let Some(s_end) = self.try_consume(&Token::Semicolon) {
             if self.peek_hard_stopper() {
                 ending_semicolon = true;
+                end = s_end;
                 break;
             } else {
-                ags.push(Box::new(self.assignment()?));
+                let a = self.assignment()?;
+                end = a.end;
+                ags.push(Box::new(a));
             }
         }
 
         Ok(if ags.len() == 1 && !ending_semicolon {
             *ags.remove(0)
         } else {
-            LocExpr(start, Expr::Sequence(ags, ending_semicolon))
+            LocExpr { expr: Expr::Sequence(ags, ending_semicolon), start, end }
         })
     }
 
@@ -6634,7 +6874,7 @@ impl LvalueChainEvaluator {
 fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<Obj>> {
     let mut acc = Vec::new();
     for x in exprs {
-        match &((**x).1) {
+        match &((**x).expr) {
             Expr::Splat(inner) => {
                 let mut res = evaluate(env, inner)?;
                 acc.extend(mut_obj_into_iter(&mut res, "splat")?);
@@ -6977,9 +7217,7 @@ fn slice_seq(xr: Seq, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
                 NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)),
             )?))
         }
-        (Seq::Dict(..), _, _) => Err(NErr::type_error(
-            "can't slice dictionary".to_string()
-        )),
+        (Seq::Dict(..), _, _) => Err(NErr::type_error("can't slice dictionary".to_string())),
     }
 }
 
@@ -7360,7 +7598,7 @@ fn parse_format_string(
 }
 
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
-    match &expr.1 {
+    match &expr.expr {
         Expr::Null => Ok(Obj::Null),
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::RatLit(n) => Ok(Obj::from(NNum::from(n.clone()))),
@@ -7383,15 +7621,28 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::from(acc))
         }
-        Expr::Ident(s) => add_trace(Env::try_borrow_get_var(env, s), format!("ident"), expr.0),
+        Expr::Ident(s) => add_trace(
+            Env::try_borrow_get_var(env, s),
+            format!("ident"),
+            expr.start,
+        ),
         Expr::Underscore => Err(NErr::syntax_error_loc(
             "Can't evaluate underscore".to_string(),
             "_".to_string(),
-            expr.0,
+            expr.start,
         )),
         Expr::Index(x, i) => match (&**x, i) {
-            (LocExpr(_, Expr::Underscore), IndexOrSlice::Index(i)) => match &**i {
-                LocExpr(_, Expr::Underscore) => Ok(Obj::Func(
+            (
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                },
+                IndexOrSlice::Index(i),
+            ) => match &**i {
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                } => Ok(Obj::Func(
                     Func::IndexSection(None, None),
                     Precedence::zero(),
                 )),
@@ -7407,14 +7658,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         },
         Expr::Chain(op1, ops) => {
-            if match &((**op1).1) {
+            if match &((**op1).expr) {
                 Expr::Underscore => true,
                 _ => false,
-            } || ops.iter().any(|(_op, e)| match &((**e).1) {
+            } || ops.iter().any(|(_op, e)| match &((**e).expr) {
                 Expr::Underscore => true,
                 _ => false,
             }) {
-                let v1 = match &((**op1).1) {
+                let v1 = match &((**op1).expr) {
                     Expr::Underscore => None,
                     _ => Some(Box::new(evaluate(env, op1)?)),
                 };
@@ -7422,13 +7673,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 for (oper, opd) in ops {
                     let oprr = evaluate(env, oper)?;
                     if let Obj::Func(b, prec) = oprr {
-                        match &((**opd).1) {
+                        match &((**opd).expr) {
                             Expr::Underscore => {
-                                acc.push((oper.0, Box::new(b), prec, None));
+                                acc.push((oper.start, Box::new(b), prec, None));
                             }
                             _ => {
                                 let oprd = evaluate(env, opd)?;
-                                acc.push((oper.0, Box::new(b), prec, Some(Box::new(oprd))));
+                                acc.push((oper.start, Box::new(b), prec, Some(Box::new(oprd))));
                             }
                         }
                     } else {
@@ -7445,7 +7696,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     let oprr = evaluate(env, oper)?;
                     if let Obj::Func(b, prec) = oprr {
                         let oprd = evaluate(env, opd)?;
-                        ev.give(env, b, prec, oprd, oper.0)?;
+                        ev.give(env, b, prec, oprd, oper.start)?;
                     } else {
                         return Err(NErr::type_error(format!(
                             "Chain cannot use nonblock in operand position: {:?}",
@@ -7481,9 +7732,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Assign(every, pat, rhs) => {
-            let p = add_trace(eval_lvalue(env, pat), format!("assign lvalue"), expr.0)?;
+            let p = add_trace(eval_lvalue(env, pat), format!("assign lvalue"), expr.start)?;
             let res = match &**rhs {
-                LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
+                LocExpr {
+                    expr: Expr::CommaSeq(xs),
+                    ..
+                } => Ok(Obj::list(eval_seq(env, xs)?)),
                 _ => evaluate(env, rhs),
             }?;
 
@@ -7492,7 +7746,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             } else {
                 assign(&env, &p, None, res, AssignMode::Assign)
             };
-            add_trace(ret, format!("assign"), expr.0)?;
+            add_trace(ret, format!("assign"), expr.start)?;
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
@@ -7592,13 +7846,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
                         let res = match &**rhs {
-                            LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
+                            LocExpr {
+                                expr: Expr::CommaSeq(xs),
+                                ..
+                            } => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
                         add_trace(
                             modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()])),
                             format!("op({})-assign", ff),
-                            expr.0,
+                            expr.start,
                         )?;
                         Ok(Obj::Null)
                     }
@@ -7613,7 +7870,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
                         let res = match &**rhs {
-                            LocExpr(_, Expr::CommaSeq(xs)) => Ok(Obj::list(eval_seq(env, xs)?)),
+                            LocExpr {
+                                expr: Expr::CommaSeq(xs),
+                                ..
+                            } => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
                         // Drop the Rc from the lvalue so that functions can try to consume it. We
@@ -7623,13 +7883,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         add_trace(
                             assign(&env, &p, None, Obj::Null, AssignMode::IgnoreExistingType),
                             format!("null-assign"),
-                            expr.0,
+                            expr.start,
                         )?;
                         let fres = ff.run(env, vec![pv, res])?;
                         add_trace(
                             assign(&env, &p, None, fres, AssignMode::Assign),
                             format!("op({})-assign", ff),
-                            expr.0,
+                            expr.start,
                         )?;
                         Ok(Obj::Null)
                     }
@@ -7642,7 +7902,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Call(f, args) => {
             let fr = match &**f {
-                LocExpr(_, Expr::Underscore) => None,
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                } => None,
                 f => Some(evaluate(env, f)?),
             };
             // let a = eval_seq(env, args)?;
@@ -7651,12 +7914,24 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
             for x in args {
                 acc = match (&**x, acc) {
-                    (LocExpr(_, Expr::Underscore), Ok(v)) => {
+                    (
+                        LocExpr {
+                            expr: Expr::Underscore,
+                            ..
+                        },
+                        Ok(v),
+                    ) => {
                         let mut r = v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>();
                         r.push(None);
                         Err(r)
                     }
-                    (LocExpr(_, Expr::Underscore), Err(mut a)) => {
+                    (
+                        LocExpr {
+                            expr: Expr::Underscore,
+                            ..
+                        },
+                        Err(mut a),
+                    ) => {
                         a.push(None);
                         Err(a)
                     }
@@ -7675,7 +7950,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 // no section
                 (Some(f), Ok(v)) => {
                     let fs = format!("call to {}", f);
-                    add_trace(call_or_part_apply(env, f, v), fs, expr.0)
+                    add_trace(call_or_part_apply(env, f, v), fs, expr.start)
                 }
 
                 // some section
@@ -7695,23 +7970,35 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::CommaSeq(_) => Err(NErr::syntax_error_loc(
             "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
             "seq".to_string(),
-            expr.0,
+            expr.start,
         )),
         Expr::Splat(_) => Err(NErr::syntax_error_loc(
             "Splats only allowed on an assignment-related place or in call or list (?)".to_string(),
             "splat".to_string(),
-            expr.0,
+            expr.start,
         )),
         Expr::List(xs) => {
             let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
             for x in xs {
                 acc = match (&**x, acc) {
-                    (LocExpr(_, Expr::Underscore), Ok(v)) => {
+                    (
+                        LocExpr {
+                            expr: Expr::Underscore,
+                            ..
+                        },
+                        Ok(v),
+                    ) => {
                         let mut r = v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>();
                         r.push(None);
                         Err(r)
                     }
-                    (LocExpr(_, Expr::Underscore), Err(mut a)) => {
+                    (
+                        LocExpr {
+                            expr: Expr::Underscore,
+                            ..
+                        },
+                        Err(mut a),
+                    ) => {
                         a.push(None);
                         Err(a)
                     }
@@ -7738,7 +8025,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             };
             let mut acc = HashMap::new();
             for (ke, ve) in xs {
-                match (&((**ke).1), ve) {
+                match (&((**ke).expr), ve) {
                     (Expr::Splat(inner), None) => {
                         let mut res = evaluate(env, inner)?;
                         let it = mut_obj_into_iter_pairs(&mut res, "dictionary splat")?;
@@ -7767,13 +8054,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 add_trace(
                     evaluate(env, x),
                     format!(";-sequence({}/{})", i + 1, xs.len()),
-                    expr.0,
+                    expr.start,
                 )?;
             }
             let ret = add_trace(
                 evaluate(env, xs.last().unwrap()),
                 format!(";-sequence({}/{})", xs.len(), xs.len()),
-                expr.0,
+                expr.start,
             )?;
             if *ending_semicolon {
                 Ok(Obj::Null)
@@ -7782,12 +8069,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::If(cond, if_body, else_body) => {
-            let cr = add_trace(evaluate(env, cond), "if-cond".to_string(), expr.0)?;
+            let cr = add_trace(evaluate(env, cond), "if-cond".to_string(), expr.start)?;
             if cr.truthy() {
-                add_trace(evaluate(env, if_body), "if-branch".to_string(), expr.0)
+                add_trace(evaluate(env, if_body), "if-branch".to_string(), expr.start)
             } else {
                 match else_body {
-                    Some(b) => add_trace(evaluate(env, b), "else-branch".to_string(), expr.0),
+                    Some(b) => add_trace(evaluate(env, b), "else-branch".to_string(), expr.start),
                     None => Ok(Obj::Null),
                 }
             }
@@ -7810,17 +8097,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     }
                 },
                 "for loop".to_string(),
-                expr.0,
+                expr.start,
             )
         }
         Expr::While(cond, body) => {
             // FIXME :(
             loop {
                 let ee = Env::with_parent(env);
-                if !(add_trace(evaluate(&ee, cond), "while-cond".to_string(), expr.0)?.truthy()) {
+                if !(add_trace(evaluate(&ee, cond), "while-cond".to_string(), expr.start)?.truthy()) {
                     return Ok(Obj::Null);
                 }
-                match add_trace(evaluate(&ee, body), "while-body".to_string(), expr.0) {
+                match add_trace(evaluate(&ee, body), "while-body".to_string(), expr.start) {
                     Ok(_) => (),
                     Err(NErr::Break(e)) => return Ok(e),
                     Err(NErr::Continue) => continue,
@@ -7829,7 +8116,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Switch(scrutinee, arms) => {
-            let s = add_trace(evaluate(env, scrutinee), "switchee".to_string(), expr.0)?;
+            let s = add_trace(evaluate(env, scrutinee), "switchee".to_string(), expr.start)?;
             for (pat, body) in arms {
                 let ee = Env::with_parent(env);
                 let p = eval_lvalue(&ee, pat)?;
@@ -7847,7 +8134,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match ret {
                     Ok(()) => {
                         std::mem::drop(s);
-                        return add_trace(evaluate(&ee, body), "switch-case".to_string(), expr.0);
+                        return add_trace(evaluate(&ee, body), "switch-case".to_string(), expr.start);
                     }
                     Err(_) => continue,
                 };
@@ -7882,7 +8169,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Throw(body) => Err(NErr::Throw(
             evaluate(&env, body)?,
-            vec![("throw".to_string(), expr.0, None)],
+            vec![("throw".to_string(), expr.start, None)],
         )),
         Expr::Lambda(params, body) => Ok(Obj::Func(
             Func::Closure(Closure {
@@ -7931,7 +8218,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Literally(_) => Err(NErr::syntax_error_loc(
             "'literally' can only be in lvalues / patterns".to_string(),
             "literally".to_string(),
-            expr.0,
+            expr.start,
         )),
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
@@ -8072,9 +8359,10 @@ fn freeze_ios(
 // get out of sync with the actual evaluation code. Shrug.
 
 fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<LocExpr> {
-    Ok(LocExpr(
-        expr.0,
-        match &expr.1 {
+    Ok(LocExpr {
+        start: expr.start,
+        end: expr.end,
+        expr: match &expr.expr {
             Expr::Null => Ok(Expr::Null),
             Expr::IntLit(x) => Ok(Expr::IntLit(x.clone())),
             Expr::RatLit(x) => Ok(Expr::RatLit(x.clone())),
@@ -8251,7 +8539,7 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(bound, env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
         }?,
-    ))
+    })
 }
 
 pub fn simple_eval(code: &str) -> Obj {
@@ -10171,9 +10459,11 @@ pub fn initialize(env: &mut Env) {
         name: "uncons".to_string(),
         body: |a| match a {
             Obj::Seq(s) => match uncons(s) {
-                None => Err(NErr::index_error("Can't uncons empty (or infinite) seq".to_string())),
+                None => Err(NErr::index_error(
+                    "Can't uncons empty (or infinite) seq".to_string(),
+                )),
                 Some((e, s)) => Ok(Obj::list(vec![e, Obj::Seq(s)])),
-            }
+            },
             a => Err(NErr::argument_error_1(&a)),
         },
     });
@@ -10181,9 +10471,11 @@ pub fn initialize(env: &mut Env) {
         name: "unsnoc".to_string(),
         body: |a| match a {
             Obj::Seq(s) => match unsnoc(s) {
-                None => Err(NErr::index_error("Can't unsnoc empty (or infinite) seq".to_string())),
+                None => Err(NErr::index_error(
+                    "Can't unsnoc empty (or infinite) seq".to_string(),
+                )),
                 Some((s, e)) => Ok(Obj::list(vec![Obj::Seq(s), e])),
-            }
+            },
             a => Err(NErr::argument_error_1(&a)),
         },
     });
@@ -10193,7 +10485,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(s) => match uncons(s) {
                 None => Ok(Obj::Null),
                 Some((e, s)) => Ok(Obj::list(vec![e, Obj::Seq(s)])),
-            }
+            },
             a => Err(NErr::argument_error_1(&a)),
         },
     });
@@ -10203,7 +10495,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(s) => match unsnoc(s) {
                 None => Ok(Obj::Null),
                 Some((s, e)) => Ok(Obj::list(vec![Obj::Seq(s), e])),
-            }
+            },
             a => Err(NErr::argument_error_1(&a)),
         },
     });
