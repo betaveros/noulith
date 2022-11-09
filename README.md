@@ -89,7 +89,7 @@ We support arbitrary radixes up to 36 with syntax `36r1000 == 36^3`, plus specif
 
 Like in Python and mathematics, comparison operators can be chained like `1 < 2 < 3`; we explain how this works later. We also have `min`, `max`, and the three-valued comparison operator `<=>` and its reverse `>=<`.
 
-End-of-line comments: `#`. Range comments: `#( ... )`. Those count parentheses so can be nested.
+End-of-line comments: `#` (not immediately followed by `(`). Range comments: `#( ... )`. Those count parentheses so can be nested.
 
 Strings: `"` or `'`. (What will we use the backtick for one day, I wonder.) Also like in Python, we don't have a separate character type; iterating over a string just gives single-character strings.
 

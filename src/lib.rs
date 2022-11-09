@@ -1637,7 +1637,7 @@ impl Seq {
 pub enum NErr {
     Throw(
         Obj,
-        Vec<(String, CodeLoc, Option<(Rc<String>, Rc<String>)>)>,
+        Vec<(String, CodeLoc, CodeLoc, Option<(Rc<String>, Rc<String>)>)>,
     ),
     // Optional (source file, source code), added when we pass through an eval boundary roughly
     // speaking. Is this bonkers? Idk.
@@ -1646,17 +1646,9 @@ pub enum NErr {
     Continue,
 }
 
-fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: Option<&CodeLoc>) {
+fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &CodeLoc) {
     use std::fmt::Write;
 
-    let end: CodeLoc = match end {
-        Some(k) => k.clone(),
-        None => CodeLoc {
-            line: start.line,
-            col: start.col + 1,
-            index: start.index + 1,
-        },
-    };
     let mut line = 1;
     let mut ended = false;
     for (i, c) in src.chars().enumerate() {
@@ -1669,12 +1661,12 @@ fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: Option<
             if i == start.index {
                 write!(out, "\x1b[1;31m").ok();
             }
-            if line >= start.line && line <= end.line {
-                write!(out, "{}", c).ok();
-            }
             if i == end.index {
                 write!(out, "\x1b[0m").ok();
                 ended = true;
+            }
+            if line >= start.line && line <= end.line {
+                write!(out, "{}", c).ok();
             }
         }
     }
@@ -1688,8 +1680,8 @@ impl NErr {
         match self {
             NErr::Throw(_, trace) => {
                 for tup in trace {
-                    if tup.2.is_none() {
-                        tup.2 = Some((src_file.clone(), src.clone()));
+                    if tup.3.is_none() {
+                        tup.3 = Some((src_file.clone(), src.clone()));
                     }
                 }
             }
@@ -1707,25 +1699,26 @@ impl NErr {
                 // since we are already error handling let's just ignore errors.
                 writeln!(out, "{}", e).ok();
                 match trace.first() {
-                    Some((_, loc, tsrc)) => {
+                    Some((_, start, end, tsrc)) => {
                         let real_src_code = match tsrc {
                             Some((_, f)) => f,
                             None => src,
                         };
-                        write_source_error(&mut out, real_src_code, loc, None)
+                        write_source_error(&mut out, real_src_code, start, end);
                     }
                     None => {}
                 }
-                for (thing, loc, tsrc) in trace {
-                    match tsrc {
-                        Some((src_file, _)) => write!(
-                            out,
-                            "\n    at {} ({}:{}:{})",
-                            thing, src_file, loc.line, loc.col
-                        )
-                        .ok(),
-                        None => write!(out, "\n    at {} ({}:{})", thing, loc.line, loc.col).ok(),
-                    };
+                for (thing, start, end, tsrc) in trace {
+                    write!(out, "\n    at {} (", thing).ok();
+                    if let Some((src_file, _)) = tsrc {
+                        write!(out, "{}:", src_file).ok();
+                    }
+                    if start.line == end.line {
+                        write!(out, "{}:{}-{}", start.line, start.col, end.col).ok();
+                    } else {
+                        write!(out, "{}:{}-{}:{}", start.line, start.col, end.line, end.col).ok();
+                    }
+                    write!(out, ")").ok();
                 }
                 out
             }
@@ -1756,10 +1749,10 @@ impl NErr {
     fn syntax_error(s: String) -> NErr {
         NErr::throw(format!("syntax error: {}", s))
     }
-    fn syntax_error_loc(s: String, msg: String, loc: CodeLoc) -> NErr {
+    fn syntax_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
         NErr::Throw(
             Obj::from(format!("syntax error: {}", s)),
-            vec![(msg, loc, None)],
+            vec![(msg, start, end, None)],
         )
     }
     fn type_error(s: String) -> NErr {
@@ -1816,10 +1809,10 @@ impl NErr {
     }
 }
 
-fn add_trace<T>(res: NRes<T>, thing: String, loc: CodeLoc) -> NRes<T> {
+fn add_trace<T>(res: NRes<T>, thing: String, start: CodeLoc, end: CodeLoc) -> NRes<T> {
     match res {
         Err(NErr::Throw(e, mut trace)) => {
-            trace.push((thing, loc, None));
+            trace.push((thing, start, end, None));
             Err(NErr::Throw(e, trace))
         }
         e => e,
@@ -1843,14 +1836,18 @@ impl fmt::Display for NErr {
         match self {
             NErr::Throw(e, trace) => {
                 write!(formatter, "{}", e)?;
-                for (thing, loc, src) in trace {
+                for (thing, start, end, src) in trace {
                     match src {
                         Some(srcp) => write!(
                             formatter,
-                            " at {} ({}:{}:{})",
-                            thing, srcp.0, loc.line, loc.col
+                            " at {} ({}:{}:{}-{}:{})",
+                            thing, srcp.0, start.line, start.col, end.line, end.col
                         )?,
-                        None => write!(formatter, " at {} ({}:{})", thing, loc.line, loc.col)?,
+                        None => write!(
+                            formatter,
+                            " at {} ({}:{}-{}:{})",
+                            thing, start.line, start.col, end.line, end.col
+                        )?,
                     }
                 }
                 Ok(())
@@ -1895,7 +1892,7 @@ pub enum Func {
     ),
     ChainSection(
         Option<Box<Obj>>,
-        Vec<(CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
+        Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
     ),
     CallSection(Option<Box<Obj>>, Vec<Option<Obj>>),
     Type(ObjType), // includes Struct now
@@ -1993,14 +1990,14 @@ impl Func {
                         None => return Err(NErr::argument_error("chain section: too few arguments".to_string())),
                     }
                 });
-                for (loc, op, prec, opd) in ops {
+                for (start, end, op, prec, opd) in ops {
                     ce.give(env, *op.clone(), *prec, match opd {
                         Some(x) => *x.clone(),
                         None => match it.next() {
                             Some(e) => e,
                             None => return Err(NErr::argument_error("chain section: too few arguments".to_string())),
                         }
-                    }, *loc)?;
+                    }, *start, *end)?;
                 }
                 match it.next() {
                     None => ce.finish(env),
@@ -2138,7 +2135,7 @@ impl Display for Func {
             ),
             Func::ChainSection(xs, ys) => {
                 write!(formatter, "ChainSection({}", FmtSectionBoxedSlot(xs))?;
-                for (_loc, func, _prec, operand) in ys {
+                for (_start, _end, func, _prec, operand) in ys {
                     write!(formatter, " {} {}", func, FmtSectionBoxedSlot(operand))?;
                 }
                 write!(formatter, ")")
@@ -3693,10 +3690,16 @@ impl Closure {
             ),
             "argument receiving".to_string(),
             self.body.start,
+            self.body.end,
         )?;
         match evaluate(&ee, &self.body) {
             Err(NErr::Return(k)) => Ok(k),
-            x => add_trace(x, "closure call".to_string(), self.body.start),
+            x => add_trace(
+                x,
+                "closure call".to_string(),
+                self.body.start,
+                self.body.end,
+            ),
         }
     }
 }
@@ -3981,7 +3984,6 @@ impl Display for EvaluatedLvalue {
 }
 
 fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
-    let loc = expr.start;
     match expr.expr {
         Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
@@ -3993,7 +3995,8 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
             }
             ee => Err(ParseError::expr(
                 format!("can't to_lvalue index of nonident {:?}", ee),
-                loc,
+                expr.start,
+                expr.end,
             )),
         },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
@@ -4023,17 +4026,22 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
         Expr::Literally(e) => Ok(Lvalue::Literally(e)),
-        _ => Err(ParseError::expr(format!("can't to_lvalue"), expr.start)),
+        _ => Err(ParseError::expr(
+            format!("can't to_lvalue"),
+            expr.start,
+            expr.end,
+        )),
     }
 }
 
 fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
-    let loc = expr.start;
+    let LocExpr { start, end, .. } = expr;
     let lvalue = to_lvalue(expr)?;
     if lvalue.any_literals() {
         Err(ParseError::expr(
             format!("lvalue can't have any literals"),
-            loc,
+            start,
+            end,
         ))
     } else {
         Ok(lvalue)
@@ -4568,7 +4576,7 @@ fn err_add_context(
 #[derive(Debug)]
 pub enum ParseErrorLoc {
     Token(LocToken),
-    Expr(CodeLoc),
+    Expr(CodeLoc, CodeLoc),
     Eof,
 }
 #[derive(Debug)]
@@ -4577,8 +4585,8 @@ impl ParseError {
     fn token(msg: String, token: LocToken) -> Self {
         ParseError(msg, ParseErrorLoc::Token(token), Vec::new())
     }
-    fn expr(msg: String, loc: CodeLoc) -> Self {
-        ParseError(msg, ParseErrorLoc::Expr(loc), Vec::new())
+    fn expr(msg: String, start: CodeLoc, end: CodeLoc) -> Self {
+        ParseError(msg, ParseErrorLoc::Expr(start, end), Vec::new())
     }
     fn eof(msg: String) -> Self {
         ParseError(msg, ParseErrorLoc::Eof, Vec::new())
@@ -4593,7 +4601,7 @@ impl ParseError {
         writeln!(out, "{}", msg).ok();
         match loc {
             ParseErrorLoc::Token(tok) => {
-                write_source_error(&mut out, src, &tok.start, Some(&tok.end));
+                write_source_error(&mut out, src, &tok.start, &tok.end);
                 write!(
                     out,
                     "\n    {:?} (at {}:{}-{})",
@@ -4601,9 +4609,14 @@ impl ParseError {
                 )
                 .ok();
             }
-            ParseErrorLoc::Expr(loc) => {
-                write_source_error(&mut out, src, &loc, None);
-                write!(out, "\n    (expr starting {}:{})", loc.line, loc.col).ok();
+            ParseErrorLoc::Expr(start, end) => {
+                write_source_error(&mut out, src, &start, &end);
+                write!(
+                    out,
+                    "\n    (expr {}:{}-{}:{})",
+                    start.line, start.col, end.line, end.col
+                )
+                .ok();
             }
             ParseErrorLoc::Eof => {
                 write!(out, "\n    at EOF").ok();
@@ -4641,7 +4654,11 @@ impl Parser {
 
     fn try_consume(&mut self, desired: &Token) -> Option<CodeLoc> {
         match self.peek_loc_token() {
-            Some(LocToken { token, start: _, end }) => {
+            Some(LocToken {
+                token,
+                start: _,
+                end,
+            }) => {
                 let end = *end;
                 if token == desired {
                     self.advance();
@@ -5677,7 +5694,11 @@ impl Parser {
         Ok(if ags.len() == 1 && !ending_semicolon {
             *ags.remove(0)
         } else {
-            LocExpr { expr: Expr::Sequence(ags, ending_semicolon), start, end }
+            LocExpr {
+                expr: Expr::Sequence(ags, ending_semicolon),
+                start,
+                end,
+            }
         })
     }
 
@@ -6720,7 +6741,7 @@ fn default_precedence(name: &str) -> f64 {
 
 struct ChainEvaluator {
     operands: Vec<Vec<Obj>>,
-    operators: Vec<(Func, Precedence, CodeLoc)>,
+    operators: Vec<(Func, Precedence, CodeLoc, CodeLoc)>,
 }
 
 impl ChainEvaluator {
@@ -6731,21 +6752,22 @@ impl ChainEvaluator {
         }
     }
 
-    fn run_top_popped(&mut self, env: &REnv, op: Func, loc: CodeLoc) -> NRes<()> {
+    fn run_top_popped(&mut self, env: &REnv, op: Func, start: CodeLoc, end: CodeLoc) -> NRes<()> {
         let mut rhs = self.operands.pop().expect("sync");
         let mut lhs = self.operands.pop().expect("sync");
         lhs.append(&mut rhs); // concats and drains rhs of elements
         self.operands.push(vec![add_trace(
             op.run(env, lhs),
             format!("chain {}", op),
-            loc,
+            start,
+            end,
         )?]);
         Ok(())
     }
 
     fn run_top(&mut self, env: &REnv) -> NRes<()> {
-        let (op, _, loc) = self.operators.pop().expect("sync");
-        self.run_top_popped(env, op, loc)
+        let (op, _, start, end) = self.operators.pop().expect("sync");
+        self.run_top_popped(env, op, start, end)
     }
 
     fn give(
@@ -6754,27 +6776,28 @@ impl ChainEvaluator {
         operator: Func,
         precedence: Precedence,
         operand: Obj,
-        loc: CodeLoc,
+        start: CodeLoc,
+        end: CodeLoc,
     ) -> NRes<()> {
         while self
             .operators
             .last()
             .map_or(false, |t| t.1.tighter_than_when_before(&precedence))
         {
-            let (top, prec, loc) = self.operators.pop().expect("sync");
+            let (top, prec, start, end) = self.operators.pop().expect("sync");
             match top.try_chain(&operator) {
                 Some(new_op) => {
-                    self.operators.push((new_op, prec, loc));
+                    self.operators.push((new_op, prec, start, end));
                     self.operands.last_mut().expect("sync").push(operand);
                     return Ok(());
                 }
                 None => {
-                    self.run_top_popped(env, top, loc)?;
+                    self.run_top_popped(env, top, start, end)?;
                 }
             }
         }
 
-        self.operators.push((operator, precedence, loc));
+        self.operators.push((operator, precedence, start, end));
         self.operands.push(vec![operand]);
         Ok(())
     }
@@ -7625,11 +7648,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Env::try_borrow_get_var(env, s),
             format!("ident"),
             expr.start,
+            expr.end,
         ),
         Expr::Underscore => Err(NErr::syntax_error_loc(
             "Can't evaluate underscore".to_string(),
             "_".to_string(),
             expr.start,
+            expr.end,
         )),
         Expr::Index(x, i) => match (&**x, i) {
             (
@@ -7675,11 +7700,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     if let Obj::Func(b, prec) = oprr {
                         match &((**opd).expr) {
                             Expr::Underscore => {
-                                acc.push((oper.start, Box::new(b), prec, None));
+                                acc.push((oper.start, oper.end, Box::new(b), prec, None));
                             }
                             _ => {
                                 let oprd = evaluate(env, opd)?;
-                                acc.push((oper.start, Box::new(b), prec, Some(Box::new(oprd))));
+                                acc.push((
+                                    oper.start,
+                                    oper.end,
+                                    Box::new(b),
+                                    prec,
+                                    Some(Box::new(oprd)),
+                                ));
                             }
                         }
                     } else {
@@ -7696,7 +7727,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     let oprr = evaluate(env, oper)?;
                     if let Obj::Func(b, prec) = oprr {
                         let oprd = evaluate(env, opd)?;
-                        ev.give(env, b, prec, oprd, oper.start)?;
+                        ev.give(env, b, prec, oprd, oper.start, oper.end)?;
                     } else {
                         return Err(NErr::type_error(format!(
                             "Chain cannot use nonblock in operand position: {:?}",
@@ -7732,7 +7763,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Assign(every, pat, rhs) => {
-            let p = add_trace(eval_lvalue(env, pat), format!("assign lvalue"), expr.start)?;
+            let p = add_trace(
+                eval_lvalue(env, pat),
+                format!("assign lvalue"),
+                expr.start,
+                expr.end,
+            )?;
             let res = match &**rhs {
                 LocExpr {
                     expr: Expr::CommaSeq(xs),
@@ -7746,7 +7782,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             } else {
                 assign(&env, &p, None, res, AssignMode::Assign)
             };
-            add_trace(ret, format!("assign"), expr.start)?;
+            add_trace(ret, format!("assign"), expr.start, expr.end)?;
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
@@ -7856,6 +7892,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()])),
                             format!("op({})-assign", ff),
                             expr.start,
+                            expr.end,
                         )?;
                         Ok(Obj::Null)
                     }
@@ -7884,12 +7921,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             assign(&env, &p, None, Obj::Null, AssignMode::IgnoreExistingType),
                             format!("null-assign"),
                             expr.start,
+                            expr.end,
                         )?;
                         let fres = ff.run(env, vec![pv, res])?;
                         add_trace(
                             assign(&env, &p, None, fres, AssignMode::Assign),
                             format!("op({})-assign", ff),
                             expr.start,
+                            expr.end,
                         )?;
                         Ok(Obj::Null)
                     }
@@ -7950,7 +7989,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 // no section
                 (Some(f), Ok(v)) => {
                     let fs = format!("call to {}", f);
-                    add_trace(call_or_part_apply(env, f, v), fs, expr.start)
+                    add_trace(call_or_part_apply(env, f, v), fs, expr.start, expr.end)
                 }
 
                 // some section
@@ -7971,11 +8010,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
             "seq".to_string(),
             expr.start,
+            expr.end,
         )),
         Expr::Splat(_) => Err(NErr::syntax_error_loc(
             "Splats only allowed on an assignment-related place or in call or list (?)".to_string(),
             "splat".to_string(),
             expr.start,
+            expr.end,
         )),
         Expr::List(xs) => {
             let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
@@ -8055,12 +8096,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     evaluate(env, x),
                     format!(";-sequence({}/{})", i + 1, xs.len()),
                     expr.start,
+                    expr.end,
                 )?;
             }
             let ret = add_trace(
                 evaluate(env, xs.last().unwrap()),
                 format!(";-sequence({}/{})", xs.len(), xs.len()),
                 expr.start,
+                expr.end,
             )?;
             if *ending_semicolon {
                 Ok(Obj::Null)
@@ -8069,12 +8112,27 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::If(cond, if_body, else_body) => {
-            let cr = add_trace(evaluate(env, cond), "if-cond".to_string(), expr.start)?;
+            let cr = add_trace(
+                evaluate(env, cond),
+                "if-cond".to_string(),
+                expr.start,
+                expr.end,
+            )?;
             if cr.truthy() {
-                add_trace(evaluate(env, if_body), "if-branch".to_string(), expr.start)
+                add_trace(
+                    evaluate(env, if_body),
+                    "if-branch".to_string(),
+                    expr.start,
+                    expr.end,
+                )
             } else {
                 match else_body {
-                    Some(b) => add_trace(evaluate(env, b), "else-branch".to_string(), expr.start),
+                    Some(b) => add_trace(
+                        evaluate(env, b),
+                        "else-branch".to_string(),
+                        expr.start,
+                        expr.end,
+                    ),
                     None => Ok(Obj::Null),
                 }
             }
@@ -8098,16 +8156,29 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 },
                 "for loop".to_string(),
                 expr.start,
+                expr.end,
             )
         }
         Expr::While(cond, body) => {
             // FIXME :(
             loop {
                 let ee = Env::with_parent(env);
-                if !(add_trace(evaluate(&ee, cond), "while-cond".to_string(), expr.start)?.truthy()) {
+                if !(add_trace(
+                    evaluate(&ee, cond),
+                    "while-cond".to_string(),
+                    expr.start,
+                    expr.end,
+                )?
+                .truthy())
+                {
                     return Ok(Obj::Null);
                 }
-                match add_trace(evaluate(&ee, body), "while-body".to_string(), expr.start) {
+                match add_trace(
+                    evaluate(&ee, body),
+                    "while-body".to_string(),
+                    expr.start,
+                    expr.end,
+                ) {
                     Ok(_) => (),
                     Err(NErr::Break(e)) => return Ok(e),
                     Err(NErr::Continue) => continue,
@@ -8116,7 +8187,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         }
         Expr::Switch(scrutinee, arms) => {
-            let s = add_trace(evaluate(env, scrutinee), "switchee".to_string(), expr.start)?;
+            let s = add_trace(
+                evaluate(env, scrutinee),
+                "switchee".to_string(),
+                expr.start,
+                expr.end,
+            )?;
             for (pat, body) in arms {
                 let ee = Env::with_parent(env);
                 let p = eval_lvalue(&ee, pat)?;
@@ -8134,7 +8210,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match ret {
                     Ok(()) => {
                         std::mem::drop(s);
-                        return add_trace(evaluate(&ee, body), "switch-case".to_string(), expr.start);
+                        return add_trace(
+                            evaluate(&ee, body),
+                            "switch-case".to_string(),
+                            expr.start,
+                            expr.end,
+                        );
                     }
                     Err(_) => continue,
                 };
@@ -8169,7 +8250,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Throw(body) => Err(NErr::Throw(
             evaluate(&env, body)?,
-            vec![("throw".to_string(), expr.start, None)],
+            vec![("throw".to_string(), expr.start, expr.end, None)],
         )),
         Expr::Lambda(params, body) => Ok(Obj::Func(
             Func::Closure(Closure {
@@ -8219,6 +8300,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             "'literally' can only be in lvalues / patterns".to_string(),
             "literally".to_string(),
             expr.start,
+            expr.end,
         )),
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
