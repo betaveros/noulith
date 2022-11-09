@@ -3755,6 +3755,7 @@ pub enum Token {
     Every,
     Struct,
     Freeze,
+    Literally,
     Underscore,
 
     // strip me before parsing
@@ -3830,6 +3831,8 @@ pub enum Expr {
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
     Struct(Rc<String>, Vec<Rc<String>>),
     Freeze(Box<LocExpr>),
+    // lvalues only
+    Literally(Box<LocExpr>),
 
     // these get cloned in particular
     Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
@@ -3850,6 +3853,7 @@ pub enum Lvalue {
     Or(Box<Lvalue>, Box<Lvalue>),
     Destructure(Box<LocExpr>, Vec<Box<Lvalue>>),
     ChainDestructure(Box<Lvalue>, Vec<(Box<LocExpr>, Box<Lvalue>)>),
+    Literally(Box<LocExpr>),
 }
 
 impl Lvalue {
@@ -3866,6 +3870,7 @@ impl Lvalue {
             Lvalue::ChainDestructure(lv, vs) => {
                 lv.any_literals() || vs.iter().any(|e| e.1.any_literals())
             }
+            Lvalue::Literally(_) => true,
         }
     }
 
@@ -3903,6 +3908,7 @@ impl Lvalue {
                 }
                 s
             }
+            Lvalue::Literally(_) => HashSet::new(),
         }
     }
 }
@@ -4012,6 +4018,7 @@ fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .map(|(e, v)| Ok((e, Box::new(to_lvalue(*v)?))))
                 .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
+        Expr::Literally(e) => Ok(Lvalue::Literally(e)),
         _ => Err(ParseError::expr(format!("can't to_lvalue"), expr.0)),
     }
 }
@@ -4472,6 +4479,7 @@ impl<'a> Lexer<'a> {
                                 "every" => Token::Every,
                                 "struct" => Token::Struct,
                                 "freeze" => Token::Freeze,
+                                "literally" => Token::Literally,
                                 "_" => Token::Underscore,
                                 _ => Token::Ident(acc),
                             })
@@ -4786,6 +4794,13 @@ impl Parser {
                             Expr::Return(Some(Box::new(self.single("return")?))),
                         ))
                     }
+                }
+                Token::Literally => {
+                    self.advance();
+                    Ok(LocExpr(
+                        loc,
+                        Expr::Literally(Box::new(self.single("literally")?)),
+                    ))
                 }
                 Token::Freeze => {
                     self.advance();
@@ -6701,6 +6716,7 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
             }
             ce.finish()
         }
+        Lvalue::Literally(e) => Ok(EvaluatedLvalue::Literal(evaluate(env, e)?)),
     }
 }
 
@@ -7912,6 +7928,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             let mut bound = HashSet::new();
             evaluate(env, &freeze(&mut bound, env, expr)?)
         }
+        Expr::Literally(_) => Err(NErr::syntax_error_loc(
+            "'literally' can only be in lvalues / patterns".to_string(),
+            "literally".to_string(),
+            expr.0,
+        )),
         Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
         Expr::Break(None) => Err(NErr::Break(Obj::Null)),
         Expr::Continue => Err(NErr::Continue),
@@ -8019,6 +8040,7 @@ fn freeze_lvalue(
                 })
                 .collect::<NRes<Vec<(Box<LocExpr>, Box<Lvalue>)>>>()?,
         )),
+        Lvalue::Literally(e) => Ok(Lvalue::Literally(box_freeze(bound, env, e)?)),
     }
 }
 
@@ -8222,6 +8244,7 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                 ))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(bound, env, e)?)),
+            Expr::Literally(e) => Ok(Expr::Literally(box_freeze(bound, env, e)?)),
 
             Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(bound, env, e)?)),
             Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(bound, env, e)?)),

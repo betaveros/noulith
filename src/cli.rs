@@ -71,6 +71,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Every
                 | Token::Struct
                 | Token::Freeze
+                | Token::Literally
                 | Token::Underscore => Some("\x1b[1;34m"),
                 _ => None,
             };
