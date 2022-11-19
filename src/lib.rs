@@ -28,12 +28,17 @@ use std::time::SystemTime;
 
 use base64;
 use rand;
+use rand::RngCore;
 
 #[cfg(feature = "request")]
 use reqwest;
 
 #[cfg(feature = "crypto")]
 use aes;
+#[cfg(feature = "crypto")]
+use aes_gcm;
+#[cfg(feature = "crypto")]
+use aes_gcm::aead::Aead;
 #[cfg(feature = "crypto")]
 use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
 #[cfg(feature = "crypto")]
@@ -1299,7 +1304,7 @@ fn write_bytes(s: &[u8], formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags)
                 if flags.budget == 0 {
                     // TODO this has the "sometimes longer than what's omitted"
                     // property
-                    write!(formatter, "..., ")?;
+                    write!(formatter, "...,")?;
                     break;
                 }
                 write!(formatter, "{},", x)?;
@@ -5795,6 +5800,25 @@ pub struct Env {
     pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
 }
+// simple, linear-time, and at least finds when one is a subsequence of the other.
+fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
+    let mut ai = 0;
+    let mut bi = 0;
+    let mut dist = 0;
+    while ai < a.len() && bi < b.len() {
+        if a[ai] == b[bi] {
+            ai += 1;
+            bi += 1;
+        } else if a.len() - ai >= b.len() - bi {
+            dist += 1;
+            ai += 1;
+        } else {
+            dist += 1;
+            bi += 1;
+        }
+    }
+    dist + a.len() - ai + b.len() - bi
+}
 impl Env {
     pub fn new(top: TopEnv) -> Env {
         Env {
@@ -5838,11 +5862,7 @@ impl Env {
                         if let Some(k) = r
                             .vars
                             .keys()
-                            .filter(|k| {
-                                // TODO: better similarity comparison lol
-                                k.contains(s) || s.contains(&**k)
-                            })
-                            .min_by_key(|k| k.len().abs_diff(s.len()))
+                            .min_by_key(|k| fast_edit_distance(k.as_bytes(), s.as_bytes()))
                         {
                             msg += &format!(" Did you mean: \"{}\"?", k);
                         }
@@ -11232,6 +11252,18 @@ pub fn initialize(env: &mut Env) {
             Few::Many(a) => Err(NErr::argument_error_args(&a)),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "random_bytes".to_string(),
+        body: |a| match a {
+            Obj::Num(a) => {
+                let sz = to_usize_ok(&a)?;
+                let mut bytes = vec![0; sz];
+                rand::thread_rng().fill_bytes(&mut bytes);
+                Ok(Obj::Seq(Seq::Bytes(Rc::new(bytes))))
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "random_range".to_string(),
         body: |a, b| match (a, b) {
@@ -11392,6 +11424,56 @@ pub fn initialize(env: &mut Env) {
                     }
                 }
                 (a, b) => Err(NErr::argument_error_2(&a, &b)),
+            },
+        });
+        env.insert_builtin(BasicBuiltin {
+            name: "aes256_gcm_encrypt".to_string(),
+            body: |_env, args| match few3(args) {
+                Few3::Three(
+                    Obj::Seq(Seq::Bytes(k)),
+                    Obj::Seq(Seq::Bytes(n)),
+                    Obj::Seq(Seq::Bytes(m)),
+                ) => {
+                    if k.len() == 32 && n.len() == 12 {
+                        let cipher =
+                            aes_gcm::Aes256Gcm::new(generic_array::GenericArray::from_slice(&k));
+                        let nonce = aes_gcm::Nonce::from_slice(&n);
+                        match cipher.encrypt(nonce, &**m) {
+                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Rc::new(ct)))),
+                            Err(e) => Err(NErr::io_error(format!("{}", e))),
+                        }
+                    } else {
+                        Err(NErr::value_error(
+                            "aes256_gcm_encrypt: bad sizes".to_string(),
+                        ))
+                    }
+                }
+                _ => Err(NErr::argument_error(format!("Bad args for aes-gcm"))),
+            },
+        });
+        env.insert_builtin(BasicBuiltin {
+            name: "aes256_gcm_decrypt".to_string(),
+            body: |_env, args| match few3(args) {
+                Few3::Three(
+                    Obj::Seq(Seq::Bytes(k)),
+                    Obj::Seq(Seq::Bytes(n)),
+                    Obj::Seq(Seq::Bytes(m)),
+                ) => {
+                    if k.len() == 32 && n.len() == 12 {
+                        let cipher =
+                            aes_gcm::Aes256Gcm::new(generic_array::GenericArray::from_slice(&k));
+                        let nonce = aes_gcm::Nonce::from_slice(&n);
+                        match cipher.decrypt(nonce, &**m) {
+                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Rc::new(ct)))),
+                            Err(e) => Err(NErr::io_error(format!("{}", e))),
+                        }
+                    } else {
+                        Err(NErr::value_error(
+                            "aes256_gcm_encrypt: bad sizes".to_string(),
+                        ))
+                    }
+                }
+                _ => Err(NErr::argument_error(format!("Bad args for aes-gcm"))),
             },
         });
         env.insert_builtin(OneArgBuiltin {
