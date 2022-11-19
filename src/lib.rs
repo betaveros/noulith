@@ -11131,9 +11131,47 @@ pub fn initialize(env: &mut Env) {
             a => Err(NErr::argument_error_1(&a)),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "read_file_bytes".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => match fs::read(&*s) {
+                Ok(c) => Ok(Obj::Seq(Seq::Bytes(Rc::new(c)))),
+                Err(e) => Err(NErr::io_error(format!("{}", e))),
+            },
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "read_file_bytes?".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => match fs::File::open(&*s) {
+                Ok(mut f) => {
+                    let mut contents = Vec::new();
+                    match f.read(&mut contents) {
+                        Ok(_) => Ok(Obj::Seq(Seq::Bytes(Rc::new(contents)))),
+                        Err(e) => Err(NErr::io_error(format!("{}", e))),
+                    }
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(Obj::Null)
+                    } else {
+                        Err(NErr::io_error(format!("{}", e)))
+                    }
+                }
+            },
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "write_file".to_string(),
         body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Bytes(b)), Obj::Seq(Seq::String(f))) => {
+                match fs::write(f.as_str(), &**b) {
+                    Ok(()) => Ok(Obj::Null),
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
                 match fs::write(f.as_str(), s.as_bytes()) {
                     Ok(()) => Ok(Obj::Null),
