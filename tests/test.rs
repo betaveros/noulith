@@ -28,6 +28,15 @@ fn quick_operators() {
 }
 
 #[test]
+fn splat_call() {
+    assert_eq!(simple_eval("f := \\...x -> len(x); f()"), i(0));
+    assert_eq!(simple_eval("f := \\...x -> len(x); f(1)"), i(1));
+    assert_eq!(simple_eval("f := \\...x -> len(x); f(1, 2)"), i(2));
+    assert_eq!(simple_eval("f := \\...x -> len(x); f(...[1, 2])"), i(2));
+    assert_eq!(simple_eval("f := \\...x -> len(x); f(1, ...[2])"), i(2));
+}
+
+#[test]
 fn modifications() {
     assert_eq!(simple_eval("x := 2; x += 3; x"), i(5));
     assert_eq!(simple_eval("x := 2; x max= 3; x"), i(3));

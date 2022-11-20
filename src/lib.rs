@@ -36,11 +36,11 @@ use reqwest;
 #[cfg(feature = "crypto")]
 use aes;
 #[cfg(feature = "crypto")]
+use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
+#[cfg(feature = "crypto")]
 use aes_gcm;
 #[cfg(feature = "crypto")]
 use aes_gcm::aead::Aead;
-#[cfg(feature = "crypto")]
-use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
 #[cfg(feature = "crypto")]
 use blake3;
 #[cfg(feature = "crypto")]
@@ -1889,8 +1889,8 @@ pub enum Func {
     Fanout(Vec<Func>),
     // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
     Flip(Box<Func>),
-    // each None is a slot for an argument
-    ListSection(Vec<Option<Obj>>),
+    // each Err is a slot for an argument, true if splat
+    ListSection(Vec<Result<Obj, bool>>),
     IndexSection(Option<Box<Obj>>, Option<Box<Obj>>),
     // outer None is nothing; Some(None) is a slot
     SliceSection(
@@ -1902,7 +1902,7 @@ pub enum Func {
         Option<Box<Obj>>,
         Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
     ),
-    CallSection(Option<Box<Obj>>, Vec<Option<Obj>>),
+    CallSection(Option<Box<Obj>>, Vec<Result<Obj, bool>>),
     Type(ObjType), // includes Struct now
     StructField(Struct, usize),
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
@@ -1977,17 +1977,7 @@ impl Func {
                 _ => Err(NErr::argument_error("Flipped function can only be called on two arguments".to_string()))
             }
             Func::ListSection(x) => {
-                let mut it = args.into_iter();
-                match x.iter().map(|e| match e {
-                    Some(e) => Some(e.clone()),
-                    None => it.next()
-                }).collect() {
-                    None => Err(NErr::argument_error("list section: too few arguments".to_string())),
-                    Some(v) => match it.next() {
-                        None => Ok(Obj::list(v)),
-                        Some(_) => Err(NErr::argument_error("list section: too many arguments".to_string())),
-                    }
-                }
+                Ok(Obj::list(apply_section(x.clone(), args.into_iter())?))
             }
             Func::ChainSection(seed, ops) => {
                 let mut it = args.into_iter();
@@ -2021,14 +2011,8 @@ impl Func {
                         None => return Err(NErr::argument_error("call section: too few arguments".to_string())),
                     }
                 };
-                let real_args = sec_args.into_iter().map(|e| match e {
-                    Some(x) => Some(x.clone()),
-                    None => it.next(),
-                }).collect::<Option<Vec<Obj>>>().ok_or(NErr::argument_error("call section: too few arguments".to_string()))?;
-                match it.next() {
-                    None => call(env, callee, real_args),
-                    Some(_) => Err(NErr::argument_error("call section: too many arguments".to_string())),
-                }
+                let real_args = apply_section(sec_args.clone(), it)?;
+                call(env, callee, real_args)
             }
             Func::IndexSection(x, i) => {
                 let mut it = args.into_iter();
@@ -7385,6 +7369,31 @@ fn call_or_part_apply(env: &REnv, f: Obj, args: Vec<Obj>) -> NRes<Obj> {
     }
 }
 
+fn apply_section(
+    sec_args: Vec<Result<Obj, bool>>,
+    mut arg_iter: impl Iterator<Item = Obj>,
+) -> NRes<Vec<Obj>> {
+    let mut out = Vec::new();
+    for s in sec_args {
+        match s {
+            Ok(e) => out.push(e),
+            Err(is_splat) => match arg_iter.next() {
+                Some(mut a) => {
+                    if is_splat {
+                        out.extend(mut_obj_into_iter(&mut a, "section splat")?)
+                    } else {
+                        out.push(a)
+                    }
+                }
+                None => Err(NErr::argument_error(
+                    "section: too many arguments".to_string(),
+                ))?,
+            },
+        }
+    }
+    Ok(out)
+}
+
 fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
     match expr {
         EvaluatedLvalue::Underscore => Err(NErr::syntax_error(
@@ -7652,6 +7661,62 @@ fn parse_format_string(
         ));
     }
     Ok(ret)
+}
+
+fn splat_section_eval(
+    env: &Rc<RefCell<Env>>,
+    args: &Vec<Box<LocExpr>>,
+) -> NRes<Result<Vec<Obj>, Vec<Result<Obj, bool>>>> {
+    // check for underscores indicating a call section
+    // splats are expanded, underscores are Err(false), splatted underscores are Err(true)
+    let mut acc: Result<Vec<Obj>, Vec<Result<Obj, bool>>> = Ok(Vec::new());
+    for x in args {
+        let curx = match &**x {
+            LocExpr {
+                expr: Expr::Splat(e),
+                ..
+            } => match &**e {
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                } => (true, None),
+                e => (true, Some(evaluate(env, &e)?)),
+            },
+            LocExpr {
+                expr: Expr::Underscore,
+                ..
+            } => (false, None),
+            e => (false, Some(evaluate(env, &e)?)),
+        };
+        acc = match (curx, acc) {
+            ((is_splat, None), Ok(v)) => {
+                let mut r = v.into_iter().map(Ok).collect::<Vec<Result<Obj, bool>>>();
+                r.push(Err(is_splat));
+                Err(r)
+            }
+            ((false, Some(e)), Ok(mut v)) => {
+                v.push(e);
+                Ok(v)
+            }
+            ((true, Some(mut e)), Ok(mut v)) => {
+                v.extend(mut_obj_into_iter(&mut e, "call splat")?);
+                Ok(v)
+            }
+            ((false, Some(e)), Err(mut v)) => {
+                v.push(Ok(e));
+                Err(v)
+            }
+            ((true, Some(mut e)), Err(mut v)) => {
+                v.extend(mut_obj_into_iter(&mut e, "call splat")?.map(Ok));
+                Err(v)
+            }
+            ((is_splat, None), Err(mut v)) => {
+                v.push(Err(is_splat));
+                Err(v)
+            }
+        }
+    }
+    Ok(acc)
 }
 
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
@@ -7982,42 +8047,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 f => Some(evaluate(env, f)?),
             };
             // let a = eval_seq(env, args)?;
-            //
-            // check for underscores indicating a call section
-            let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
-            for x in args {
-                acc = match (&**x, acc) {
-                    (
-                        LocExpr {
-                            expr: Expr::Underscore,
-                            ..
-                        },
-                        Ok(v),
-                    ) => {
-                        let mut r = v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>();
-                        r.push(None);
-                        Err(r)
-                    }
-                    (
-                        LocExpr {
-                            expr: Expr::Underscore,
-                            ..
-                        },
-                        Err(mut a),
-                    ) => {
-                        a.push(None);
-                        Err(a)
-                    }
-                    (e, Ok(mut v)) => {
-                        v.push(evaluate(env, &e)?);
-                        Ok(v)
-                    }
-                    (e, Err(mut a)) => {
-                        a.push(Some(evaluate(env, &e)?));
-                        Err(a)
-                    }
-                }
-            }
+            let acc = splat_section_eval(env, args)?;
 
             match (fr, acc) {
                 // no section
@@ -8030,7 +8060,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 (None, Ok(v)) => Ok(Obj::Func(
                     Func::CallSection(
                         None,
-                        v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>(),
+                        v.into_iter().map(Ok).collect::<Vec<Result<Obj, bool>>>(),
                     ),
                     Precedence::zero(),
                 )),
@@ -8052,46 +8082,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             expr.start,
             expr.end,
         )),
-        Expr::List(xs) => {
-            let mut acc: Result<Vec<Obj>, Vec<Option<Obj>>> = Ok(Vec::new());
-            for x in xs {
-                acc = match (&**x, acc) {
-                    (
-                        LocExpr {
-                            expr: Expr::Underscore,
-                            ..
-                        },
-                        Ok(v),
-                    ) => {
-                        let mut r = v.into_iter().map(|x| Some(x)).collect::<Vec<Option<Obj>>>();
-                        r.push(None);
-                        Err(r)
-                    }
-                    (
-                        LocExpr {
-                            expr: Expr::Underscore,
-                            ..
-                        },
-                        Err(mut a),
-                    ) => {
-                        a.push(None);
-                        Err(a)
-                    }
-                    (e, Ok(mut v)) => {
-                        v.push(evaluate(env, &e)?);
-                        Ok(v)
-                    }
-                    (e, Err(mut a)) => {
-                        a.push(Some(evaluate(env, &e)?));
-                        Err(a)
-                    }
-                }
-            }
-            match acc {
-                Ok(v) => Ok(Obj::list(v)),
-                Err(e) => Ok(Obj::Func(Func::ListSection(e), Precedence::zero())),
-            }
-        }
+        Expr::List(xs) => match splat_section_eval(env, xs)? {
+            Ok(v) => Ok(Obj::list(v)),
+            Err(e) => Ok(Obj::Func(Func::ListSection(e), Precedence::zero())),
+        },
         Expr::Vector(xs) => to_obj_vector(eval_seq(env, xs)?.into_iter().map(Ok)),
         Expr::Dict(def, xs) => {
             let dv = match def {
@@ -8704,7 +8698,7 @@ impl<'a> Display for FmtSectionBoxedSlot<'a> {
     }
 }
 
-struct FmtSectionSlots<'a>(&'a [Option<Obj>]);
+struct FmtSectionSlots<'a>(&'a [Result<Obj, bool>]);
 
 impl<'a> Display for FmtSectionSlots<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -8714,7 +8708,15 @@ impl<'a> Display for FmtSectionSlots<'a> {
                 write!(formatter, ", ")?;
             }
             started = true;
-            write!(formatter, "{}", FmtSectionSlot(t))?
+            match t {
+                Err(true) => {
+                    write!(formatter, "..._")
+                }
+                Err(false) => {
+                    write!(formatter, "_")
+                }
+                Ok(e) => write!(formatter, "{}", e),
+            }?
         }
         Ok(())
     }
@@ -11219,20 +11221,28 @@ pub fn initialize(env: &mut Env) {
         name: "append_file".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Bytes(b)), Obj::Seq(Seq::String(f))) => {
-                match fs::OpenOptions::new().append(true).create(true).open(f.as_str()) {
+                match fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(f.as_str())
+                {
                     Ok(mut file) => match file.write(&**b) {
                         Ok(_size) => Ok(Obj::Null),
                         Err(e) => Err(NErr::io_error(format!("{}", e))),
-                    }
+                    },
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
-                match fs::OpenOptions::new().append(true).create(true).open(f.as_str()) {
+                match fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(f.as_str())
+                {
                     Ok(mut file) => match file.write(s.as_bytes()) {
                         Ok(_size) => Ok(Obj::Null),
                         Err(e) => Err(NErr::io_error(format!("{}", e))),
-                    }
+                    },
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
