@@ -435,6 +435,9 @@ impl Iterator for Combinations {
     type Item = Obj;
     fn next(&mut self) -> Option<Obj> {
         let v = Rc::make_mut(self.1.as_mut()?);
+        if v.len() > self.0.len() {
+            return None;
+        }
         let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
 
         let mut last = self.0.len();
@@ -4155,10 +4158,21 @@ impl<'a> Lexer<'a> {
                     Some('0') => acc.push('\0'),
                     Some(c @ ('\\' | '\'' | '\"')) => acc.push(c),
                     Some('x') => {
-                        let e = "lexing: string literal: bad hex escape";
-                        let d1 = self.next().expect(e).to_digit(16).expect(e);
-                        let d2 = self.next().expect(e).to_digit(16).expect(e);
-                        acc.push(char::from_u32(d1 * 16 + d2).unwrap())
+                        if let Some(d1) = self.next().and_then(|c| c.to_digit(16)) {
+                            if let Some(d2) = self.next().and_then(|c| c.to_digit(16)) {
+                                acc.push(char::from_u32(d1 * 16 + d2).unwrap())
+                            } else {
+                                self.emit(Token::Invalid(format!(
+                                    "lexing: string literal: bad hex escape"
+                                )));
+                                break;
+                            }
+                        } else {
+                            self.emit(Token::Invalid(format!(
+                                "lexing: string literal: bad hex escape"
+                            )));
+                            break;
+                        }
                     }
                     Some(c) => {
                         self.emit(Token::Invalid(format!(
@@ -11195,6 +11209,30 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
                 match fs::write(f.as_str(), s.as_bytes()) {
                     Ok(()) => Ok(Obj::Null),
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "append_file".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Bytes(b)), Obj::Seq(Seq::String(f))) => {
+                match fs::OpenOptions::new().append(true).create(true).open(f.as_str()) {
+                    Ok(mut file) => match file.write(&**b) {
+                        Ok(_size) => Ok(Obj::Null),
+                        Err(e) => Err(NErr::io_error(format!("{}", e))),
+                    }
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
+            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(f))) => {
+                match fs::OpenOptions::new().append(true).create(true).open(f.as_str()) {
+                    Ok(mut file) => match file.write(s.as_bytes()) {
+                        Ok(_size) => Ok(Obj::Null),
+                        Err(e) => Err(NErr::io_error(format!("{}", e))),
+                    }
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
