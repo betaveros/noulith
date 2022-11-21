@@ -7054,16 +7054,15 @@ fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
 }
 
 fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usize, usize) {
-    (
-        match lo {
-            Some(lo) => clamped_pythonic_index(xs, lo),
-            None => 0,
-        },
-        match hi {
-            Some(hi) => clamped_pythonic_index(xs, hi),
-            None => xs.len(),
-        },
-    )
+    let clo = match lo {
+        Some(lo) => clamped_pythonic_index(xs, lo),
+        None => 0,
+    };
+    let chi = match hi {
+        Some(hi) => clamped_pythonic_index(xs, hi),
+        None => xs.len(),
+    };
+    (clo, chi.max(clo))
 }
 
 fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {

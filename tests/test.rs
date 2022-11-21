@@ -135,6 +135,8 @@ fn indexing() {
     assert_eq!(simple_eval("(1 to 10)[2]"), i(3));
     assert_eq!(simple_eval("(1 to 10)[-2]"), i(9));
     assert_eq!(simple_eval("(1 to 10)[2:4] join ''"), Obj::from("34"));
+    assert_eq!(simple_eval("(1 to 10)[-4:-2] join ''"), Obj::from("78"));
+    assert_eq!(simple_eval("(1 to 10)[4:2] join ''"), Obj::from(""));
     assert_eq!(simple_eval("x := 1 to 10; x[2] = 4; x[2]"), i(4));
     assert_eq!(
         simple_eval("x := [[0] ** 10] ** 10; x[1][2] = 3; x[2][2] = 4; x[1][2] $ x[2][2]"),
