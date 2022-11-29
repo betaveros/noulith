@@ -7281,24 +7281,39 @@ fn index_or_slice(xr: Obj, ir: &EvaluatedIndexOrSlice) -> NRes<Obj> {
     }
 }
 
+// *not* pythonic wraparound; I believe usually you want to use this so that -1 and n have sentinel
+// behavior
+fn safe_index_inner<T>(xs: &[T], i: &Obj) -> Option<usize> {
+    match i {
+        Obj::Num(ii) => match ii.to_usize() {
+            Some(n) => {
+                if n < xs.len() {
+                    Some(n)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
     match (&xr, &ir) {
         (Obj::Null, _) => Ok(Obj::Null),
         (Obj::Seq(s), ii) => match s {
             Seq::String(s) => {
                 let bs = s.as_bytes();
-                match pythonic_index(bs, ii) {
-                    Ok(i) => Ok(weird_string_as_bytes_index(bs, i)),
-                    Err(_) => Ok(Obj::Null),
+                match safe_index_inner(bs, ii) {
+                    Some(i) => Ok(weird_string_as_bytes_index(bs, i)),
+                    None => Ok(Obj::Null),
                 }
             }
-            Seq::List(xx) => {
-                // Not sure about catching *every* err from pythonic_index here...
-                match pythonic_index(xx, ii) {
-                    Ok(i) => Ok(xx[i].clone()),
-                    Err(_) => Ok(Obj::Null),
-                }
-            }
+            Seq::List(xx) => match safe_index_inner(xx, ii) {
+                Some(i) => Ok(xx[i].clone()),
+                None => Ok(Obj::Null),
+            },
             Seq::Dict(xx, def) => {
                 let k = to_key(ir)?;
                 match xx.get(&k) {
@@ -7309,20 +7324,14 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                     },
                 }
             }
-            Seq::Vector(v) => {
-                // ^
-                match pythonic_index(v, ii) {
-                    Ok(i) => Ok(Obj::Num(v[i].clone())),
-                    Err(_) => Ok(Obj::Null),
-                }
-            }
-            Seq::Bytes(v) => {
-                // ^
-                match pythonic_index(v, ii) {
-                    Ok(i) => Ok(Obj::from(v[i] as usize)),
-                    Err(_) => Ok(Obj::Null),
-                }
-            }
+            Seq::Vector(v) => match safe_index_inner(v, ii) {
+                Some(i) => Ok(Obj::Num(v[i].clone())),
+                None => Ok(Obj::Null),
+            },
+            Seq::Bytes(v) => match safe_index_inner(v, ii) {
+                Some(i) => Ok(Obj::from(v[i] as usize)),
+                None => Ok(Obj::Null),
+            },
             Seq::Stream(v) => Err(NErr::type_error(format!(
                 "Can't safe index stream {:?}[{}]",
                 v,
