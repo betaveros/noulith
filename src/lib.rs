@@ -10151,6 +10151,21 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(BasicBuiltin {
+        name: "flush".to_string(),
+        body: |env, args| {
+            if args.is_empty() {
+                match try_borrow_nres(env, "flush", &format!("{}", args.len()))?
+                    .mut_top_env(|t| t.output.flush())
+                {
+                    Ok(()) => Ok(Obj::Null),
+                    Err(e) => Err(NErr::io_error(format!("flushing {}", e))),
+                }
+            } else {
+                Err(NErr::argument_error_args(&args))?
+            }
+        },
+    });
+    env.insert_builtin(BasicBuiltin {
         name: "debug".to_string(),
         body: |env, args| {
             try_borrow_nres(env, "debug", &format!("{}", args.len()))?
