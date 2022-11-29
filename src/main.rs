@@ -112,13 +112,16 @@ fn main() {
             }
             code = args.remove(0);
         } else {
-            match File::open(args.remove(0)) {
+            let filename = args.remove(0);
+            match File::open(&filename) {
                 Ok(mut file) => {
-                    file.read_to_string(&mut code)
-                        .expect("reading code file failed");
+                    match file.read_to_string(&mut code) {
+                        Ok(_) => (),
+                        Err(e) => panic!("reading code file {} failed: {}", filename, e)
+                    }
                 }
-                Err(_) => {
-                    panic!("opening code file failed");
+                Err(e) => {
+                    panic!("opening code file {} failed: {}", filename, e);
                 }
             }
         }
