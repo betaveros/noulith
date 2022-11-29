@@ -11314,6 +11314,22 @@ pub fn initialize(env: &mut Env) {
             Few::Many(a) => Err(NErr::argument_error_args(&a)),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "sleep".to_string(),
+        body: |a| match a {
+            Obj::Num(a) => {
+                if let Some(f) = a.to_f64() {
+                    if f >= 0.0f64 && f.is_finite() {
+                        // TODO: use try_from_secs_f64 when stable
+                        std::thread::sleep(std::time::Duration::from_secs_f64(f));
+                        return Ok(Obj::Null);
+                    }
+                }
+                Err(NErr::type_error(format!("can't sleep: {}", a)))
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
 
     env.insert_builtin(BasicBuiltin {
         name: "random".to_string(),
