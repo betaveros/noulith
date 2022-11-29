@@ -1,4 +1,4 @@
-use noulith::{evaluate, initialize, parse, Env, Obj, TopEnv};
+use noulith::{evaluate, initialize, parse, Env, Obj, ObjType, TopEnv};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
@@ -61,13 +61,21 @@ fn repl() {
     }
 }
 
-fn run_code(code: &str) {
+fn run_code(code: &str, args: Vec<String>) {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(BufReader::new(io::stdin())),
         output: Box::new(io::stdout()),
     });
     initialize(&mut env);
+    match env.insert(
+        "argv".to_string(),
+        ObjType::Any,
+        Obj::list(args.into_iter().map(|arg| Obj::from(arg)).collect()),
+    ) {
+        Ok(()) => (),
+        Err(e) => panic!("inserting argv failed: {}", e),
+    }
     let e = Rc::new(RefCell::new(env));
 
     match parse(&code) {
@@ -88,33 +96,32 @@ fn run_code(code: &str) {
 }
 
 fn main() {
-    match std::env::args().collect::<Vec<String>>().as_slice() {
-        [] | [_] => {
-            #[cfg(feature = "cli")]
-            cli::repl();
-            #[cfg(not(feature = "cli"))]
-            repl();
-        }
-        [_, s] => match File::open(s) {
-            Ok(mut file) => {
-                let mut code = String::new();
-                file.read_to_string(&mut code)
-                    .expect("reading code file failed");
-                run_code(&code);
+    let mut args = std::env::args().collect::<Vec<String>>();
+    if args.len() <= 1 {
+        #[cfg(feature = "cli")]
+        cli::repl();
+        #[cfg(not(feature = "cli"))]
+        repl();
+    } else {
+        args.remove(0);
+        let mut code = String::new();
+        if args[0] == "-e" {
+            args.remove(0);
+            if args.is_empty() {
+                panic!("got -e option but nothing after");
             }
-            Err(_) => {
-                panic!("opening code file failed");
-            }
-        },
-        [_, f, code] => {
-            if f == "-e" {
-                run_code(&code);
-            } else {
-                panic!("unknown argument {:?}", f);
+            code = args.remove(0);
+        } else {
+            match File::open(args.remove(0)) {
+                Ok(mut file) => {
+                    file.read_to_string(&mut code)
+                        .expect("reading code file failed");
+                }
+                Err(_) => {
+                    panic!("opening code file failed");
+                }
             }
         }
-        args => {
-            panic!("too many command-line arguments: {:?}", args);
-        }
+        run_code(&code, args);
     }
 }

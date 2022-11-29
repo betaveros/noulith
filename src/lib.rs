@@ -893,7 +893,7 @@ impl Obj {
     pub fn i32(n: i32) -> Self {
         Obj::Num(NNum::Int(BigInt::from(n)))
     }
-    fn list(n: Vec<Obj>) -> Self {
+    pub fn list(n: Vec<Obj>) -> Self {
         Obj::Seq(Seq::List(Rc::new(n)))
     }
     fn dict(m: HashMap<ObjKey, Obj>, def: Option<Obj>) -> Self {
@@ -5885,7 +5885,7 @@ impl Env {
             },
         }
     }
-    fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
+    pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
         match self.vars.entry(key) {
             std::collections::hash_map::Entry::Occupied(e) => {
                 Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
