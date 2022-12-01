@@ -7783,6 +7783,34 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     Precedence::zero(),
                 )),
             },
+            (
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                },
+                IndexOrSlice::Slice(i, j),
+            ) => {
+                let ii = match i.as_deref() {
+                    None => None, // actually nothing
+                    Some(LocExpr {
+                        expr: Expr::Underscore,
+                        ..
+                    }) => Some(None), // section slot
+                    Some(e) => Some(Some(Box::new(evaluate(env, e)?))),
+                };
+                let jj = match j.as_deref() {
+                    None => None, // actually nothing
+                    Some(LocExpr {
+                        expr: Expr::Underscore,
+                        ..
+                    }) => Some(None), // section slot
+                    Some(e) => Some(Some(Box::new(evaluate(env, e)?))),
+                };
+                Ok(Obj::Func(
+                    Func::SliceSection(None, ii, jj),
+                    Precedence::zero(),
+                ))
+            }
             (x, i) => {
                 let xr = evaluate(env, x)?;
                 let ir = eval_index_or_slice(env, i)?;
