@@ -10472,8 +10472,17 @@ pub fn initialize(env: &mut Env) {
         name: "!!".to_string(),
         body: index,
     });
+    // or, with low precedence, for chaining
+    env.insert_builtin(TwoArgBuiltin {
+        name: "index".to_string(),
+        body: index,
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "!?".to_string(),
+        body: safe_index,
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "index?".to_string(),
         body: safe_index,
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -10717,10 +10726,10 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
-        name: "index".to_string(),
+        name: "locate".to_string(),
         body: |env, a, b| match (a, b) {
             (mut a, Obj::Func(f, _)) => {
-                let mut it = mut_obj_into_iter(&mut a, "index")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(Obj::from(i));
@@ -10736,7 +10745,7 @@ pub fn initialize(env: &mut Env) {
                 }
             }
             (mut a, b) => {
-                let mut it = mut_obj_into_iter(&mut a, "index")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x == b {
                         return Ok(Obj::from(i));
@@ -10747,10 +10756,10 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
-        name: "index?".to_string(),
+        name: "locate?".to_string(),
         body: |env, a, b| match (a, b) {
             (mut a, Obj::Func(f, _)) => {
-                let mut it = mut_obj_into_iter(&mut a, "index?")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(Obj::from(i));
@@ -10766,7 +10775,7 @@ pub fn initialize(env: &mut Env) {
                 }
             }
             (mut a, b) => {
-                let mut it = mut_obj_into_iter(&mut a, "index?")?.enumerate();
+                let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x == b {
                         return Ok(Obj::from(i));
