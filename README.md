@@ -96,9 +96,9 @@ Strings: `"` or `'`. (What will we use the backtick for one day, I wonder.) Also
 Data types:
 
 - Null
-- Numbers: big integers, floats, and complex numbers. Note that there are no booleans, we just use 0 and 1.
+- Numbers: big integers, rationals, floats, and complex numbers, which coerce from left to right in that list as needed. Note that there are no booleans, we just use 0 and 1.
 - Lists (heterogeneous): `[a, b]`. Pythonic indexing and slicing, both in syntax and semantics of negative integers. Assigning to slices is indefinitely unimplemented.
-- Dictionaries (heterogeneous): `{a: b, c: d}`. (Valid JSON is valid Noulith, maybe modulo the same kind of weird whitespace issues that make valid JSON not valid JavaScript.) Values can be omitted, in which case they're just `null`, and are used like sets. Index `my_dict[key]`, test `key in my_dict`.
+- Dictionaries (heterogeneous): `{a: b, c: d}`. (Valid JSON is valid Noulith, maybe modulo the same kind of weird whitespace issues that make valid JSON not valid JavaScript.) Values can be omitted, in which case they're just `null`, and are used like sets. Index `my_dict[key]`, test `key in my_dict`. If you add a `{:a}`, that's the default value.
 - Strings: just what Rust has, always valid UTF-8 sequences of bytes
 - Bytes
 - Vectors: lists of numbers, notable in that most operations on these automatically vectorize/broadcast, e.g. `V(2, 3) + V(4, 5) == V(6, 8)`; `V(2, 3) + 4 == V(6, 7)`. (Note that comparison operators don't vectorize!)
@@ -117,7 +117,7 @@ Everything is a global function and can be used as an operator! For example `a +
 
 Operator precedence is determined at runtime! This is mainly to support chained comparisons: `1 < 2 < 3` works like in Python. Functions can decide at runtime when they chain (though there's no way for user-defined functions to do this yet), and we use this to make a few other functions nicer. For example, `zip` and `**` (cartesian product) chain with themselves; `a ** b ** c` and `a zip b zip c` will give you a list of triplets, instead of a bunch of `[[x, y], z]`-shaped things.
 
-Identifiers can consist of a letter or `_` followed by any number of alphanumerics, `'`, or `?`; or any consecutive number of valid symbols for use in operators, including `?`. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters and tokens beginning with single-letter uppercase letters immediately followed by a single quote (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, and `...`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
+Identifiers can consist of a letter or `_` followed by any number of alphanumerics, `'`, or `?`; or any consecutive number of valid symbols for use in operators, including `?`. (So e.g. `a*-1` won't work because `*-` will be parsed as a single token. `a* -1` won't work either, but for a different reason — it parses like it begins with calling `*` with `a` and `-` as arguments. `a*(-1)` or `a* -(1)` would work.) Compared to similar languages, note that `:` is not a legal character to use in operators, while `$` is. In addition, a bunch of keywords are forbidden, as are all single-letter uppercase letters and tokens beginning with single-letter uppercase letters immediately followed by a single quote (though these are just reserved and the language doesn't recognize all of them yet); `=`, `!`, `...`, `<-`, `->`, and `<<-`. Also, with the exception of `==` `!=` `<=` and `>=`, operators ending in `=` will be parsed as the operator followed by an `=`, so in general operators cannot end with `=`.
 
 Almost all builtin functions' precedences are determined by this Scala-inspired rule: Look up each character in the function's name in this table, then take the *loosest* precedence of any individual character. But note that this isn't a rule in the syntax, it's just a strategy I decided to follow when selecting builtin functions' precedences. For example, `+`, `++`, `.+`, and `+.` all have the same precedence. As of time of writing, the only exceptions to this rule are `<<` and `>>`, which have precedence like `^`.
 
@@ -137,7 +137,7 @@ Looser  (alphanumerics)
 
 `!` is syntax that's spiritually sort of like what Haskell's `$` lets you write. It's as tight as an opening parenthesis on its left, but performs a function call that lets you can omit the closing one up to the next semicolon or so. `f! a, b` is `f(a, b)`.
 
-`_` is special; assigning to it discards (but type checks still happen; see below). Some expressions produce Scala-style anonymous functions, e.g. `1 < _ < 3` and `[_, 2]`. I might implement more later.
+`_` is special; assigning to it discards (but type checks still happen; see below). Some expressions produce Scala-style anonymous functions, e.g. `1 < _ < 3`, `[_, 2]`, `_[3]`. I might implement more later.
 
 Types double as conversion functions: `str(3)` `int(3)` `dict([[1, 2], [3, 4]])` etc. Bending internal consistency for pure syntax sweetness, `to` is overloaded to takes a type as its second argument to call the same conversion. Test types explicitly with `is`: `3 is int`, `int is type`. The type of `null` is `nulltype`. Strings are `str` and functions are `func`. The "top" type is `anything`.
 
@@ -215,7 +215,7 @@ x[0] = 4
 
 `y` will still be `[1, 2, 3]`. You may wish to think of `x[0] = 4` as syntax sugar for `x = [4] ++ x[1:]`, although when nothing else refers to the same list, it's actually as fast as a mutation.
 
-As a consequence, calling a function on a data structure cannot mutate it. There are a few special keywords that mutate whatever they're given. There's `swap` like `swap x, y` for swapping two values; there's `pop` and `remove` for mutating sequences; and the crudest instrument of all, `consume` gives you the value after replacing it with `null`. After
+As a consequence, calling a function on a data structure cannot mutate it. There are a few special keywords that mutate whatever they're given. There's `swap` like `swap x, y` for swapping two values; there's `pop` and `remove` for mutating sequences; and the crudest instrument of all, `consume` gives you the value after replacing it in where it came from with `null`. After
 
 ```
 x := [1, 2, 3, 4, 5];
@@ -240,7 +240,7 @@ Everything is an expression, so the "ternary expression" and if/else statement a
 
 There are no "blocks"; just use more parentheses: `if (a) (b; c; d)`.
 
-We have short-circuting, quite-low-precedence `and` and `or`. We also have `coalesce`, which is similar to `or`, but it only takes its RHS if its LHS is precisely `null`, not other falsy things. Note `not` is just a normal function.
+We have short-circuiting, quite-low-precedence `and` and `or`. We also have `coalesce`, which is similar to `or`, but it only takes its RHS if its LHS is precisely `null`, not other falsy things. Note `not` is just a normal function.
 
 Switch:
 
@@ -319,7 +319,7 @@ x[0] = 0
 
 ### Functional programming
 
-All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject`, `any`, `all`, `find`/`try_find`, `index`/`try_index`, `count`, `take_while`, `drop_while`, `zip`, `sort_by`, `group`. These take the function as the second argument / on the right! Also they're eager!
+All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject`, `any`, `all`, `find`/`find?`, `index`/`index?`, `count`, `take`, `drop`, `zip`, `sort`, `group`. These take the function as the second argument / on the right! Also they're eager!
 
 `zip`, `group`, `window` have overloads that don't take functions.
 
@@ -327,7 +327,7 @@ All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject
 
 `fold`/`reduce` (which are the same) require a nonempty sequence with two arguments, but also chain with an optional `from` starting value, e.g. `x fold * from 1`.
 
-`sort_by` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards. Sorry, no built-in Schwartzian transform yet.
+`sort` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards. Sorry, no built-in Schwartzian transform yet.
 
 ```
 [[1], [2, 3, 4], [5, 6]] sort_by (<=> on len)
@@ -346,7 +346,8 @@ Other goodies: `id`, `const` (returns its second argument!), `flip`. Some Haskel
 - `input`: read line
 - `read`: read all
 
-- `read_file` `try_read_file` `write_file`
+- `read_file` `read_file?` `read_file_bytes` `read_file_bytes?`
+- `write_file` `append_file` These take the file as the second argument to better support partial application, but I feel like I'll regret this soon.
 
 - `time` `now`
 
