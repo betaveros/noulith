@@ -4303,7 +4303,9 @@ impl<'a> Lexer<'a> {
                 '∨' => self.emit(Token::Or),
                 '?' => self.emit(Token::QuestionMark),
                 c => {
-                    if c.is_digit(10) {
+                    if c.is_whitespace() {
+                        // do nothing
+                    } else if c.is_digit(10) {
                         let mut acc = c.to_string();
 
                         while let Some(cc) = self.peek().filter(|d| d.is_digit(10)) {

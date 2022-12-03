@@ -297,10 +297,10 @@ fn try_() {
 #[test]
 fn switch() {
     assert_eq!(simple_eval("switch (2) case 2 -> 8"), i(8));
-    assert_eq!(simple_eval("switch (2) case 5 -> 3"), Obj::Null);
+    assert_eq!(simple_eval("switch (2) case 5 -> 3 case _ -> null"), Obj::Null);
     assert_eq!(simple_eval("switch (2) case 4 -> 6 case 2 -> 1"), i(1));
     assert_eq!(simple_eval("switch (2) case _ < 3 -> 8"), i(8));
-    assert_eq!(simple_eval("switch (3) case _ < 3 -> 8"), Obj::Null);
+    assert_eq!(simple_eval("switch (3) case _ < 3 -> 8 case _ -> null"), Obj::Null);
     assert_eq!(
         simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"),
         i(4)
