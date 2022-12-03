@@ -4533,6 +4533,8 @@ impl<'a> Lexer<'a> {
                                 })
                             }
                         }
+                    } else {
+                        self.emit(Token::Invalid(format!("lexing: unrecognized char: {}", c)))
                     }
                 }
             }

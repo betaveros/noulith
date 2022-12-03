@@ -38,7 +38,8 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                     Some("\x1b[32m")
                 }
                 Token::Comment(_) => Some("\x1b[38;5;59m"),
-                Token::And
+                Token::Null
+                | Token::And
                 | Token::Or
                 | Token::Coalesce
                 | Token::While
