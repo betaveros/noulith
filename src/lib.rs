@@ -1785,6 +1785,16 @@ impl NErr {
             CommaSeparated(&x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>())
         ))
     }
+    fn argument_error_few(x: &Few<Obj>) -> NErr {
+        NErr::throw(format!(
+            "unrecognized argument types/count: {}",
+            CommaSeparated(&match x {
+                Few::Zero => Vec::new(),
+                Few::One(a) => vec![type_of(a).name()],
+                Few::Many(x) => x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>(),
+            })
+        ))
+    }
     fn argument_error_few2(x: &Few2<Obj>) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types/count: {}",
@@ -1793,6 +1803,19 @@ impl NErr {
                 Few2::One(a) => vec![type_of(a).name()],
                 Few2::Two(a, b) => vec![type_of(a).name(), type_of(b).name()],
                 Few2::Many(x) => x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>(),
+            })
+        ))
+    }
+    fn argument_error_few3(x: &Few3<Obj>) -> NErr {
+        NErr::throw(format!(
+            "unrecognized argument types/count: {}",
+            CommaSeparated(&match x {
+                Few3::Zero => Vec::new(),
+                Few3::One(a) => vec![type_of(a).name()],
+                Few3::Two(a, b) => vec![type_of(a).name(), type_of(b).name()],
+                Few3::Three(a, b, c) =>
+                    vec![type_of(a).name(), type_of(b).name(), type_of(c).name()],
+                Few3::Many(x) => x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>(),
             })
         ))
     }
@@ -2053,10 +2076,10 @@ impl Func {
                     if *struc == s {
                         Ok(fields[*field_index].clone())
                     } else {
-                        Err(NErr::argument_error(format!("wrong kind of struct")))
+                        Err(NErr::argument_error(format!("field of {} got wrong kind of struct", &*struc.name)))
                     }
                 }
-                _ => Err(NErr::argument_error("fields can only take one argument".to_string()))
+                f => err_add_name(Err(NErr::argument_error_few(&f)), &format!("field of {}", &*struc.name))
             }
             Func::Memoized(f, memo) => {
                 let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
@@ -2243,7 +2266,7 @@ impl Builtin for Minus {
             Few2::Two(a, b) => {
                 expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b, "binary -")
             }
-            Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
+            Few2::Many(a) => err_add_name(Err(NErr::argument_error_args(&a)), "-"),
         }
     }
 
@@ -2677,13 +2700,28 @@ impl Builtin for TilBuiltin {
                     BigInt::from(1),
                 )))))
             }
+            Few3::Two(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                let mut ac = a.chars();
+                let mut bc = b.chars();
+                match (ac.next(), ac.next(), bc.next(), bc.next()) {
+                    (Some(a), None, Some(b), None) => Ok(Obj::from(
+                        // too lazy to make it lazy...
+                        ((a as u32)..(b as u32))
+                            .map(|c| {
+                                std::char::from_u32(c).expect("string range incoherent roundtrip")
+                            })
+                            .collect::<String>(),
+                    )),
+                    _ => Err(NErr::argument_error(format!("til: Bad string args"))),
+                }
+            }
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
                 let n2 = into_bigint_ok(b)?;
                 let n3 = into_bigint_ok(c)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), n3)))))
             }
-            _ => Err(NErr::argument_error(format!("Bad args for til"))),
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "til"),
         }
     }
 
@@ -2718,6 +2756,25 @@ impl Builtin for ToBuiltin {
                     BigInt::from(1),
                 )))))
             }
+            Few3::Two(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                let mut ac = a.chars();
+                let mut bc = b.chars();
+                match (ac.next(), ac.next(), bc.next(), bc.next()) {
+                    (Some(a), None, Some(b), None) => Ok(Obj::from(
+                        // too lazy to make it lazy...
+                        ((a as u32)..=(b as u32))
+                            .map(|c| {
+                                std::char::from_u32(c).expect("string range incoherent roundtrip")
+                            })
+                            .collect::<String>(),
+                    )),
+                    _ => Err(NErr::argument_error(format!(
+                        "to: Bad string args: lens {}, {}",
+                        a.len(),
+                        b.len()
+                    ))),
+                }
+            }
             Few3::Two(a, Obj::Func(Func::Type(t), _)) => call_type(&t, vec![a]), // sugar lmao
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
                 let n1 = into_bigint_ok(a)?;
@@ -2733,7 +2790,7 @@ impl Builtin for ToBuiltin {
                     n3,
                 )))))
             }
-            _ => Err(NErr::argument_error(format!("Bad args for to"))),
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "to"),
         }
     }
 
@@ -3059,10 +3116,10 @@ impl Builtin for Scan {
                         }
                         Ok(Obj::list(acc))
                     }
-                    _ => Err(NErr::type_error("fold: not callable".to_string())),
+                    _ => Err(NErr::type_error("scan: not callable".to_string())),
                 }
             }
-            Few3::Many(_) => Err(NErr::argument_error("fold: too many args".to_string())),
+            Few3::Many(x) => err_add_name(Err(NErr::argument_error_args(&x)), "scan"),
         }
     }
 
@@ -5064,6 +5121,12 @@ impl Parser {
                     }
                     let do_yield = self.try_consume(&Token::Yield).is_some();
                     let body = self.assignment()?;
+                    match body.expr {
+                        Expr::Sequence(_, true) => {
+                            eprintln!("\x1b[1;35mWARNING: floor loop yields semicolon-terminated sequence\x1b[0m");
+                        }
+                        _ => {}
+                    }
                     Ok(LocExpr {
                         start,
                         end: body.end,
@@ -11627,7 +11690,7 @@ pub fn initialize(env: &mut Env) {
                         ))
                     }
                 }
-                _ => Err(NErr::argument_error(format!("Bad args for aes-gcm"))),
+                c => err_add_name(Err(NErr::argument_error_few3(&c)), "aes-gcm"),
             },
         });
         env.insert_builtin(OneArgBuiltin {
