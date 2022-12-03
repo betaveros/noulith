@@ -3354,7 +3354,7 @@ impl Builtin for Fanout {
 
 // not actually chainable, but conditional partial application, and also I want aliases
 #[derive(Debug, Clone)]
-pub struct Group;
+pub struct Group { strict: bool }
 
 impl Builtin for Group {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -3363,7 +3363,7 @@ impl Builtin for Group {
             Few2::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few2::Two(Obj::Seq(s), Obj::Num(n)) => match to_usize_ok(&n)? {
                 0 => Err(NErr::value_error("can't group into 0".to_string())),
-                n => Ok(Obj::list(multi_group(s, n)?)),
+                n => Ok(Obj::list(multi_group(s, n, self.strict)?)),
             },
             Few2::Two(Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::list(multi_group_by(env, f, s)?)),
             _ => Err(NErr::type_error("not number or func".to_string())),
@@ -3371,7 +3371,7 @@ impl Builtin for Group {
     }
 
     fn builtin_name(&self) -> &str {
-        "group"
+        if self.strict { "group'" } else { "group" }
     }
 }
 
@@ -9009,7 +9009,7 @@ fn multi_unique(v: Seq) -> NRes<Seq> {
     multi!(v, uniqued(v))
 }
 
-fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize) -> Vec<Vec<T>> {
+fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize, strict: bool) -> NRes<Vec<Vec<T>>> {
     let mut acc = Vec::new();
     let mut group = Vec::new();
     loop {
@@ -9018,9 +9018,15 @@ fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize) -> Vec<Vec<T>> {
                 Some(obj) => group.push(obj),
                 None => {
                     if !group.is_empty() {
+                        if strict && group.len() != n {
+                            return Err(NErr::argument_error(format!(
+                                "strict group: {} left over",
+                                group.len()
+                            )));
+                        }
                         acc.push(group);
                     }
-                    return acc;
+                    return Ok(acc);
                 }
             }
         }
@@ -9314,8 +9320,8 @@ macro_rules! multimulti {
     };
 }
 
-fn multi_group(v: Seq, n: usize) -> NRes<Vec<Obj>> {
-    multimulti!(v, Ok(grouped(v, n)))
+fn multi_group(v: Seq, n: usize, strict: bool) -> NRes<Vec<Obj>> {
+    multimulti!(v, grouped(v, n, strict))
 }
 fn multi_group_by_eq(v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, grouped_by(v, |a, b| Ok(a == b)))
@@ -9496,6 +9502,24 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| {
             if b.is_nonzero() {
                 Ok(Obj::Num(a.mod_floor(&b)))
+            } else {
+                Err(NErr::value_error("division by zero".to_string()))
+            }
+        },
+    });
+    env.insert_builtin(TwoNumsBuiltin {
+        name: "/!".to_string(),
+        body: |a, b| {
+            if b.is_nonzero() {
+                let r = a.mod_floor(&b);
+                if r.is_nonzero() {
+                    Err(NErr::value_error(format!(
+                        "division had nonzero remainder {}",
+                        r
+                    )))
+                } else {
+                    Ok(Obj::Num(a.div_floor(&b)))
+                }
             } else {
                 Err(NErr::value_error("division by zero".to_string()))
             }
@@ -10152,7 +10176,8 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::from(c))
         },
     });
-    env.insert_builtin(Group);
+    env.insert_builtin(Group { strict: false });
+    env.insert_builtin(Group { strict: true });
     env.insert_builtin(Merge);
     env.insert_builtin(OneArgBuiltin {
         name: "unique".to_string(),
