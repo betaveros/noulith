@@ -8284,8 +8284,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     Err(_) => continue,
                 };
             }
-            // error??
-            Ok(Obj::Null)
+            add_trace(
+                Err(NErr::value_error(format!("no case matched switch scrutinee: {}", s))),
+                "switch".to_string(),
+                expr.start,
+                expr.end
+            )
         }
         Expr::Try(body, pat, catcher) => {
             match evaluate(env, body) {
