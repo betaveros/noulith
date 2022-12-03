@@ -9378,12 +9378,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut arg| {
             let mut acc = Obj::zero();
             for x in mut_obj_into_iter(&mut arg, "sum")? {
-                acc = expect_nums_and_vectorize_2(
-                    |a, b| Ok(Obj::Num(a + b)),
-                    acc,
-                    x,
-                    "inner +",
-                )?;
+                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), acc, x, "inner +")?;
             }
             Ok(acc)
         },
@@ -9393,12 +9388,7 @@ pub fn initialize(env: &mut Env) {
         body: |mut arg| {
             let mut acc = Obj::one();
             for x in mut_obj_into_iter(&mut arg, "product")? {
-                acc = expect_nums_and_vectorize_2(
-                    |a, b| Ok(Obj::Num(a * b)),
-                    acc,
-                    x,
-                    "inner *",
-                )?;
+                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), acc, x, "inner *")?;
             }
             Ok(acc)
         },
@@ -9659,6 +9649,22 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(s) => match s.len() {
                 Some(n) => Ok(Obj::from(n)),
                 None => Ok(Obj::from(f64::INFINITY)),
+            },
+            e => Err(NErr::type_error(format!(
+                "sequence only, got {}",
+                FmtObj::debug(&e)
+            ))),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "only".to_string(),
+        body: |arg| match arg {
+            Obj::Seq(s) => match s.len() {
+                Some(1) => linear_index_isize(s, 0),
+                Some(n) => Err(NErr::index_error(format!("required len 1, got len {}", n))),
+                None => Err(NErr::index_error(
+                    "required len 1, got infinite len".to_string(),
+                )),
             },
             e => Err(NErr::type_error(format!(
                 "sequence only, got {}",
