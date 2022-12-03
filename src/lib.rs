@@ -1661,6 +1661,9 @@ fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &CodeLo
     let mut ended = false;
     for (i, c) in src.chars().enumerate() {
         if c == '\n' {
+            if line >= start.line {
+                write!(out, "{}", c).ok();
+            }
             line += 1;
             if line > end.line {
                 break;
@@ -2191,10 +2194,7 @@ impl Builtin for Plus {
                 "+ only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => err_add_name(
-                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), a, b),
-                "+",
-            ),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), a, b, "+"),
             f => Err(NErr::argument_error(format!(
                 "+ only accepts two numbers, got {}",
                 f.len()
@@ -2239,8 +2239,10 @@ impl Builtin for Minus {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
-            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b),
+            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s, "unary -"),
+            Few2::Two(a, b) => {
+                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b, "binary -")
+            }
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         }
     }
@@ -2254,6 +2256,7 @@ impl Builtin for Minus {
             Ok(vec![expect_nums_and_vectorize_1(
                 |x| Ok(Obj::Num(-x)),
                 rvalue,
+                "destructuring -",
             )?])
         } else {
             Err(NErr::type_error(
@@ -2279,10 +2282,7 @@ impl Builtin for Times {
                 "* only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => err_add_name(
-                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), a, b),
-                "*",
-            ),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), a, b, "*"),
             f => Err(NErr::argument_error(format!(
                 "* only accepts two numbers, got {}",
                 f.len()
@@ -2334,10 +2334,7 @@ impl Builtin for Divide {
                 "/ only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => err_add_name(
-                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a / b)), a, b),
-                "/",
-            ),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a / b)), a, b, "/"),
             f => Err(NErr::argument_error(format!(
                 "/ only accepts two numbers, got {}",
                 f.len()
@@ -3523,13 +3520,13 @@ fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
     ))))
 }
 
-fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj> {
+fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj, name: &str) -> NRes<Obj> {
     match a {
         Obj::Num(a) => body(a),
         Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(RcVecIter::of(&mut a).map(body)),
         x => Err(NErr::argument_error(format!(
-            "only accepts numbers, got {:?}",
-            x
+            "{} only accepts numbers, got {:?}",
+            name, x
         ))),
     }
 }
@@ -3537,7 +3534,7 @@ fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj) -> NRes<Obj>
 impl Builtin for OneNumBuiltin {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(x) => err_add_name(expect_nums_and_vectorize_1(self.body, x), &self.name),
+            Few::One(x) => expect_nums_and_vectorize_1(self.body, x, &self.name),
             f => Err(NErr::argument_error(format!(
                 "{} only accepts one argument, got {}",
                 self.name,
@@ -3586,7 +3583,12 @@ pub struct TwoNumsBuiltin {
     body: fn(a: NNum, b: NNum) -> NRes<Obj>,
 }
 
-fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj) -> NRes<Obj> {
+fn expect_nums_and_vectorize_2(
+    body: fn(NNum, NNum) -> NRes<Obj>,
+    a: Obj,
+    b: Obj,
+    name: &str,
+) -> NRes<Obj> {
     match (a, b) {
         (Obj::Num(a), Obj::Num(b)) => body(a, b),
         (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => {
@@ -3604,15 +3606,16 @@ fn expect_nums_and_vectorize_2(body: fn(NNum, NNum) -> NRes<Obj>, a: Obj, b: Obj
                 )
             } else {
                 Err(NErr::value_error(format!(
-                    "vectorized op: different lengths: {}, {}",
+                    "{}: couldn't vectorize, different lengths: {}, {}",
+                    name,
                     a.len(),
                     b.len()
                 )))
             }
         }
         (a, b) => Err(NErr::argument_error(format!(
-            "only accepts numbers (or vectors), got {}, {}",
-            a, b
+            "{} only accepts numbers (or vectors), got {}, {}",
+            name, a, b
         ))),
     }
 }
@@ -3628,9 +3631,7 @@ impl Builtin for TwoNumsBuiltin {
                 "{} only accepts numbers (or vectors), got {}",
                 self.name, a
             ))),
-            Few2::Two(a, b) => {
-                err_add_name(expect_nums_and_vectorize_2(self.body, a, b), &self.name)
-            }
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(self.body, a, b, &self.name),
             f => Err(NErr::argument_error(format!(
                 "{} only accepts two numbers, got {}",
                 self.name,
@@ -8285,10 +8286,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 };
             }
             add_trace(
-                Err(NErr::value_error(format!("no case matched switch scrutinee: {}", s))),
+                Err(NErr::value_error(format!(
+                    "no case matched switch scrutinee: {}",
+                    s
+                ))),
                 "switch".to_string(),
                 expr.start,
-                expr.end
+                expr.end,
             )
         }
         Expr::Try(body, pat, catcher) => {
@@ -9348,8 +9352,10 @@ pub fn initialize(env: &mut Env) {
         name: "~".to_string(),
         body: |_env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
-            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a ^ b)), a, b),
+            Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s, "unary ~"),
+            Few2::Two(a, b) => {
+                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a ^ b)), a, b, "binary ~")
+            }
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         },
     });
@@ -9372,7 +9378,12 @@ pub fn initialize(env: &mut Env) {
         body: |mut arg| {
             let mut acc = Obj::zero();
             for x in mut_obj_into_iter(&mut arg, "sum")? {
-                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), acc, x)?;
+                acc = expect_nums_and_vectorize_2(
+                    |a, b| Ok(Obj::Num(a + b)),
+                    acc,
+                    x,
+                    "inner +",
+                )?;
             }
             Ok(acc)
         },
@@ -9382,7 +9393,12 @@ pub fn initialize(env: &mut Env) {
         body: |mut arg| {
             let mut acc = Obj::one();
             for x in mut_obj_into_iter(&mut arg, "product")? {
-                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), acc, x)?;
+                acc = expect_nums_and_vectorize_2(
+                    |a, b| Ok(Obj::Num(a * b)),
+                    acc,
+                    x,
+                    "inner *",
+                )?;
             }
             Ok(acc)
         },
