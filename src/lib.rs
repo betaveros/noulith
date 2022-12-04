@@ -906,6 +906,9 @@ impl Obj {
     fn one() -> Self {
         Obj::Num(NNum::Int(BigInt::from(1)))
     }
+    fn neg_one() -> Self {
+        Obj::Num(NNum::Int(BigInt::from(-1)))
+    }
 }
 
 impl Default for Obj {
@@ -10229,18 +10232,18 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "<=>".to_string(),
         body: |a, b| match ncmp(&a, &b) {
-            Ok(Ordering::Less) => Ok(Obj::Num(-NNum::from(1))),
+            Ok(Ordering::Less) => Ok(Obj::neg_one()),
             Ok(Ordering::Equal) => Ok(Obj::zero()),
-            Ok(Ordering::Greater) => Ok(Obj::Num(NNum::from(1))),
+            Ok(Ordering::Greater) => Ok(Obj::one()),
             Err(e) => Err(e),
         },
     });
     env.insert_builtin(TwoArgBuiltin {
         name: ">=<".to_string(),
         body: |a, b| match ncmp(&a, &b) {
-            Ok(Ordering::Less) => Ok(Obj::Num(NNum::from(1))),
-            Ok(Ordering::Equal) => Ok(Obj::Num(NNum::from(0))),
-            Ok(Ordering::Greater) => Ok(Obj::Num(-NNum::from(1))),
+            Ok(Ordering::Less) => Ok(Obj::one()),
+            Ok(Ordering::Equal) => Ok(Obj::zero()),
+            Ok(Ordering::Greater) => Ok(Obj::neg_one()),
             Err(e) => Err(e),
         },
     });
