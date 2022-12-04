@@ -31,6 +31,18 @@ An attempt to give myself a new Pareto-optional choice for quick-and-dirty scrip
 
   Imagine all the [operator parsing](https://adventofcode.com/2020/day/18) code you won't need to write. When you need like arbitrarily many levels of operator precedence, and are happy to `eval` inputs.
 
+## How do you run this thing?
+
+It's a standard Rust project, so, in brief:
+
+- [Install Rust](https://www.rust-lang.org/tools/install) and set it up
+- Clone this repository, `cd` to it
+- `cargo run --release --features cli,request,crypto`
+
+This will drop you into a REPL, or you can pass a filename to run it. If you just want to build an executable so you can alias it or add it to `$PATH`, just run `cargo build --release --features cli,request,crypto` and look inside `target/release`.
+
+None of the command-line options to `cargo run` or `cargo build` are required; they just give you better run-time performance and features for a slower compile time and larger binary size. (Without `--release`, stack frames are so large that one of the tests overflows the stack...)
+
 ## Features (and anti-features) (and claims that will become false as I keep hacking on this)
 
 - Dynamically typed.
