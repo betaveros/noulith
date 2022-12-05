@@ -5124,11 +5124,13 @@ impl Parser {
                     }
                     let do_yield = self.try_consume(&Token::Yield).is_some();
                     let body = self.assignment()?;
-                    match body.expr {
-                        Expr::Sequence(_, true) => {
-                            eprintln!("\x1b[1;35mWARNING: floor loop yields semicolon-terminated sequence\x1b[0m");
+                    if do_yield {
+                        match body.expr {
+                            Expr::Sequence(_, true) => {
+                                eprintln!("\x1b[1;35mWARNING: for loop yields semicolon-terminated sequence\x1b[0m");
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                     Ok(LocExpr {
                         start,
