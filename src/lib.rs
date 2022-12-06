@@ -11441,6 +11441,29 @@ pub fn initialize(env: &mut Env) {
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "path_parent".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(a)) => {
+                match std::path::Path::new(&*a).parent() {
+                    Some(p) => Ok(Obj::from(p.to_string_lossy().into_owned())),
+                    None => Err(NErr::value_error(format!("No path parent: {}", a))),
+                }
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "path_join".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+                let mut ap = std::path::PathBuf::from(&*a);
+                ap.push(&*b);
+                Ok(Obj::from(ap.to_string_lossy().into_owned()))
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
 
     // this isn't a very good assert
     env.insert_builtin(OneArgBuiltin {
@@ -11531,6 +11554,10 @@ pub fn initialize(env: &mut Env) {
     });
 
     // l m a o
+    // we'd really like to try importing relative to the current file's path. but then for that to
+    // be sensible we probably need to nest envs so whe we import a file we stick its path in its
+    // env. so either the imported file has to explicitly export stuff outside, or the import
+    // statement has to pull things out. might procrastinate after christmas... FIXME
     env.insert_builtin(BasicBuiltin {
         name: "import".to_string(),
         body: |env, args| {

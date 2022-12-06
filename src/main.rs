@@ -61,7 +61,7 @@ fn repl() {
     }
 }
 
-fn run_code(code: &str, args: Vec<String>) {
+fn run_code(code: &str, args: Vec<String>, filename: String) {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(BufReader::new(io::stdin())),
@@ -75,6 +75,10 @@ fn run_code(code: &str, args: Vec<String>) {
     ) {
         Ok(()) => (),
         Err(e) => panic!("inserting argv failed: {}", e),
+    }
+    match env.insert("__file__".to_string(), ObjType::Any, Obj::from(filename)) {
+        Ok(()) => (),
+        Err(e) => panic!("inserting __file__ failed: {}", e),
     }
     let e = Rc::new(RefCell::new(env));
 
@@ -104,27 +108,27 @@ fn main() {
         repl();
     } else {
         args.remove(0);
-        let mut code = String::new();
-        if args[0] == "-e" {
+        let (code, filename) = if args[0] == "-e" {
             args.remove(0);
             if args.is_empty() {
                 panic!("got -e option but nothing after");
             }
-            code = args.remove(0);
+            (args.remove(0), "<repl>".to_string())
         } else {
-            let filename = args.remove(0);
+            let mut code = String::new();
+            let arg_filename = args.remove(0);
+            let filename = std::fs::canonicalize(&arg_filename)
+                .expect(&format!("canonicalizing file {} failed", arg_filename));
             match File::open(&filename) {
-                Ok(mut file) => {
-                    match file.read_to_string(&mut code) {
-                        Ok(_) => (),
-                        Err(e) => panic!("reading code file {} failed: {}", filename, e)
-                    }
-                }
+                Ok(mut file) => match file.read_to_string(&mut code) {
+                    Ok(_) => (code, filename.to_string_lossy().into_owned()),
+                    Err(e) => panic!("reading code file {} failed: {}", arg_filename, e),
+                },
                 Err(e) => {
-                    panic!("opening code file {} failed: {}", filename, e);
+                    panic!("opening code file {} failed: {}", arg_filename, e);
                 }
             }
-        }
-        run_code(&code, args);
+        };
+        run_code(&code, args, filename);
     }
 }
