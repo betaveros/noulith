@@ -331,7 +331,7 @@ x[0] = 0
 
 ### Functional programming
 
-All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject`, `any`, `all`, `find`/`find?`, `index`/`index?`, `count`, `take`, `drop`, `zip`, `sort`, `group`. These take the function as the second argument / on the right! Also they're eager!
+All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject`, `any`, `all`, `find`/`find?`, `locate`/`locate?` (finds the index of something), `count`, `take`, `drop`, `zip`, `sort`, `group`. These take the function as the second argument / on the right! Also they're eager!
 
 `zip`, `group`, `window` have overloads that don't take functions.
 
@@ -360,6 +360,7 @@ Other goodies: `id`, `const` (returns its second argument!), `flip`. Some Haskel
 
 - `read_file` `read_file?` `read_file_bytes` `read_file_bytes?`
 - `write_file` `append_file` These take the file as the second argument to better support partial application, but I feel like I'll regret this soon.
+- (current implementation completely disrespects cross-OS unicode things) `path_join` `path_parent`
 
 - `time` `now`
 

@@ -7897,6 +7897,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     Precedence::zero(),
                 ))
             }
+            // TODO: foo[_] (maybe lower priority though, this is a rarer partial app)
             (x, i) => {
                 let xr = evaluate(env, x)?;
                 let ir = eval_index_or_slice(env, i)?;

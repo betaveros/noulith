@@ -236,6 +236,30 @@ fn opassigns() {
         simple_eval("x: list = [4, 6]; x map= (+1); product x"),
         i(35)
     );
+    assert_eq!(
+        simple_eval("x: str = 'foo'; x[0] .= upper; x"),
+        Obj::from("Foo")
+    );
+    assert_eq!(
+        simple_eval("x: vector = V(4, 6); x .= (+1) >>> vector; product x"),
+        i(35)
+    );
+    assert_eq!(
+        simple_eval("x: vector = V(4, 6); x[0] += 1; product x"),
+        i(30)
+    );
+}
+
+#[test]
+fn sections_etc() {
+    assert_eq!(simple_eval("(+4) 7"), i(11));
+    assert_eq!(simple_eval("(7-) 4"), i(3));
+    assert_eq!(simple_eval("(_[1])([2, 5, 3])"), i(5));
+    assert_eq!(simple_eval("(_[1:3])([2, 5, 3, 9, 9, 9]).sum"), i(8));
+    assert_eq!(
+        simple_eval("[4, 5] map [_, 3] map (apply ^) then sum"),
+        i(189)
+    );
 }
 
 #[test]
@@ -297,10 +321,16 @@ fn try_() {
 #[test]
 fn switch() {
     assert_eq!(simple_eval("switch (2) case 2 -> 8"), i(8));
-    assert_eq!(simple_eval("switch (2) case 5 -> 3 case _ -> null"), Obj::Null);
+    assert_eq!(
+        simple_eval("switch (2) case 5 -> 3 case _ -> null"),
+        Obj::Null
+    );
     assert_eq!(simple_eval("switch (2) case 4 -> 6 case 2 -> 1"), i(1));
     assert_eq!(simple_eval("switch (2) case _ < 3 -> 8"), i(8));
-    assert_eq!(simple_eval("switch (3) case _ < 3 -> 8 case _ -> null"), Obj::Null);
+    assert_eq!(
+        simple_eval("switch (3) case _ < 3 -> 8 case _ -> null"),
+        Obj::Null
+    );
     assert_eq!(
         simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"),
         i(4)
