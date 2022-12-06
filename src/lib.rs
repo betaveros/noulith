@@ -3357,7 +3357,9 @@ impl Builtin for Fanout {
 
 // not actually chainable, but conditional partial application, and also I want aliases
 #[derive(Debug, Clone)]
-pub struct Group { strict: bool }
+pub struct Group {
+    strict: bool,
+}
 
 impl Builtin for Group {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
@@ -3374,7 +3376,11 @@ impl Builtin for Group {
     }
 
     fn builtin_name(&self) -> &str {
-        if self.strict { "group'" } else { "group" }
+        if self.strict {
+            "group'"
+        } else {
+            "group"
+        }
     }
 }
 
@@ -3738,7 +3744,6 @@ impl Closure {
                 Some(&ObjType::Any),
                 args.len(),
                 || args,
-                AssignMode::Assign,
                 "Wrong number of arguments",
             ),
             "argument receiving".to_string(),
@@ -5719,10 +5724,12 @@ impl Parser {
                         _ => {
                             let rhs = self.pattern()?;
                             let end = rhs.end;
+                            // actually gonna accept literals here
+                            // sometimes a, "foo", b := x is a nice way to fail fast
                             Ok(LocExpr {
                                 expr: Expr::Assign(
                                     every,
-                                    Box::new(to_lvalue_no_literals(pat)?),
+                                    Box::new(to_lvalue(pat)?),
                                     Box::new(rhs),
                                 ),
                                 start,
@@ -6005,26 +6012,17 @@ impl Env {
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
-enum AssignMode {
-    Assign,             // assign or declare, as type annotations declare
-    IgnoreExistingType, // just ignore types of existing variables; for LHS-dropping
-    PatternMatch,       // unannotated variables should be checked against instead of updated
-}
-
 // the ObjType is provided iff it's a declaration
-
 fn assign_all_basic(
     env: &REnv,
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs: Vec<Obj>,
-    mode: AssignMode,
     err_msg: &str,
 ) -> NRes<()> {
     if lhs.len() == rhs.len() {
         for (lhs1, rhs1) in lhs.iter().zip(rhs.into_iter()) {
-            assign(env, lhs1, rt, rhs1, mode)?;
+            assign(env, lhs1, rt, rhs1)?;
         }
         Ok(())
     } else {
@@ -6047,7 +6045,6 @@ fn assign_all(
     rt: Option<&ObjType>,
     rhs_len: usize,
     lazy_rhs: impl FnOnce() -> Vec<Obj>,
-    mode: AssignMode,
     err_msg: &str,
 ) -> NRes<()> {
     let mut splat = None;
@@ -6087,22 +6084,22 @@ fn assign_all(
             let mut rhs = lazy_rhs();
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
-            assign_all_basic(env, &lhs[..si], rt, rhs, mode, err_msg)?;
+            assign_all_basic(env, &lhs[..si], rt, rhs, err_msg)?;
             match inner {
-                Ok(inner) => assign(env, inner, rt, Obj::list(srhs), mode)?,
+                Ok(inner) => assign(env, inner, rt, Obj::list(srhs))?,
                 Err((inner, anno)) => {
                     let t = match anno {
                         None => Some(ObjType::Any),
                         Some(t) => Some(to_type(t, "splat anno")?),
                     };
-                    assign(env, inner, t.as_ref(), Obj::list(srhs), mode)?
+                    assign(env, inner, t.as_ref(), Obj::list(srhs))?
                 }
             };
-            assign_all_basic(env, &lhs[si + 1..], rt, rrhs, mode, err_msg)
+            assign_all_basic(env, &lhs[si + 1..], rt, rrhs, err_msg)
         }
         None => {
             if lhs.len() == rhs_len {
-                assign_all_basic(env, lhs, rt, lazy_rhs(), mode, err_msg)
+                assign_all_basic(env, lhs, rt, lazy_rhs(), err_msg)
             } else if rhs_len <= 8 {
                 Err(NErr::value_error(format!(
                     "{}: expected {} ({}), got {} ({})",
@@ -6131,7 +6128,7 @@ fn assign_all(
 fn set_index(
     lhs: &mut Obj,
     indexes: &[EvaluatedIndexOrSlice],
-    value: Obj,
+    value: Option<Obj>, // None for LHS-dropping. In homogeneous seq, OK to nop
     every: bool,
 ) -> NRes<()> {
     // hack
@@ -6146,7 +6143,7 @@ fn set_index(
     }
     match (lhs, indexes) {
         (lhs, []) => {
-            *lhs = value;
+            *lhs = value.unwrap_or(Obj::Null);
             Ok(())
         }
         (Obj::Seq(s), [fi, rest @ ..]) => match (s, fi) {
@@ -6167,7 +6164,7 @@ fn set_index(
                 }
             }
             (Seq::String(s), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
-                Obj::Seq(Seq::String(v)) => {
+                Some(Obj::Seq(Seq::String(v))) => {
                     let mut_s = Rc::make_mut(s);
                     if v.as_bytes().len() == 1 {
                         // FIXME lmao
@@ -6199,9 +6196,10 @@ fn set_index(
                         )))
                     }
                 }
-                _ => Err(NErr::value_error(format!(
+                Some(_) => Err(NErr::value_error(format!(
                     "assigning to string index, not a string"
                 ))),
+                None => Ok(()),
             },
             (Seq::String(_), _) => Err(NErr::type_error(format!("string bad slice"))),
             (Seq::Dict(v, _), EvaluatedIndexOrSlice::Index(kk)) => {
@@ -6210,7 +6208,7 @@ fn set_index(
                 // We might create a new map entry, but only at the end, which is a bit of a
                 // mismatch for Rust's map API if we want to recurse all the way
                 if rest.is_empty() {
-                    mut_d.insert(k, value);
+                    mut_d.insert(k, value.unwrap_or(Obj::Null));
                     Ok(())
                 } else {
                     set_index(
@@ -6243,24 +6241,31 @@ fn set_index(
             }
             (Seq::Dict(..), _) => Err(NErr::type_error(format!("dict bad slice"))),
             (Seq::Vector(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
-                Obj::Num(n) => {
+                Some(Obj::Num(n)) => {
                     let i = pythonic_index(v, i)?;
                     Rc::make_mut(v)[i] = n;
                     Ok(())
                 }
-                _ => Err(NErr::type_error(format!("vec bad value assgn"))),
+                Some(e) => Err(NErr::type_error(format!(
+                    "vec bad value assign: {}",
+                    FmtObj::debug(&e)
+                ))),
+                None => Ok(()),
             },
             (Seq::Vector(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
             (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
-                Obj::Num(ref n) => {
+                Some(Obj::Num(ref n)) => {
                     let i = pythonic_index(v, i)?;
-                    Rc::make_mut(v)[i] = n.to_u8().ok_or(NErr::value_error(format!(
-                        "can't to byte: {}",
-                        FmtObj::debug(&value)
-                    )))?;
+                    Rc::make_mut(v)[i] = n
+                        .to_u8()
+                        .ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
                     Ok(())
                 }
-                _ => Err(NErr::type_error(format!("bytes bad value assgn"))),
+                Some(e) => Err(NErr::type_error(format!(
+                    "bytes bad value assign: {}",
+                    FmtObj::debug(&e)
+                ))),
+                None => Ok(()),
             },
             (Seq::Bytes(_), _) => Err(NErr::type_error(format!("vec bad slice / not impl"))),
             (Seq::Stream(_), _) => panic!("stream handled above"),
@@ -6270,7 +6275,7 @@ fn set_index(
             [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))],
         ) => match &***r {
             "precedence" => match value {
-                Obj::Num(f) => match f.to_f64() {
+                Some(Obj::Num(f)) => match f.to_f64() {
                     Some(f) => {
                         *p = f;
                         Ok(())
@@ -6280,10 +6285,11 @@ fn set_index(
                         f
                     ))),
                 },
-                f => Err(NErr::type_error(format!(
+                Some(f) => Err(NErr::type_error(format!(
                     "precedence must be number, got {}",
                     f
                 ))),
+                None => Ok(()),
             },
             k => Err(NErr::key_error(format!(
                 "function key must be 'precedence', got {}",
@@ -6465,7 +6471,6 @@ fn assign_respecting_type(
     ixs: &[EvaluatedIndexOrSlice],
     rhs: Obj,
     every: bool,
-    typecheck: bool,
 ) -> NRes<()> {
     try_borrow_nres(env, "env for assigning", s)?.modify_existing_var(s, |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
@@ -6473,13 +6478,13 @@ fn assign_respecting_type(
         // FIXME is there possibly a double borrow here? maybe not because we only use immutable
         // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
         // constructed to mutably borrow the variable it's for?
-        if typecheck && ixs.is_empty() && !is_type(ty, &rhs) {
+        if ixs.is_empty() && !is_type(ty, &rhs) {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, FmtObj::debug(&rhs), ty.name())))?
         }
-        set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, rhs, every)?;
+        set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, Some(rhs), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
-        if typecheck && !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
+        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
             Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): not {}", s, ty.name())))
         } else {
             Ok(())
@@ -6496,7 +6501,6 @@ fn assign(
     lhs: &EvaluatedLvalue,
     rt: Option<&ObjType>,
     rhs: Obj,
-    mode: AssignMode,
 ) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => {
@@ -6526,24 +6530,7 @@ fn assign(
                     )));
                 }
             }
-            None => {
-                let typecheck = match mode {
-                    AssignMode::Assign => true,
-                    AssignMode::IgnoreExistingType => false,
-                    AssignMode::PatternMatch => {
-                        let obj = eval_lvalue_as_obj(env, lhs)?;
-                        return if obj == rhs.clone() {
-                            Ok(())
-                        } else {
-                            Err(NErr::type_error(format!(
-                                "Equality against variable pattern didn't match: {} {}",
-                                obj, rhs
-                            )))
-                        };
-                    }
-                };
-                assign_respecting_type(env, s, ixs, rhs, /* every */ false, typecheck)
-            }
+            None => assign_respecting_type(env, s, ixs, rhs, /* every */ false),
         },
         EvaluatedLvalue::CommaSeq(ss) => match rhs {
             Obj::Seq(Seq::List(ls)) => assign_all(
@@ -6552,7 +6539,6 @@ fn assign(
                 rt,
                 ls.len(),
                 || unwrap_or_clone(ls),
-                mode,
                 "Can't unpack into mismatched length",
             ),
             Obj::Seq(seq) => match seq.len() {
@@ -6562,7 +6548,6 @@ fn assign(
                     rt,
                     len,
                     || seq_to_cloning_iter(&seq).collect::<Vec<Obj>>(),
-                    mode,
                     "Can't unpack into mismatched length",
                 ),
                 None => Err(NErr::type_error(
@@ -6574,16 +6559,16 @@ fn assign(
             )),
         },
         EvaluatedLvalue::Annotation(s, ann) => match ann {
-            None => assign(env, s, Some(&ObjType::Any), rhs, mode),
-            Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
+            None => assign(env, s, Some(&ObjType::Any), rhs),
+            Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
         },
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
         ))),
-        EvaluatedLvalue::Or(a, b) => match assign(env, a, rt, rhs.clone(), mode) {
+        EvaluatedLvalue::Or(a, b) => match assign(env, a, rt, rhs.clone()) {
             Ok(()) => Ok(()),
-            Err(_) => assign(env, b, rt, rhs, mode),
+            Err(_) => assign(env, b, rt, rhs),
         },
         EvaluatedLvalue::Literal(obj) => {
             if obj == &rhs {
@@ -6612,7 +6597,6 @@ fn assign(
                     rt,
                     res.len(),
                     || res,
-                    mode,
                     "Can't destructure into mismatched length",
                 )
             } else {
@@ -6627,12 +6611,61 @@ fn assign(
     }
 }
 
+fn drop_lhs_all(env: &REnv, lhs: &[Box<EvaluatedLvalue>]) -> NRes<()> {
+    for lhs1 in lhs.iter() {
+        match &**lhs1 {
+            EvaluatedLvalue::Splat(inner) => drop_lhs(env, inner)?,
+            lhs1 => drop_lhs(env, lhs1)?,
+        }
+    }
+    Ok(())
+}
+
+fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
+    match lhs {
+        EvaluatedLvalue::Underscore => Ok(()),
+        EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for dropping lhs", s)?
+            .modify_existing_var(s, |(_ty, v)| {
+                // overriding type!!
+                set_index(
+                    &mut *try_borrow_mut_nres(v, "var for dropping lhs", s)?,
+                    ixs,
+                    None,
+                    true,
+                )?;
+                Ok(())
+            })
+            .ok_or(NErr::name_error(if ixs.is_empty() {
+                format!("Variable {:?} not found (use := to declare)", s)
+            } else {
+                format!(
+                    "Variable {:?} not found, couldn't set into index {:?}",
+                    s, ixs
+                )
+            }))?,
+        EvaluatedLvalue::CommaSeq(ss) => drop_lhs_all(env, ss),
+        EvaluatedLvalue::Annotation(..) => Err(NErr::syntax_error(
+            "can't drop LHS with annotations in it for op-assign??".to_string(),
+        )),
+        EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
+            "Can't assign to raw splat {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::Or(..) => Err(NErr::syntax_error(
+            "can't drop LHS with or for op-assign??".to_string(),
+        )),
+        EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
+        EvaluatedLvalue::Destructure(..) => Err(NErr::syntax_error(
+            "can't drop LHS with destructure for op-assign??".to_string(),
+        )),
+    }
+}
+
 fn assign_every(
     env: &REnv,
     lhs: &EvaluatedLvalue,
     rt: Option<&ObjType>,
     rhs: Obj,
-    mode: AssignMode,
 ) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
@@ -6642,37 +6675,26 @@ fn assign_every(
                 if ixs.is_empty() {
                     insert_declare(env, s, ty.clone(), rhs.clone())
                 } else {
-                    return Err(NErr::name_error(format!(
+                    Err(NErr::name_error(format!(
                         "Can't declare new value into index expression: {:?} {:?}",
                         s, ixs
-                    )));
+                    )))
                 }
             }
-            None => {
-                let typecheck = match mode {
-                    AssignMode::Assign => true,
-                    AssignMode::IgnoreExistingType => false,
-                    AssignMode::PatternMatch => {
-                        return Err(NErr::type_error(format!(
-                            "why are we pattern matching literally every?"
-                        )))
-                    }
-                };
-                assign_respecting_type(env, s, ixs, rhs, /* every */ true, typecheck)
-            }
+            None => assign_respecting_type(env, s, ixs, rhs, /* every */ true),
         },
         EvaluatedLvalue::CommaSeq(ss) => {
             for v in ss {
-                assign_every(env, v, rt, rhs.clone(), mode)?;
+                assign_every(env, v, rt, rhs.clone())?;
             }
             Ok(())
         }
         EvaluatedLvalue::Annotation(s, ann) => match ann {
-            None => assign_every(env, s, Some(&ObjType::Any), rhs, mode),
-            Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs, mode),
+            None => assign_every(env, s, Some(&ObjType::Any), rhs),
+            Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs),
         },
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
-            "Can't assign to raw splat {:?}",
+            "Can't assign-every to raw splat {:?}",
             lhs
         ))),
         EvaluatedLvalue::Or(..) => Err(NErr::type_error(format!(
@@ -6705,7 +6727,6 @@ fn assign_every(
                     rt,
                     res.len(),
                     || res,
-                    mode,
                     "Can't destructure into mismatched length",
                 )
             } else {
@@ -6759,14 +6780,7 @@ fn modify_every(
                     *x = rhs(std::mem::take(x))?;
                     Ok(())
                 })?;
-                assign_respecting_type(
-                    env,
-                    s,
-                    &[],
-                    old,
-                    false, /* every */
-                    true,  /* typecheck */
-                )
+                assign_respecting_type(env, s, &[], old, false /* every */)
             }
         }
         EvaluatedLvalue::CommaSeq(ss) => {
@@ -7561,7 +7575,7 @@ fn evaluate_for(
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&ee, &p, Some(&ObjType::Any), x, AssignMode::Assign)?;
+                        assign(&ee, &p, Some(&ObjType::Any), x)?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
                 }
@@ -7576,7 +7590,6 @@ fn evaluate_for(
                             &p,
                             Some(&ObjType::Any),
                             Obj::list(vec![key_to_obj(k), v]),
-                            AssignMode::Assign,
                         )?;
                         evaluate_for(&ee, rest, body, callback)?;
                     }
@@ -7584,7 +7597,7 @@ fn evaluate_for(
                 ForIterationType::Declare => {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, lvalue)?;
-                    assign(&ee, &p, Some(&ObjType::Any), itr, AssignMode::Assign)?;
+                    assign(&ee, &p, Some(&ObjType::Any), itr)?;
 
                     evaluate_for(&ee, rest, body, callback)?;
                 }
@@ -7986,9 +7999,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }?;
 
             let ret = if *every {
-                assign_every(&env, &p, None, res, AssignMode::Assign)
+                assign_every(&env, &p, None, res)
             } else {
-                assign(&env, &p, None, res, AssignMode::Assign)
+                assign(&env, &p, None, res)
             };
             add_trace(ret, format!("assign"), expr.start, expr.end)?;
             Ok(Obj::Null)
@@ -8080,8 +8093,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             let bl = eval_lvalue(env, b)?;
             let ao = eval_lvalue_as_obj(env, &al)?;
             let bo = eval_lvalue_as_obj(env, &bl)?;
-            assign(&env, &al, None, bo, AssignMode::Assign)?;
-            assign(&env, &bl, None, ao, AssignMode::Assign)?;
+            assign(&env, &al, None, bo)?;
+            assign(&env, &bl, None, ao)?;
             Ok(Obj::Null)
         }
         Expr::OpAssign(every, pat, op, rhs) => {
@@ -8126,14 +8139,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         // stupid amount of code to bookkeep and prevents users from writing
                         // consuming modifiers. Instead it's now enshrined into the semantics.
                         add_trace(
-                            assign(&env, &p, None, Obj::Null, AssignMode::IgnoreExistingType),
+                            drop_lhs(&env, &p),
                             format!("null-assign"),
                             expr.start,
                             expr.end,
                         )?;
                         let fres = ff.run(env, vec![pv, res])?;
                         add_trace(
-                            assign(&env, &p, None, fres, AssignMode::Assign),
+                            assign(&env, &p, None, fres),
                             format!("op({})-assign", ff),
                             expr.start,
                             expr.end,
@@ -8342,7 +8355,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     &p,
                     Some(&ObjType::Any),
                     s.clone(),
-                    AssignMode::PatternMatch,
                 );
                 match ret {
                     Ok(()) => {
@@ -8379,8 +8391,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         &ee,
                         &p,
                         Some(&ObjType::Any),
-                        e.clone(),
-                        AssignMode::PatternMatch,
+                        e.clone()
                     );
                     match ret {
                         Ok(()) => {
@@ -8423,7 +8434,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
                 Some(&ObjType::Func),
                 Obj::Func(Func::Type(ObjType::Struct(s.clone())), Precedence::zero()),
-                AssignMode::Assign,
             )?;
             for (i, field) in field_names.iter().enumerate() {
                 assign(
@@ -8431,7 +8441,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     &EvaluatedLvalue::IndexedIdent((&**field).clone(), Vec::new()),
                     Some(&ObjType::Func),
                     Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
-                    AssignMode::Assign,
                 )?;
             }
             Ok(Obj::Null)
