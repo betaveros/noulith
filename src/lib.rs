@@ -4995,7 +4995,8 @@ impl Parser {
                             expr: Expr::Vector(Vec::new()),
                         })
                     } else {
-                        let (exs, _) = self.comma_separated()?;
+                        let (exs, _) =
+                            self.annotated_comma_separated(false, "vector lit contents")?;
                         let end = self.require(Token::RightParen, "vector expr".to_string())?;
                         Ok(LocExpr {
                             start,
@@ -5013,7 +5014,8 @@ impl Parser {
                             expr: Expr::List(Vec::new()),
                         })
                     } else {
-                        let (exs, _) = self.comma_separated()?;
+                        let (exs, _) =
+                            self.annotated_comma_separated(false, "list lit contents")?;
                         let end = self.require(Token::RightBracket, "list expr".to_string())?;
                         Ok(LocExpr {
                             start,
@@ -5080,7 +5082,8 @@ impl Parser {
                             } else {
                                 // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
                                 // assignment the second unpacks.
-                                let params0 = self.annotated_comma_separated("lambda params")?;
+                                let params0 =
+                                    self.annotated_comma_separated(true, "lambda params")?;
                                 let ps = params0
                                     .0
                                     .into_iter()
@@ -5179,7 +5182,7 @@ impl Parser {
                     self.require(Token::RightParen, "switch end".to_string())?;
                     let mut v = Vec::new();
                     while let Some(_) = self.try_consume(&Token::Case) {
-                        let pat = to_lvalue(self.annotated_pattern("switch pat")?)?;
+                        let pat = to_lvalue(self.annotated_pattern(true, "switch pat")?)?;
                         self.require(Token::RightArrow, "case mid: ->".to_string())?;
                         let res = self.single("switch body")?;
                         v.push((Box::new(pat), Box::new(res)));
@@ -5197,7 +5200,7 @@ impl Parser {
                     self.advance();
                     let body = self.expression()?;
                     self.require(Token::Catch, "try end".to_string())?;
-                    let pat = to_lvalue(self.annotated_pattern("catch pattern")?)?;
+                    let pat = to_lvalue(self.annotated_pattern(true, "catch pattern")?)?;
                     self.require(Token::RightArrow, "catch mid: ->".to_string())?;
                     let catcher = self.single("catch body")?;
                     Ok(LocExpr {
@@ -5251,7 +5254,7 @@ impl Parser {
                 self.single("for iteration guard")?,
             )))
         } else {
-            let pat0 = self.annotated_pattern("for iterator")?;
+            let pat0 = self.annotated_pattern(true, "for iterator")?;
             let pat = to_lvalue_no_literals(pat0)?;
             let ty = match self.peek() {
                 Some(Token::LeftArrow) => {
@@ -5269,7 +5272,7 @@ impl Parser {
                 }
                 _ => return Err(self.error_here(format!("for: require <- or <<- or ="))),
             };
-            let iteratee = self.pattern()?;
+            let iteratee = self.annotated_pattern(false, "for iteratee")?;
             Ok(ForIteration::Iteration(
                 ty,
                 Box::new(pat),
@@ -5293,7 +5296,7 @@ impl Parser {
                             end,
                         };
                     } else {
-                        let (cs, _) = self.comma_separated()?;
+                        let (cs, _) = self.annotated_comma_separated(false, "call arg list")?;
                         let end = self.require(Token::RightParen, "call expr".to_string())?;
                         cur = LocExpr {
                             expr: Expr::Call(Box::new(cur), cs),
@@ -5371,7 +5374,7 @@ impl Parser {
                             end: bang_end,
                         };
                     } else {
-                        let (cs, _) = self.comma_separated()?;
+                        let (cs, _) = self.annotated_comma_separated(false, "bang arg list")?;
                         let end = match cs.last() {
                             Some(c) => c.end,
                             None => bang_end,
@@ -5405,7 +5408,6 @@ impl Parser {
         self.peek_hard_stopper()
             || match self.peek() {
                 Some(Token::Assign) => true,
-                Some(Token::Colon) => true,
                 Some(Token::DoubleColon) => true,
                 Some(Token::Semicolon) => true,
                 Some(Token::LeftArrow) => true,
@@ -5419,6 +5421,7 @@ impl Parser {
         self.peek_csc_stopper()
             || match self.peek() {
                 Some(Token::Comma) => true,
+                Some(Token::Colon) => true,
                 Some(Token::And) => true,
                 Some(Token::Or) => true,
                 Some(Token::Coalesce) => true,
@@ -5575,45 +5578,11 @@ impl Parser {
         }
     }
 
-    // Nonempty (caller should check empty condition); no semicolons or annotations allowed. List
-    // literals; function declarations; LHSes of assignments. Not for function calls, I think? f(x;
-    // y) might actually be ok...  bool is whether a comma was found, to distinguish (x) from (x,)
-    fn comma_separated(&mut self) -> Result<(Vec<Box<LocExpr>>, bool), ParseError> {
-        let mut xs = vec![Box::new(self.single("comma-separated starter")?)];
-        let mut comma = false;
-        while self.try_consume(&Token::Comma).is_some() {
-            comma = true;
-            if self.peek_csc_stopper() {
-                return Ok((xs, comma));
-            }
-            xs.push(Box::new(self.single("comma-separated next")?));
-        }
-        return Ok((xs, comma));
-    }
-
-    // Nonempty comma-separated things, as above, but packaged as a single expr. No semicolons or
-    // assigns allowed. Should be nonempty I think. RHSes of assignments.
-    fn pattern(&mut self) -> Result<LocExpr, ParseError> {
-        let start = self.peek_loc();
-        let (exs, comma) = self.comma_separated()?;
-        match (few(exs), comma) {
-            (Few::Zero, _) => Err(self.error_here(format!("Expected pattern, got nothing"))),
-            (Few::One(ex), false) => Ok(*ex),
-            (Few::One(ex), true) => Ok(LocExpr {
-                start,
-                end: ex.end,
-                expr: Expr::CommaSeq(vec![ex]),
-            }),
-            (Few::Many(exs), _) => Ok(LocExpr {
-                start,
-                end: exs.last().unwrap().end,
-                expr: Expr::CommaSeq(exs),
-            }),
-        }
-    }
-
-    // Comma-separated things. No semicolons or assigns allowed. Should be nonempty I think, as
-    // above caller should handle empty case.
+    // Comma-separated things, possibly with annotations. No semicolons or assigns allowed. Should
+    // be nonempty I think, as above caller should handle empty case.
+    //
+    // If annotations = false, colons are actively forbidden (seeing one is a syntax error instead
+    // of just stopping parsing).
     //
     // This exists because we want commas and annotations to be "at the same level": it's important
     // that the annotation in `a, b := 3, 4` covers a, but it also doesn't make sense if `a: int,
@@ -5623,6 +5592,7 @@ impl Parser {
     // but that's annoying. Let's just clone the type expression.
     fn annotated_comma_separated(
         &mut self,
+        annotations: bool,
         msg: &str,
     ) -> Result<(Vec<Box<LocExpr>>, bool), ParseError> {
         let mut annotated = Vec::new();
@@ -5638,11 +5608,18 @@ impl Parser {
                         annotated.extend(pending_annotation);
                         return Ok((annotated, comma));
                     }
+                    if self.peek() == Some(&Token::Colon) {
+                        // we'll pick it up in the next iteration
+                        continue;
+                    }
                     pending_annotation.push(Box::new(
                         self.single("later expr in annotated-comma-separated")?,
                     ));
                 }
                 Some(Token::Colon) => {
+                    if !annotations {
+                        Err(self.error_here(format!("colons/annotations forbidden in {}", msg)))?
+                    }
                     self.advance();
                     if pending_annotation.is_empty() {
                         Err(self.error_here(format!(
@@ -5670,9 +5647,9 @@ impl Parser {
             }
         }
     }
-    fn annotated_pattern(&mut self, msg: &str) -> Result<LocExpr, ParseError> {
+    fn annotated_pattern(&mut self, annotations: bool, msg: &str) -> Result<LocExpr, ParseError> {
         let start = self.peek_loc();
-        let (exs, comma) = self.annotated_comma_separated(msg)?;
+        let (exs, comma) = self.annotated_comma_separated(annotations, msg)?;
         match (few(exs), comma) {
             (Few::Zero, _) => Err(self.error_here(format!(
                 "Expected annotated pattern at {}, got nothing",
@@ -5712,7 +5689,7 @@ impl Parser {
         } else {
             let every = self.try_consume(&Token::Every).is_some();
             // TODO: parsing can be different after Every
-            let pat = self.annotated_pattern("assign LHS")?;
+            let pat = self.annotated_pattern(true, "assign LHS")?;
 
             match self.peek() {
                 Some(Token::Assign) => {
@@ -5720,7 +5697,7 @@ impl Parser {
                     match pat.expr {
                         Expr::Call(lhs, op) => match few(op) {
                             Few::One(op) => {
-                                let rhs = self.pattern()?;
+                                let rhs = self.annotated_pattern(false, "op-assign RHS")?;
                                 let end = rhs.end;
                                 Ok(LocExpr {
                                     expr: Expr::OpAssign(
@@ -5739,7 +5716,7 @@ impl Parser {
                             ))),
                         },
                         _ => {
-                            let rhs = self.pattern()?;
+                            let rhs = self.annotated_pattern(false, "assign RHS")?;
                             let end = rhs.end;
                             // actually gonna accept literals here
                             // sometimes a, "foo", b := x is a nice way to fail fast

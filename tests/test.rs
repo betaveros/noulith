@@ -52,6 +52,10 @@ fn weird_assignments() {
         simple_eval("a, b, ...x, c := 1 to 6; [a, b, x join '', c] join ','"),
         Obj::from("1,2,345,6")
     );
+    assert_eq!(simple_eval("[x] := [2]; x"), i(2));
+    assert_eq!(simple_eval("x, := 2,; x"), i(2));
+    assert_eq!(simple_eval("x, := [2]; x"), i(2));
+    assert_eq!(simple_eval("[x] := 2,; x"), i(2));
 }
 
 #[test]
