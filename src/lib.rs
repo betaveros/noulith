@@ -3838,6 +3838,13 @@ pub enum ForIteration {
 }
 
 #[derive(Debug)]
+pub enum ForBody {
+    Execute(LocExpr),
+    Yield(LocExpr),
+    YieldItem(LocExpr, LocExpr),
+}
+
+#[derive(Debug)]
 pub enum IndexOrSlice {
     Index(Box<LocExpr>),
     Slice(Option<Box<LocExpr>>, Option<Box<LocExpr>>),
@@ -3885,7 +3892,7 @@ pub enum Expr {
     Assign(bool, Box<Lvalue>, Box<LocExpr>),
     OpAssign(bool, Box<Lvalue>, Box<LocExpr>, Box<LocExpr>),
     If(Box<LocExpr>, Box<LocExpr>, Option<Box<LocExpr>>),
-    For(Vec<ForIteration>, bool /* yield */, Box<LocExpr>),
+    For(Vec<ForIteration>, Box<ForBody>),
     While(Box<LocExpr>, Box<LocExpr>),
     Switch(Box<LocExpr>, Vec<(Box<Lvalue>, Box<LocExpr>)>),
     Try(Box<LocExpr>, Box<Lvalue>, Box<LocExpr>),
@@ -5128,19 +5135,29 @@ impl Parser {
                         }
                     }
                     let do_yield = self.try_consume(&Token::Yield).is_some();
-                    let body = self.assignment()?;
-                    if do_yield {
-                        match body.expr {
+                    let (end, body) = if do_yield {
+                        let key_body = self.single("for-yield body")?;
+                        match key_body.expr {
                             Expr::Sequence(_, true) => {
                                 eprintln!("\x1b[1;35mWARNING: for loop yields semicolon-terminated sequence\x1b[0m");
                             }
                             _ => {}
                         }
-                    }
+
+                        if self.try_consume(&Token::Colon).is_some() {
+                            let value_body = self.single("for-yield value")?;
+                            (value_body.end, ForBody::YieldItem(key_body, value_body))
+                        } else {
+                            (key_body.end, ForBody::Yield(key_body))
+                        }
+                    } else {
+                        let body = self.assignment()?;
+                        (body.end, ForBody::Execute(body))
+                    };
                     Ok(LocExpr {
                         start,
-                        end: body.end,
-                        expr: Expr::For(its, do_yield, Box::new(body)),
+                        end,
+                        expr: Expr::For(its, Box::new(body)),
                     })
                 }
                 Token::While => {
@@ -5727,11 +5744,7 @@ impl Parser {
                             // actually gonna accept literals here
                             // sometimes a, "foo", b := x is a nice way to fail fast
                             Ok(LocExpr {
-                                expr: Expr::Assign(
-                                    every,
-                                    Box::new(to_lvalue(pat)?),
-                                    Box::new(rhs),
-                                ),
+                                expr: Expr::Assign(every, Box::new(to_lvalue(pat)?), Box::new(rhs)),
                                 start,
                                 end,
                             })
@@ -6496,12 +6509,7 @@ fn assign_respecting_type(
     }))?
 }
 
-fn assign(
-    env: &REnv,
-    lhs: &EvaluatedLvalue,
-    rt: Option<&ObjType>,
-    rhs: Obj,
-) -> NRes<()> {
+fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => {
             match rt {
@@ -6661,12 +6669,7 @@ fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
     }
 }
 
-fn assign_every(
-    env: &REnv,
-    lhs: &EvaluatedLvalue,
-    rt: Option<&ObjType>,
-    rhs: Obj,
-) -> NRes<()> {
+fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
         EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
@@ -7556,12 +7559,11 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
 fn evaluate_for(
     env: &Rc<RefCell<Env>>,
     its: &[ForIteration],
-    body: &LocExpr,
-    callback: &mut impl FnMut(Obj) -> (),
+    callback: &mut impl FnMut(&Rc<RefCell<Env>>) -> NRes<()>,
 ) -> NRes<()> {
     match its {
-        [] => match evaluate(env, body) {
-            Ok(k) => Ok(callback(k)),
+        [] => match callback(env) {
+            Ok(()) => Ok(()),
             // don't catch break, thonking
             Err(NErr::Continue) => Ok(()),
             Err(e) => Err(e),
@@ -7576,7 +7578,7 @@ fn evaluate_for(
 
                         // should assign take x
                         assign(&ee, &p, Some(&ObjType::Any), x)?;
-                        evaluate_for(&ee, rest, body, callback)?;
+                        evaluate_for(&ee, rest, callback)?;
                     }
                 }
                 ForIterationType::Item => {
@@ -7591,7 +7593,7 @@ fn evaluate_for(
                             Some(&ObjType::Any),
                             Obj::list(vec![key_to_obj(k), v]),
                         )?;
-                        evaluate_for(&ee, rest, body, callback)?;
+                        evaluate_for(&ee, rest, callback)?;
                     }
                 }
                 ForIterationType::Declare => {
@@ -7599,7 +7601,7 @@ fn evaluate_for(
                     let p = eval_lvalue(&ee, lvalue)?;
                     assign(&ee, &p, Some(&ObjType::Any), itr)?;
 
-                    evaluate_for(&ee, rest, body, callback)?;
+                    evaluate_for(&ee, rest, callback)?;
                 }
             }
             Ok(())
@@ -7607,7 +7609,7 @@ fn evaluate_for(
         [ForIteration::Guard(guard), rest @ ..] => {
             let r = evaluate(env, guard)?;
             if r.truthy() {
-                evaluate_for(env, rest, body, callback)
+                evaluate_for(env, rest, callback)
             } else {
                 Ok(())
             }
@@ -8288,21 +8290,41 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             }
         }
-        Expr::For(iteratees, do_yield, body) => {
+        Expr::For(iteratees, body) => {
             add_trace(
-                if *do_yield {
-                    let mut acc = Vec::new();
-                    let mut f = |e| acc.push(e);
-                    match evaluate_for(env, iteratees.as_slice(), body, &mut f) {
-                        Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::list(acc)),
-                        Err(NErr::Break(e)) => Ok(e), // ??????
-                        Err(e) => Err(e),
+                match &**body {
+                    // something HRTB something forces us to write the closures inline
+                    ForBody::Execute(body) => {
+                        match evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                            evaluate(e, body)?;
+                            Ok(())
+                        }) {
+                            Ok(()) => Ok(Obj::Null),
+                            Err(NErr::Break(e)) => Ok(e),
+                            Err(e) => Err(e),
+                        }
                     }
-                } else {
-                    match evaluate_for(env, iteratees.as_slice(), body, &mut |_| ()) {
-                        Ok(()) => Ok(Obj::Null),
-                        Err(NErr::Break(e)) => Ok(e),
-                        Err(e) => Err(e),
+                    ForBody::Yield(body) => {
+                        let mut acc = Vec::new();
+                        match evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                            acc.push(evaluate(e, body)?);
+                            Ok(())
+                        }) {
+                            Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::list(acc)),
+                            Err(NErr::Break(e)) => Ok(e), // ??????
+                            Err(e) => Err(e),
+                        }
+                    }
+                    ForBody::YieldItem(key_body, value_body) => {
+                        let mut acc = HashMap::new();
+                        match evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                            acc.insert(to_key(evaluate(e, key_body)?)?, evaluate(e, value_body)?);
+                            Ok(())
+                        }) {
+                            Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::dict(acc, None)),
+                            Err(NErr::Break(e)) => Ok(e), // ??????
+                            Err(e) => Err(e),
+                        }
                     }
                 },
                 "for loop".to_string(),
@@ -8351,12 +8373,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 // TODO this clone isn't great but isn't trivial to eliminate. maybe pattern match
                 // errors should return the assigned object back or something?? idk
                 // TODO: only catch pattern match errors tbh
-                let ret = assign(
-                    &ee,
-                    &p,
-                    Some(&ObjType::Any),
-                    s.clone(),
-                );
+                let ret = assign(&ee, &p, Some(&ObjType::Any), s.clone());
                 match ret {
                     Ok(()) => {
                         std::mem::drop(s);
@@ -8388,12 +8405,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     let p = eval_lvalue(&ee, pat)?;
                     // drop asap
                     // TODO as above, this clone isn't great but isn't trivial to eliminate
-                    let ret = assign(
-                        &ee,
-                        &p,
-                        Some(&ObjType::Any),
-                        e.clone()
-                    );
+                    let ret = assign(&ee, &p, Some(&ObjType::Any), e.clone());
                     match ret {
                         Ok(()) => {
                             std::mem::drop(e);
@@ -8693,7 +8705,7 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                 box_freeze(bound, env, b)?,
                 opt_box_freeze(bound, env, c)?,
             )),
-            Expr::For(iteratees, do_yield, body) => {
+            Expr::For(iteratees, body) => {
                 let mut bound2 = bound.clone();
                 Ok(Expr::For(
                     iteratees
@@ -8720,8 +8732,14 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                             }
                         })
                         .collect::<NRes<Vec<ForIteration>>>()?,
-                    *do_yield,
-                    box_freeze(&mut bound2, env, body)?,
+                    Box::new(match &**body {
+                        ForBody::Execute(b) => ForBody::Execute(freeze(&mut bound2, env, b)?),
+                        ForBody::Yield(b) => ForBody::Yield(freeze(&mut bound2, env, b)?),
+                        ForBody::YieldItem(kb, vb) => ForBody::YieldItem(
+                            freeze(&mut bound2, env, kb)?,
+                            freeze(&mut bound2, env, vb)?,
+                        ),
+                    }),
                 ))
             }
             Expr::While(cond, body) => {
@@ -11445,12 +11463,10 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "path_parent".to_string(),
         body: |a| match a {
-            Obj::Seq(Seq::String(a)) => {
-                match std::path::Path::new(&*a).parent() {
-                    Some(p) => Ok(Obj::from(p.to_string_lossy().into_owned())),
-                    None => Err(NErr::value_error(format!("No path parent: {}", a))),
-                }
-            }
+            Obj::Seq(Seq::String(a)) => match std::path::Path::new(&*a).parent() {
+                Some(p) => Ok(Obj::from(p.to_string_lossy().into_owned())),
+                None => Err(NErr::value_error(format!("No path parent: {}", a))),
+            },
             a => Err(NErr::argument_error_1(&a)),
         },
     });
