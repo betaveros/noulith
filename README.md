@@ -235,7 +235,7 @@ y := pop x;
 z := remove x[0]
 ```
 
-`y` will be `5`, `z` will be `a`, and `x` will be `[2, 3, 4]`. There's no way to implement `pop` as a function yourself; the best you could do is take a list and separately return the last element and everything before it.
+`y` will be `5`, `z` will be `1`, and `x` will be `[2, 3, 4]`. There's no way to implement `pop` as a function yourself; the best you could do is take a list and separately return the last element and everything before it.
 
 You can implement your own "mutable data cells" easily (?) with a closure:
 
