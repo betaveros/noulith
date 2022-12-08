@@ -3865,6 +3865,7 @@ pub enum Token {
     Every,
     Struct,
     Freeze,
+    Import,
     Literally,
     Underscore,
 
@@ -3952,6 +3953,7 @@ pub enum Expr {
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
     Struct(Rc<String>, Vec<Rc<String>>),
     Freeze(Box<LocExpr>),
+    Import(Box<LocExpr>),
     // lvalues only
     Literally(Box<LocExpr>),
 
@@ -4618,6 +4620,7 @@ impl<'a> Lexer<'a> {
                                 "every" => Token::Every,
                                 "struct" => Token::Struct,
                                 "freeze" => Token::Freeze,
+                                "import" => Token::Import,
                                 "literally" => Token::Literally,
                                 "_" => Token::Underscore,
                                 _ => Token::Ident(acc),
@@ -5027,6 +5030,15 @@ impl Parser {
                         start,
                         end: s.end,
                         expr: Expr::Freeze(Box::new(s)),
+                    })
+                }
+                Token::Import => {
+                    self.advance();
+                    let s = self.single("import")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::Import(Box::new(s)),
                     })
                 }
                 Token::LeftParen => {
@@ -7843,7 +7855,7 @@ pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) {
     match freeze(&mut frenv, &expr) {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("\x1b[1;35mWARNING: expr could not be frozen: {}\x1b[0m", e);
+            eprintln!("\x1b[1;35mWARNING: expr warn failed: {}\x1b[0m", e);
         }
     }
 }
@@ -8530,6 +8542,38 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             };
             evaluate(env, &freeze(&mut frenv, expr)?)
         }
+        Expr::Import(arg) => {
+            // l m a o
+            // we'd really like to try importing relative to the current file's path. but then for that to
+            // be sensible we probably need to nest envs so whe we import a file we stick its path in its
+            // env. so either the imported file has to explicitly export stuff outside, or the import
+            // statement has to pull things out. might procrastinate after christmas... FIXME
+            add_trace(
+                match evaluate(&env, arg)? {
+                    // FIXME refactor out with freeze
+                    Obj::Seq(Seq::String(f)) => match fs::read_to_string(&*f) {
+                        Ok(c) => match match parse(&c) {
+                            Ok(Some(code)) => evaluate(env, &code),
+                            Ok(None) => Err(NErr::value_error("empty file".to_string())),
+                            Err(s) => {
+                                Err(NErr::value_error(format!("lex failed: {}", s.render(&c))))
+                            }
+                        } {
+                            Ok(x) => Ok(x),
+                            Err(mut e) => {
+                                e.supply_source(f.clone(), Rc::new(c));
+                                Err(e)
+                            }
+                        },
+                        Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
+                    },
+                    a => Err(NErr::type_error(format!("can't import: {}", a))),
+                },
+                "import".to_string(),
+                expr.start,
+                expr.end,
+            )
+        }
         Expr::Literally(_) => Err(NErr::syntax_error_loc(
             "'literally' can only be in lvalues / patterns".to_string(),
             "literally".to_string(),
@@ -8572,8 +8616,26 @@ impl FreezeEnv {
 fn vec_box_freeze(env: &mut FreezeEnv, expr: &Vec<Box<LocExpr>>) -> NRes<Vec<Box<LocExpr>>> {
     expr.iter().map(|x| box_freeze(env, x)).collect()
 }
+fn vec_box_freeze_underscore_ok(
+    env: &mut FreezeEnv,
+    expr: &Vec<Box<LocExpr>>,
+) -> NRes<Vec<Box<LocExpr>>> {
+    expr.iter()
+        .map(|x| box_freeze_underscore_ok(env, x))
+        .collect()
+}
 fn box_freeze(env: &mut FreezeEnv, expr: &Box<LocExpr>) -> NRes<Box<LocExpr>> {
     Ok(Box::new(freeze(env, expr)?))
+}
+fn box_freeze_underscore_ok(env: &mut FreezeEnv, expr: &Box<LocExpr>) -> NRes<Box<LocExpr>> {
+    match expr.expr {
+        Expr::Underscore => Ok(Box::new(LocExpr {
+            expr: Expr::Underscore,
+            start: expr.start,
+            end: expr.end,
+        })),
+        _ => box_freeze(env, expr),
+    }
 }
 fn opt_box_freeze(env: &mut FreezeEnv, expr: &Option<Box<LocExpr>>) -> NRes<Option<Box<LocExpr>>> {
     match expr {
@@ -8645,7 +8707,7 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
 
 fn freeze_ios(env: &mut FreezeEnv, ios: &IndexOrSlice) -> NRes<IndexOrSlice> {
     match ios {
-        IndexOrSlice::Index(i) => Ok(IndexOrSlice::Index(box_freeze(env, i)?)),
+        IndexOrSlice::Index(i) => Ok(IndexOrSlice::Index(box_freeze_underscore_ok(env, i)?)),
         IndexOrSlice::Slice(i, j) => Ok(IndexOrSlice::Slice(
             opt_box_freeze(env, i)?,
             opt_box_freeze(env, j)?,
@@ -8680,8 +8742,16 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::BytesLit(x) => Ok(Expr::BytesLit(x.clone())),
             Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
             Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
-            Expr::Struct(name, field_names) => Ok(Expr::Struct(name.clone(), field_names.clone())),
-
+            Expr::Struct(name, field_names) => {
+                env.bind(HashSet::from([(&**name).clone()]));
+                env.bind(
+                    field_names
+                        .iter()
+                        .map(|s| (&**s).clone())
+                        .collect::<HashSet<String>>(),
+                );
+                Ok(Expr::Struct(name.clone(), field_names.clone()))
+            }
             Expr::FormatString(s) => Ok(Expr::FormatString(
                 s.iter()
                     .map(|x| match x {
@@ -8699,9 +8769,10 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         Err(e) => {
                             if env.warn {
                                 eprintln!(
-                                    "\x1b[1;35mWARNING: variable not found: {} (continuing)\x1b[0m",
+                                    "\x1b[1;35mWARNING: variable not found: {} (binding and continuing)\x1b[0m",
                                     s
                                 );
+                                env.bound.insert(s.clone());
                                 Ok(Expr::Ident(s.clone()))
                             } else {
                                 Err(e)
@@ -8710,12 +8781,20 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     }
                 }
             }
-            Expr::Underscore => Err(NErr::syntax_error("Can't freeze underscore".to_string())),
-            Expr::Index(x, ios) => Ok(Expr::Index(box_freeze(env, x)?, freeze_ios(env, ios)?)),
+            Expr::Underscore => Err(NErr::syntax_error_loc(
+                "Can't freeze underscore".to_string(),
+                "_".to_string(),
+                expr.start,
+                expr.end,
+            )),
+            Expr::Index(x, ios) => Ok(Expr::Index(
+                box_freeze_underscore_ok(env, x)?,
+                freeze_ios(env, ios)?,
+            )),
             Expr::Chain(op1, ops) => Ok(Expr::Chain(
-                box_freeze(env, op1)?,
+                box_freeze_underscore_ok(env, op1)?,
                 ops.iter()
-                    .map(|(op, d)| Ok((box_freeze(env, op)?, box_freeze(env, d)?)))
+                    .map(|(op, d)| Ok((box_freeze(env, op)?, box_freeze_underscore_ok(env, d)?)))
                     .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?,
             )),
             Expr::And(lhs, rhs) => Ok(Expr::And(box_freeze(env, lhs)?, box_freeze(env, rhs)?)),
@@ -8748,10 +8827,13 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, op)?,
                 box_freeze(env, rhs)?,
             )),
-            Expr::Call(f, args) => Ok(Expr::Call(box_freeze(env, f)?, vec_box_freeze(env, args)?)),
+            Expr::Call(f, args) => Ok(Expr::Call(
+                box_freeze_underscore_ok(env, f)?,
+                vec_box_freeze_underscore_ok(env, args)?,
+            )),
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
-            Expr::List(xs) => Ok(Expr::List(vec_box_freeze(env, xs)?)),
+            Expr::List(xs) => Ok(Expr::List(vec_box_freeze_underscore_ok(env, xs)?)),
             Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(env, xs)?)),
             Expr::Dict(def, xs) => Ok(Expr::Dict(
                 opt_box_freeze(env, def)?,
@@ -8858,6 +8940,49 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 ))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
+            Expr::Import(e) => {
+                if env.warn {
+                    match &e.expr {
+                        // FIXME refactor out with freeze
+                        Expr::StringLit(s) => {
+                            match fs::read_to_string(&**s) {
+                                Ok(c) => match parse(&c) {
+                                    Ok(Some(code)) => match freeze(env, &code) {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            eprintln!("\x1b[1;35mWARNING: analyzing import failed: {}\x1b[0m", e.render(&c));
+                                        }
+                                    },
+                                    Ok(None) => {
+                                        eprintln!("\x1b[1;35mWARNING: import of empty file\x1b[0m");
+                                    }
+                                    Err(s) => {
+                                        eprintln!(
+                                            "\x1b[1;35mWARNING: lexing import failed: {}\x1b[0m",
+                                            s.render(&c)
+                                        );
+                                    }
+                                },
+                                Err(e) => {
+                                    eprintln!(
+                                    "\x1b[1;35mWARNING: io error when handling import: {}\x1b[0m",
+                                    e
+                                );
+                                }
+                            }
+                        }
+                        inner => {
+                            eprintln!(
+                                "\x1b[1;35mWARNING: can't handle nonliteral import: {:?}\x1b[0m",
+                                inner
+                            );
+                        }
+                    }
+                    Ok(Expr::Import(box_freeze(env, e)?))
+                } else {
+                    Err(NErr::syntax_error(format!("cannot freeze import")))
+                }
+            }
             Expr::Literally(e) => Ok(Expr::Literally(box_freeze(env, e)?)),
 
             Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(env, e)?)),
@@ -11621,40 +11746,6 @@ pub fn initialize(env: &mut Env) {
                 Ok(Obj::from(rand::thread_rng().gen_bigint_range(&a, &b)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
-        },
-    });
-
-    // l m a o
-    // we'd really like to try importing relative to the current file's path. but then for that to
-    // be sensible we probably need to nest envs so whe we import a file we stick its path in its
-    // env. so either the imported file has to explicitly export stuff outside, or the import
-    // statement has to pull things out. might procrastinate after christmas... FIXME
-    env.insert_builtin(BasicBuiltin {
-        name: "import".to_string(),
-        body: |env, args| {
-            let mut ret = Obj::Null;
-            for arg in args {
-                ret = match arg {
-                    Obj::Seq(Seq::String(f)) => match fs::read_to_string(&*f) {
-                        Ok(c) => match match parse(&c) {
-                            Ok(Some(code)) => evaluate(env, &code),
-                            Ok(None) => Err(NErr::value_error("empty file".to_string())),
-                            Err(s) => {
-                                Err(NErr::value_error(format!("lex failed: {}", s.render(&c))))
-                            }
-                        } {
-                            Ok(x) => Ok(x),
-                            Err(mut e) => {
-                                e.supply_source(f.clone(), Rc::new(c));
-                                Err(e)
-                            }
-                        },
-                        Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
-                    },
-                    a => Err(NErr::type_error(format!("can't import: {}", a))),
-                }?
-            }
-            Ok(ret)
         },
     });
 
