@@ -5189,13 +5189,6 @@ impl Parser {
                     let do_yield = self.try_consume(&Token::Yield).is_some();
                     let (end, body) = if do_yield {
                         let key_body = self.single("for-yield body")?;
-                        match key_body.expr {
-                            Expr::Sequence(_, true) => {
-                                eprintln!("\x1b[1;35mWARNING: for loop yields semicolon-terminated sequence\x1b[0m");
-                            }
-                            _ => {}
-                        }
-
                         if self.try_consume(&Token::Colon).is_some() {
                             let value_body = self.single("for-yield value")?;
                             (value_body.end, ForBody::YieldItem(key_body, value_body))
@@ -7841,6 +7834,20 @@ fn splat_section_eval(
     Ok(acc)
 }
 
+pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) {
+    let mut frenv = FreezeEnv {
+        bound: HashSet::new(),
+        env: Rc::clone(&env),
+        warn: true,
+    };
+    match freeze(&mut frenv, &expr) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("\x1b[1;35mWARNING: expr could not be frozen: {}\x1b[0m", e);
+        }
+    }
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.expr {
         Expr::Null => Ok(Obj::Null),
@@ -8516,8 +8523,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Ok(Obj::Null)
         }
         Expr::Freeze(expr) => {
-            let mut bound = HashSet::new();
-            evaluate(env, &freeze(&mut bound, env, expr)?)
+            let mut frenv = FreezeEnv {
+                bound: HashSet::new(),
+                env: Rc::clone(env),
+                warn: false,
+            };
+            evaluate(env, &freeze(&mut frenv, expr)?)
         }
         Expr::Literally(_) => Err(NErr::syntax_error_loc(
             "'literally' can only be in lvalues / patterns".to_string(),
@@ -8533,65 +8544,66 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     }
 }
 
-fn vec_box_freeze(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    expr: &Vec<Box<LocExpr>>,
-) -> NRes<Vec<Box<LocExpr>>> {
-    expr.iter().map(|x| box_freeze(bound, env, x)).collect()
+// This is probably eventually going to shed the word "freeze" and become a visitor pattern.
+// If it hasn't already...
+#[derive(Clone)]
+struct FreezeEnv {
+    bound: HashSet<String>,
+    env: Rc<RefCell<Env>>,
+    warn: bool,
 }
-fn box_freeze(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    expr: &Box<LocExpr>,
-) -> NRes<Box<LocExpr>> {
-    Ok(Box::new(freeze(bound, env, expr)?))
+
+impl FreezeEnv {
+    fn bind(&mut self, ids: HashSet<String>) {
+        if self.warn {
+            let rebound = self.bound.intersection(&ids).collect::<Vec<&String>>();
+            if !rebound.is_empty() {
+                eprintln!("\x1b[1;35mWARNING: rebinding variables:");
+                for r in rebound {
+                    eprintln!("  {}", r);
+                }
+                eprintln!("\x1b[0m");
+            }
+        }
+        self.bound.extend(ids);
+    }
 }
-fn opt_box_freeze(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    expr: &Option<Box<LocExpr>>,
-) -> NRes<Option<Box<LocExpr>>> {
+
+fn vec_box_freeze(env: &mut FreezeEnv, expr: &Vec<Box<LocExpr>>) -> NRes<Vec<Box<LocExpr>>> {
+    expr.iter().map(|x| box_freeze(env, x)).collect()
+}
+fn box_freeze(env: &mut FreezeEnv, expr: &Box<LocExpr>) -> NRes<Box<LocExpr>> {
+    Ok(Box::new(freeze(env, expr)?))
+}
+fn opt_box_freeze(env: &mut FreezeEnv, expr: &Option<Box<LocExpr>>) -> NRes<Option<Box<LocExpr>>> {
     match expr {
-        Some(x) => Ok(Some(Box::new(freeze(bound, env, x)?))),
+        Some(x) => Ok(Some(Box::new(freeze(env, x)?))),
         None => Ok(None),
     }
 }
 
-fn opt_rc_freeze(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    expr: &Option<Rc<LocExpr>>,
-) -> NRes<Option<Rc<LocExpr>>> {
+fn opt_rc_freeze(env: &mut FreezeEnv, expr: &Option<Rc<LocExpr>>) -> NRes<Option<Rc<LocExpr>>> {
     match expr {
-        Some(x) => Ok(Some(Rc::new(freeze(bound, env, x)?))),
+        Some(x) => Ok(Some(Rc::new(freeze(env, x)?))),
         None => Ok(None),
     }
 }
 
-fn box_freeze_lvalue(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    lvalue: &Box<Lvalue>,
-) -> NRes<Box<Lvalue>> {
-    Ok(Box::new(freeze_lvalue(bound, env, lvalue)?))
+fn box_freeze_lvalue(env: &mut FreezeEnv, lvalue: &Box<Lvalue>) -> NRes<Box<Lvalue>> {
+    Ok(Box::new(freeze_lvalue(env, lvalue)?))
 }
 
-fn freeze_lvalue(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    lvalue: &Lvalue,
-) -> NRes<Lvalue> {
+fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
     match lvalue {
         Lvalue::Underscore => Ok(Lvalue::Underscore),
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
         Lvalue::IndexedIdent(s, ioses) => {
-            if bound.contains(s) {
+            if env.bound.contains(s) {
                 Ok(Lvalue::IndexedIdent(
                     s.clone(),
                     ioses
                         .iter()
-                        .map(|ios| freeze_ios(bound, env, ios))
+                        .map(|ios| freeze_ios(env, ios))
                         .collect::<NRes<Vec<IndexOrSlice>>>()?,
                 ))
             } else {
@@ -8602,50 +8614,41 @@ fn freeze_lvalue(
             }
         }
         Lvalue::Annotation(x, e) => Ok(Lvalue::Annotation(
-            box_freeze_lvalue(bound, env, x)?,
-            opt_rc_freeze(bound, env, e)?,
+            box_freeze_lvalue(env, x)?,
+            opt_rc_freeze(env, e)?,
         )),
         Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
             x.iter()
-                .map(|e| box_freeze_lvalue(bound, env, e))
+                .map(|e| box_freeze_lvalue(env, e))
                 .collect::<NRes<Vec<Box<Lvalue>>>>()?,
         )),
-        Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(bound, env, x)?)),
+        Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(env, x)?)),
         Lvalue::Or(a, b) => Ok(Lvalue::Or(
-            box_freeze_lvalue(bound, env, a)?,
-            box_freeze_lvalue(bound, env, b)?,
+            box_freeze_lvalue(env, a)?,
+            box_freeze_lvalue(env, b)?,
         )),
         Lvalue::Destructure(f, args) => Ok(Lvalue::Destructure(
-            box_freeze(bound, env, f)?,
+            box_freeze(env, f)?,
             args.iter()
-                .map(|e| box_freeze_lvalue(bound, env, e))
+                .map(|e| box_freeze_lvalue(env, e))
                 .collect::<NRes<Vec<Box<Lvalue>>>>()?,
         )),
         Lvalue::ChainDestructure(f, args) => Ok(Lvalue::ChainDestructure(
-            box_freeze_lvalue(bound, env, f)?,
+            box_freeze_lvalue(env, f)?,
             args.iter()
-                .map(|(e, v)| {
-                    Ok((
-                        box_freeze(bound, env, e)?,
-                        box_freeze_lvalue(bound, env, v)?,
-                    ))
-                })
+                .map(|(e, v)| Ok((box_freeze(env, e)?, box_freeze_lvalue(env, v)?)))
                 .collect::<NRes<Vec<(Box<LocExpr>, Box<Lvalue>)>>>()?,
         )),
-        Lvalue::Literally(e) => Ok(Lvalue::Literally(box_freeze(bound, env, e)?)),
+        Lvalue::Literally(e) => Ok(Lvalue::Literally(box_freeze(env, e)?)),
     }
 }
 
-fn freeze_ios(
-    bound: &mut HashSet<String>,
-    env: &Rc<RefCell<Env>>,
-    ios: &IndexOrSlice,
-) -> NRes<IndexOrSlice> {
+fn freeze_ios(env: &mut FreezeEnv, ios: &IndexOrSlice) -> NRes<IndexOrSlice> {
     match ios {
-        IndexOrSlice::Index(i) => Ok(IndexOrSlice::Index(box_freeze(bound, env, i)?)),
+        IndexOrSlice::Index(i) => Ok(IndexOrSlice::Index(box_freeze(env, i)?)),
         IndexOrSlice::Slice(i, j) => Ok(IndexOrSlice::Slice(
-            opt_box_freeze(bound, env, i)?,
-            opt_box_freeze(bound, env, j)?,
+            opt_box_freeze(env, i)?,
+            opt_box_freeze(env, j)?,
         )),
     }
 }
@@ -8663,7 +8666,7 @@ fn freeze_ios(
 // This is fragile because it has its own idea of what things introduce scopes and one day it wil
 // get out of sync with the actual evaluation code. Shrug.
 
-fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<LocExpr> {
+fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
     Ok(LocExpr {
         start: expr.start,
         end: expr.end,
@@ -8683,87 +8686,99 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                 s.iter()
                     .map(|x| match x {
                         Ok(c) => Ok(Ok(*c)),
-                        Err((e, ff)) => Ok(Err((freeze(bound, env, e)?, ff.clone()))),
+                        Err((e, ff)) => Ok(Err((freeze(env, e)?, ff.clone()))),
                     })
                     .collect::<NRes<Vec<Result<char, (LocExpr, MyFmtFlags)>>>>()?,
             )),
             Expr::Ident(s) => {
-                if bound.contains(s) {
+                if env.bound.contains(s) {
                     Ok(Expr::Ident(s.clone()))
                 } else {
-                    Ok(Expr::Frozen(Env::try_borrow_get_var(env, s)?))
+                    match Env::try_borrow_get_var(&env.env, s) {
+                        Ok(v) => Ok(Expr::Frozen(v)),
+                        Err(e) => {
+                            if env.warn {
+                                eprintln!(
+                                    "\x1b[1;35mWARNING: variable not found: {} (continuing)\x1b[0m",
+                                    s
+                                );
+                                Ok(Expr::Ident(s.clone()))
+                            } else {
+                                Err(e)
+                            }
+                        }
+                    }
                 }
             }
             Expr::Underscore => Err(NErr::syntax_error("Can't freeze underscore".to_string())),
-            Expr::Index(x, ios) => Ok(Expr::Index(
-                box_freeze(bound, env, x)?,
-                freeze_ios(bound, env, ios)?,
-            )),
+            Expr::Index(x, ios) => Ok(Expr::Index(box_freeze(env, x)?, freeze_ios(env, ios)?)),
             Expr::Chain(op1, ops) => Ok(Expr::Chain(
-                box_freeze(bound, env, op1)?,
+                box_freeze(env, op1)?,
                 ops.iter()
-                    .map(|(op, d)| Ok((box_freeze(bound, env, op)?, box_freeze(bound, env, d)?)))
+                    .map(|(op, d)| Ok((box_freeze(env, op)?, box_freeze(env, d)?)))
                     .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?,
             )),
-            Expr::And(lhs, rhs) => Ok(Expr::And(
-                box_freeze(bound, env, lhs)?,
-                box_freeze(bound, env, rhs)?,
-            )),
-            Expr::Or(lhs, rhs) => Ok(Expr::Or(
-                box_freeze(bound, env, lhs)?,
-                box_freeze(bound, env, rhs)?,
-            )),
-            Expr::Coalesce(lhs, rhs) => Ok(Expr::Coalesce(
-                box_freeze(bound, env, lhs)?,
-                box_freeze(bound, env, rhs)?,
-            )),
+            Expr::And(lhs, rhs) => Ok(Expr::And(box_freeze(env, lhs)?, box_freeze(env, rhs)?)),
+            Expr::Or(lhs, rhs) => Ok(Expr::Or(box_freeze(env, lhs)?, box_freeze(env, rhs)?)),
+            Expr::Coalesce(lhs, rhs) => {
+                Ok(Expr::Coalesce(box_freeze(env, lhs)?, box_freeze(env, rhs)?))
+            }
             Expr::Assign(every, pat, rhs) => {
                 // have to bind first so box_freeze_lvalue works
                 // also recursive functions work ig
-                bound.extend(pat.collect_identifiers(true /* declared_only */));
+                env.bind(pat.collect_identifiers(true /* declared_only */));
 
-                let lvalue = box_freeze_lvalue(bound, env, pat)?;
-                Ok(Expr::Assign(*every, lvalue, box_freeze(bound, env, rhs)?))
+                let lvalue = box_freeze_lvalue(env, pat)?;
+                Ok(Expr::Assign(*every, lvalue, box_freeze(env, rhs)?))
             }
             Expr::Annotation(s, t) => Ok(Expr::Annotation(
-                box_freeze(bound, env, s)?,
-                opt_rc_freeze(bound, env, t)?,
+                box_freeze(env, s)?,
+                opt_rc_freeze(env, t)?,
             )),
-            Expr::Consume(pat) => Ok(Expr::Consume(box_freeze_lvalue(bound, env, pat)?)),
-            Expr::Pop(pat) => Ok(Expr::Pop(box_freeze_lvalue(bound, env, pat)?)),
-            Expr::Remove(pat) => Ok(Expr::Remove(box_freeze_lvalue(bound, env, pat)?)),
+            Expr::Consume(pat) => Ok(Expr::Consume(box_freeze_lvalue(env, pat)?)),
+            Expr::Pop(pat) => Ok(Expr::Pop(box_freeze_lvalue(env, pat)?)),
+            Expr::Remove(pat) => Ok(Expr::Remove(box_freeze_lvalue(env, pat)?)),
             Expr::Swap(a, b) => Ok(Expr::Swap(
-                box_freeze_lvalue(bound, env, a)?,
-                box_freeze_lvalue(bound, env, b)?,
+                box_freeze_lvalue(env, a)?,
+                box_freeze_lvalue(env, b)?,
             )),
             Expr::OpAssign(every, pat, op, rhs) => Ok(Expr::OpAssign(
                 *every,
-                box_freeze_lvalue(bound, env, pat)?,
-                box_freeze(bound, env, op)?,
-                box_freeze(bound, env, rhs)?,
+                box_freeze_lvalue(env, pat)?,
+                box_freeze(env, op)?,
+                box_freeze(env, rhs)?,
             )),
-            Expr::Call(f, args) => Ok(Expr::Call(
-                box_freeze(bound, env, f)?,
-                vec_box_freeze(bound, env, args)?,
-            )),
-            Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(bound, env, s)?)),
-            Expr::Splat(s) => Ok(Expr::Splat(box_freeze(bound, env, s)?)),
-            Expr::List(xs) => Ok(Expr::List(vec_box_freeze(bound, env, xs)?)),
-            Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(bound, env, xs)?)),
+            Expr::Call(f, args) => Ok(Expr::Call(box_freeze(env, f)?, vec_box_freeze(env, args)?)),
+            Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
+            Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
+            Expr::List(xs) => Ok(Expr::List(vec_box_freeze(env, xs)?)),
+            Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(env, xs)?)),
             Expr::Dict(def, xs) => Ok(Expr::Dict(
-                opt_box_freeze(bound, env, def)?,
+                opt_box_freeze(env, def)?,
                 xs.iter()
-                    .map(|(k, v)| Ok((box_freeze(bound, env, k)?, opt_box_freeze(bound, env, v)?)))
+                    .map(|(k, v)| Ok((box_freeze(env, k)?, opt_box_freeze(env, v)?)))
                     .collect::<NRes<Vec<(Box<LocExpr>, Option<Box<LocExpr>>)>>>()?,
             )),
-            Expr::Sequence(xs, es) => Ok(Expr::Sequence(vec_box_freeze(bound, env, xs)?, *es)),
+            Expr::Sequence(xs, es) => Ok(Expr::Sequence(vec_box_freeze(env, xs)?, *es)),
             Expr::If(a, b, c) => Ok(Expr::If(
-                box_freeze(bound, env, a)?,
-                box_freeze(bound, env, b)?,
-                opt_box_freeze(bound, env, c)?,
+                box_freeze(env, a)?,
+                box_freeze(env, b)?,
+                opt_box_freeze(env, c)?,
             )),
             Expr::For(iteratees, body) => {
-                let mut bound2 = bound.clone();
+                if env.warn {
+                    match &**body {
+                        ForBody::Yield(LocExpr {
+                            expr: Expr::Sequence(_, true),
+                            ..
+                        }) => {
+                            eprintln!("\x1b[1;35mWARNING: for loop yields semicolon-terminated sequence\x1b[0m");
+                        }
+                        _ => {}
+                    }
+                }
+
+                let mut env2 = env.clone();
                 Ok(Expr::For(
                     iteratees
                         .iter()
@@ -8771,7 +8786,7 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                             ForIteration::Iteration(ty, lv, expr) => {
                                 // have to bind first so box_freeze_lvalue works
                                 // also recursive functions work ig
-                                bound2.extend(lv.collect_identifiers(
+                                env2.bind(lv.collect_identifiers(
                                     match ty {
                                         ForIterationType::Normal => false,
                                         ForIterationType::Item => false,
@@ -8780,74 +8795,74 @@ fn freeze(bound: &mut HashSet<String>, env: &Rc<RefCell<Env>>, expr: &LocExpr) -
                                 ));
                                 Ok(ForIteration::Iteration(
                                     *ty,
-                                    box_freeze_lvalue(&mut bound2, env, lv)?,
-                                    box_freeze(&mut bound2, env, expr)?,
+                                    box_freeze_lvalue(&mut env2, lv)?,
+                                    box_freeze(&mut env2, expr)?,
                                 ))
                             }
                             ForIteration::Guard(expr) => {
-                                Ok(ForIteration::Guard(box_freeze(&mut bound2, env, expr)?))
+                                Ok(ForIteration::Guard(box_freeze(&mut env2, expr)?))
                             }
                         })
                         .collect::<NRes<Vec<ForIteration>>>()?,
                     Box::new(match &**body {
-                        ForBody::Execute(b) => ForBody::Execute(freeze(&mut bound2, env, b)?),
-                        ForBody::Yield(b) => ForBody::Yield(freeze(&mut bound2, env, b)?),
-                        ForBody::YieldItem(kb, vb) => ForBody::YieldItem(
-                            freeze(&mut bound2, env, kb)?,
-                            freeze(&mut bound2, env, vb)?,
-                        ),
+                        ForBody::Execute(b) => ForBody::Execute(freeze(&mut env2, b)?),
+                        ForBody::Yield(b) => ForBody::Yield(freeze(&mut env2, b)?),
+                        ForBody::YieldItem(kb, vb) => {
+                            ForBody::YieldItem(freeze(&mut env2, kb)?, freeze(&mut env2, vb)?)
+                        }
                     }),
                 ))
             }
             Expr::While(cond, body) => {
-                let mut bound2 = bound.clone();
+                let mut env2 = env.clone();
                 Ok(Expr::While(
-                    box_freeze(&mut bound2, env, cond)?,
-                    box_freeze(&mut bound2, env, body)?,
+                    box_freeze(&mut env2, cond)?,
+                    box_freeze(&mut env2, body)?,
                 ))
             }
             Expr::Switch(scrutinee, arms) => Ok(Expr::Switch(
-                box_freeze(bound, env, scrutinee)?,
+                box_freeze(env, scrutinee)?,
                 arms.iter()
                     .map(|(pat, rhs)| {
-                        let mut bound2 = bound.clone();
-                        bound2.extend(pat.collect_identifiers(false /* declared_only */));
+                        let mut env2 = env.clone();
+                        env2.bind(pat.collect_identifiers(false /* declared_only */));
                         Ok((
-                            box_freeze_lvalue(&mut bound2, env, pat)?,
-                            box_freeze(&mut bound2, env, rhs)?,
+                            box_freeze_lvalue(&mut env2, pat)?,
+                            box_freeze(&mut env2, rhs)?,
                         ))
                     })
                     .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>)>>>()?,
             )),
             Expr::Try(a, pat, catcher) => {
                 // FIXME hmmm is the main try branch really scoped this way
-                let body = box_freeze(bound, env, a)?;
-                let mut bound2 = bound.clone();
-                bound2.extend(pat.collect_identifiers(false /* declared_only */));
+                let body = box_freeze(env, a)?;
+                let mut env2 = env.clone();
+                env2.bind(pat.collect_identifiers(false /* declared_only */));
                 Ok(Expr::Try(
                     body,
-                    box_freeze_lvalue(&mut bound2, env, pat)?,
-                    box_freeze(&mut bound2, env, catcher)?,
+                    box_freeze_lvalue(&mut env2, pat)?,
+                    box_freeze(&mut env2, catcher)?,
                 ))
             }
             Expr::Lambda(params, body) => {
-                let mut bound2 = bound.clone();
-                bound2.extend(
+                let mut env2 = env.clone();
+                env2.bind(
                     params
                         .iter()
-                        .flat_map(|x| x.collect_identifiers(false /* declared_only */)),
+                        .flat_map(|x| x.collect_identifiers(false /* declared_only */))
+                        .collect::<HashSet<String>>(),
                 );
                 Ok(Expr::Lambda(
                     params.clone(),
-                    Rc::new(freeze(&mut bound2, env, body)?),
+                    Rc::new(freeze(&mut env2, body)?),
                 ))
             }
-            Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(bound, env, e)?)),
-            Expr::Literally(e) => Ok(Expr::Literally(box_freeze(bound, env, e)?)),
+            Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
+            Expr::Literally(e) => Ok(Expr::Literally(box_freeze(env, e)?)),
 
-            Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(bound, env, e)?)),
-            Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(bound, env, e)?)),
-            Expr::Throw(e) => Ok(Expr::Throw(box_freeze(bound, env, e)?)),
+            Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(env, e)?)),
+            Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(env, e)?)),
+            Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
         }?,
     })

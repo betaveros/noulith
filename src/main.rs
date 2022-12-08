@@ -1,4 +1,4 @@
-use noulith::{evaluate, initialize, parse, Env, Obj, ObjType, TopEnv};
+use noulith::{evaluate, initialize, parse, warn, Env, Obj, ObjType, TopEnv};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
@@ -83,15 +83,18 @@ fn run_code(code: &str, args: Vec<String>, filename: String) {
     let e = Rc::new(RefCell::new(env));
 
     match parse(&code) {
-        Ok(Some(expr)) => match evaluate(&e, &expr) {
-            Ok(Obj::Null) => {}
-            Ok(e) => {
-                println!("{}", e);
+        Ok(Some(expr)) => {
+            warn(&e, &expr);
+            match evaluate(&e, &expr) {
+                Ok(Obj::Null) => {}
+                Ok(e) => {
+                    println!("{}", e);
+                }
+                Err(e) => {
+                    println!("ERROR: {}", e.render(&code));
+                }
             }
-            Err(e) => {
-                println!("ERROR: {}", e.render(&code));
-            }
-        },
+        }
         Ok(None) => {}
         Err(e) => {
             println!("PARSE ERROR: {}", e.render(&code));
