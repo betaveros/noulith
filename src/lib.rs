@@ -792,7 +792,7 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
         ObjType::List => match expect_one(arg, "list")? {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(
-                mut_obj_into_iter(&mut arg, "list conversion")?.collect(),
+                mut_obj_into_finite_iter(&mut arg, "list conversion")?.collect(),
             )),
         },
         ObjType::String => Ok(Obj::from(format!("{}", expect_one(arg, "str")?))),
@@ -800,14 +800,16 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
-                mut_obj_into_iter(&mut arg, "bytes conversion")?
+                mut_obj_into_finite_iter(&mut arg, "bytes conversion")?
                     .map(|e| to_byte(e, "bytes conversion"))
                     .collect::<NRes<Vec<u8>>>()?,
             )))),
         },
         ObjType::Vector => match expect_one(arg, "vector")? {
             Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
-            mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?.map(Ok)),
+            mut arg => {
+                to_obj_vector(mut_obj_into_finite_iter(&mut arg, "vector conversion")?.map(Ok))
+            }
         },
         ObjType::Dict => match expect_one(arg, "dict")? {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
@@ -817,7 +819,7 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                     Rc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
                     */
             mut arg => Ok(Obj::dict(
-                mut_obj_into_iter(&mut arg, "dict conversion")?
+                mut_obj_into_finite_iter(&mut arg, "dict conversion")?
                     .map(|p| match p {
                         Obj::Seq(Seq::List(xs)) => match few2(unwrap_or_clone(xs)) {
                             Few2::Two(k, v) => Ok((to_key(k)?, v)),
@@ -1534,10 +1536,35 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     }
 }
 
+fn mut_seq_into_finite_iter<'a, 'b>(seq: &'a mut Seq, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
+    if seq.len().is_none() {
+        Err(NErr::value_error(format!(
+            "{}: infinite, will not terminate",
+            purpose
+        )))
+    } else {
+        Ok(mut_seq_into_iter(seq))
+    }
+}
+
 fn mut_obj_into_iter<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
         e => Err(NErr::type_error(format!(
+            "{}: not iterable: {}",
+            purpose,
+            FmtObj::debug(e)
+        ))),
+    }
+}
+
+fn mut_obj_into_finite_iter<'a, 'b>(
+    obj: &'a mut Obj,
+    purpose: &'b str,
+) -> NRes<MutObjIntoIter<'a>> {
+    match obj {
+        Obj::Seq(s) => mut_seq_into_finite_iter(s, purpose),
+        e => Err(NErr::value_error(format!(
             "{}: not iterable: {}",
             purpose,
             FmtObj::debug(e)
@@ -2582,7 +2609,7 @@ impl Builtin for Extremum {
             Few::Zero => Err(NErr::type_error(format!("{}: at least 1 arg", self.name))),
             Few::One(Obj::Seq(mut s)) => {
                 let mut ret: Option<Obj> = None;
-                for b in mut_seq_into_iter(&mut s) {
+                for b in mut_seq_into_finite_iter(&mut s, &self.name)? {
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == self.bias,
@@ -2618,7 +2645,7 @@ impl Builtin for Extremum {
                 match (i_func, few(t)) {
                     (None, Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
-                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                        for b in mut_obj_into_finite_iter(&mut a, &self.name)? {
                             if match &ret {
                                 None => true,
                                 Some(r) => ncmp(&b, r)? == self.bias,
@@ -2646,7 +2673,7 @@ impl Builtin for Extremum {
                     }
                     (Some((_, f)), Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
-                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                        for b in mut_obj_into_finite_iter(&mut a, &self.name)? {
                             if match &ret {
                                 None => true,
                                 Some(r) => {
@@ -2831,6 +2858,7 @@ impl Builtin for Zip {
                 let mut func = None;
                 // I can't believe this works (type annotation for me not the compiler)
                 let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
+                let mut any_finite = false;
                 for arg in args.iter_mut() {
                     match (arg, &mut func) {
                         (Obj::Func(f, _), None) => {
@@ -2839,11 +2867,29 @@ impl Builtin for Zip {
                         (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
                             "zip: more than one function".to_string(),
                         ))?,
-                        (arg, _) => iterators.push(mut_obj_into_iter(arg, "zip")?),
+                        (Obj::Seq(s), _) => {
+                            if s.len().is_some() {
+                                any_finite = true;
+                            }
+                            iterators.push(mut_seq_into_iter(s))
+                        }
+                        (e, _) => {
+                            return Err(NErr::argument_error(format!(
+                                "zip: not iterable: {}",
+                                FmtObj::debug(e)
+                            )))
+                        }
                     }
                 }
                 if iterators.is_empty() {
                     Err(NErr::argument_error("zip: zero iterables".to_string()))?
+                }
+                // It's possible you just want to zip an infinite sequence with a function as
+                // "each" but IMO too unlikely.
+                if !any_finite {
+                    return Err(NErr::value_error(format!(
+                        "zip: infinite, will not terminate"
+                    )))
                 }
                 let mut ret = Vec::new();
                 while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
@@ -2893,7 +2939,7 @@ impl Builtin for ZipLongest {
                         (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
                             "ziplongest: more than one function".to_string(),
                         ))?,
-                        (arg, _) => iterators.push(mut_obj_into_iter(arg, "ziplongest")?),
+                        (arg, _) => iterators.push(mut_obj_into_finite_iter(arg, "ziplongest")?),
                     }
                 }
                 if iterators.is_empty() {
@@ -3041,7 +3087,7 @@ impl Builtin for Fold {
             Few3::Zero => Err(NErr::argument_error("fold: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few3::Two(mut s, f) => {
-                let mut it = mut_obj_into_iter(&mut s, "fold")?;
+                let mut it = mut_obj_into_finite_iter(&mut s, "fold")?;
                 match f {
                     Obj::Func(f, _) => match it.next() {
                         Some(mut cur) => {
@@ -3057,7 +3103,7 @@ impl Builtin for Fold {
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
-                let it = mut_obj_into_iter(&mut s, "fold")?;
+                let it = mut_obj_into_finite_iter(&mut s, "fold")?;
                 match f {
                     Obj::Func(f, _) => {
                         // not sure if any standard fallible rust methods work...
@@ -3098,7 +3144,7 @@ impl Builtin for Scan {
             Few3::Zero => Err(NErr::argument_error("scan: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few3::Two(mut s, f) => {
-                let mut it = mut_obj_into_iter(&mut s, "scan")?;
+                let mut it = mut_obj_into_finite_iter(&mut s, "scan")?;
                 match f {
                     Obj::Func(f, _) => match it.next() {
                         Some(mut cur) => {
@@ -3115,7 +3161,7 @@ impl Builtin for Scan {
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
-                let it = mut_obj_into_iter(&mut s, "scan")?;
+                let it = mut_obj_into_finite_iter(&mut s, "scan")?;
                 match f {
                     Obj::Func(f, _) => {
                         let mut acc = vec![cur.clone()];
@@ -7039,7 +7085,7 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<Obj>>
         match &((**x).expr) {
             Expr::Splat(inner) => {
                 let mut res = evaluate(env, inner)?;
-                acc.extend(mut_obj_into_iter(&mut res, "splat")?);
+                acc.extend(mut_obj_into_finite_iter(&mut res, "splat")?);
             }
             _ => acc.push(evaluate(env, x)?),
         }
@@ -7509,7 +7555,7 @@ fn apply_section(
             Err(is_splat) => match arg_iter.next() {
                 Some(mut a) => {
                     if is_splat {
-                        out.extend(mut_obj_into_iter(&mut a, "section splat")?)
+                        out.extend(mut_obj_into_finite_iter(&mut a, "section splat")?)
                     } else {
                         out.push(a)
                     }
@@ -7826,7 +7872,7 @@ fn splat_section_eval(
                 Ok(v)
             }
             ((true, Some(mut e)), Ok(mut v)) => {
-                v.extend(mut_obj_into_iter(&mut e, "call splat")?);
+                v.extend(mut_obj_into_finite_iter(&mut e, "call splat")?);
                 Ok(v)
             }
             ((false, Some(e)), Err(mut v)) => {
@@ -7834,7 +7880,7 @@ fn splat_section_eval(
                 Err(v)
             }
             ((true, Some(mut e)), Err(mut v)) => {
-                v.extend(mut_obj_into_iter(&mut e, "call splat")?.map(Ok));
+                v.extend(mut_obj_into_finite_iter(&mut e, "call splat")?.map(Ok));
                 Err(v)
             }
             ((is_splat, None), Err(mut v)) => {
@@ -9083,7 +9129,7 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
     // this might coerce too hard but idk
     let mut acc = String::new();
     let mut started = false;
-    for arg in mut_obj_into_iter(&mut obj, "join")? {
+    for arg in mut_obj_into_finite_iter(&mut obj, "join")? {
         if started {
             acc += joiner;
         }
@@ -9096,7 +9142,7 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
 fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
     match a {
         Obj::Seq(Seq::List(v)) => Ok(v),
-        mut a => Ok(Rc::new(mut_obj_into_iter(&mut a, "to_rc_vec")?.collect())),
+        mut a => Ok(Rc::new(mut_obj_into_finite_iter(&mut a, "to_rc_vec")?.collect())),
     }
 }
 
@@ -9595,7 +9641,7 @@ fn json_encode(x: Obj) -> NRes<serde_json::Value> {
                     .collect::<serde_json::Map<String, serde_json::Value>>(),
             )),
             mut s => Ok(serde_json::Value::Array(
-                mut_seq_into_iter(&mut s)
+                mut_seq_into_finite_iter(&mut s, "json_encode")?
                     .into_iter()
                     .map(json_encode)
                     .collect::<NRes<Vec<serde_json::Value>>>()?,
@@ -9680,7 +9726,7 @@ pub fn initialize(env: &mut Env) {
         name: "sum".to_string(),
         body: |mut arg| {
             let mut acc = Obj::zero();
-            for x in mut_obj_into_iter(&mut arg, "sum")? {
+            for x in mut_obj_into_finite_iter(&mut arg, "sum")? {
                 acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), acc, x, "inner +")?;
             }
             Ok(acc)
@@ -9690,7 +9736,7 @@ pub fn initialize(env: &mut Env) {
         name: "product".to_string(),
         body: |mut arg| {
             let mut acc = Obj::one();
-            for x in mut_obj_into_iter(&mut arg, "product")? {
+            for x in mut_obj_into_finite_iter(&mut arg, "product")? {
                 acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), acc, x, "inner *")?;
             }
             Ok(acc)
@@ -9999,11 +10045,11 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "apply".to_string(),
-        body: |env, mut a, b| call(env, b, mut_obj_into_iter(&mut a, "apply")?.collect()),
+        body: |env, mut a, b| call(env, b, mut_obj_into_finite_iter(&mut a, "apply")?.collect()),
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "of".to_string(),
-        body: |env, a, mut b| call(env, a, mut_obj_into_iter(&mut b, "of")?.collect()),
+        body: |env, a, mut b| call(env, a, mut_obj_into_finite_iter(&mut b, "of")?.collect()),
     });
     env.insert_builtin(Preposition("by".to_string()));
     env.insert_builtin(Preposition("with".to_string()));
@@ -10162,7 +10208,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "map")?;
+            let it = mut_obj_into_finite_iter(&mut a, "map")?;
             match b {
                 Obj::Func(b, _) => Ok(Obj::list(
                     it.map(|e| b.run(env, vec![e]))
@@ -10205,8 +10251,8 @@ pub fn initialize(env: &mut Env) {
         name: "flatten".to_string(),
         body: |mut a| {
             let mut acc = Vec::new();
-            for mut e in mut_obj_into_iter(&mut a, "flatten (outer)")? {
-                for k in mut_obj_into_iter(&mut e, "flatten (inner)")? {
+            for mut e in mut_obj_into_finite_iter(&mut a, "flatten (outer)")? {
+                for k in mut_obj_into_finite_iter(&mut e, "flatten (inner)")? {
                     acc.push(k);
                 }
             }
@@ -10237,13 +10283,13 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "flat_map (outer)")?;
+            let it = mut_obj_into_finite_iter(&mut a, "flat_map (outer)")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
                         let mut r = b.run(env, vec![e])?;
-                        for k in mut_obj_into_iter(&mut r, "flat_map (inner)")? {
+                        for k in mut_obj_into_finite_iter(&mut r, "flat_map (inner)")? {
                             acc.push(k);
                         }
                     }
@@ -10257,7 +10303,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "pairwise".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "pairwise")?;
+            let it = mut_obj_into_finite_iter(&mut a, "pairwise")?;
             match b {
                 Obj::Func(b, _) => Ok(Obj::list(
                     it.scan(None, |prev, a| {
@@ -10288,7 +10334,7 @@ pub fn initialize(env: &mut Env) {
             let v = Rc::make_mut(&mut v);
             let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
             for arg in v.iter_mut() {
-                iterators.push(mut_obj_into_iter(arg, "zip")?)
+                iterators.push(mut_obj_into_finite_iter(arg, "zip")?)
             }
             let mut ret = Vec::new();
             loop {
@@ -10324,7 +10370,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "partition".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "partition")?;
+            let it = mut_obj_into_finite_iter(&mut a, "partition")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc_t = Vec::new();
@@ -10345,7 +10391,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(SeqAndIdPredBuiltin {
         name: "any".to_string(),
         body: |env, mut s, f| {
-            for e in mut_seq_into_iter(&mut s) {
+            // Have a termination condition but still not reasonable.
+            for e in mut_seq_into_finite_iter(&mut s, "any")? {
                 if f.run(env, vec![e])?.truthy() {
                     return Ok(Obj::from(true));
                 }
@@ -10356,7 +10403,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(SeqAndIdPredBuiltin {
         name: "all".to_string(),
         body: |env, mut s, f| {
-            for e in mut_seq_into_iter(&mut s) {
+            // Have a termination condition but still not reasonable.
+            for e in mut_seq_into_finite_iter(&mut s, "all")? {
                 if !f.run(env, vec![e])?.truthy() {
                     return Ok(Obj::from(false));
                 }
@@ -10367,7 +10415,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "count".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_iter(&mut a, "count")?;
+            let it = mut_obj_into_finite_iter(&mut a, "count")?;
             let mut c = 0usize;
             match b {
                 Obj::Func(b, _) => {
@@ -10425,7 +10473,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "frequencies".to_string(),
         body: |mut a| {
-            let it = mut_obj_into_iter(&mut a, "frequencies")?;
+            let it = mut_obj_into_finite_iter(&mut a, "frequencies")?;
             let mut c = HashMap::<ObjKey, usize>::new();
             for e in it {
                 *c.entry(to_key(e)?).or_insert(0) += 1;
@@ -10650,13 +10698,13 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::Bytes(b)) => {
                 let mut acc: Vec<u8> = Vec::new();
                 let mut started = false;
-                for mut arg in mut_obj_into_iter(&mut a, "join (bytes)")? {
+                for mut arg in mut_obj_into_finite_iter(&mut a, "join (bytes)")? {
                     if started {
                         acc.extend(b.iter())
                     }
                     started = true;
                     acc.extend(
-                        mut_obj_into_iter(&mut arg, "join (bytes) byte conversion")?
+                        mut_obj_into_finite_iter(&mut arg, "join (bytes) byte conversion")?
                             .map(|e| to_byte(e, "join (bytes) byte conversion"))
                             .collect::<NRes<Vec<u8>>>()?
                             .iter(),
@@ -11218,7 +11266,7 @@ pub fn initialize(env: &mut Env) {
         name: "set".to_string(),
         body: |mut a| {
             Ok(Obj::dict(
-                mut_obj_into_iter(&mut a, "set conversion")?
+                mut_obj_into_finite_iter(&mut a, "set conversion")?
                     .map(|k| Ok((to_key(k)?, Obj::Null)))
                     .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                 None,
@@ -11240,7 +11288,7 @@ pub fn initialize(env: &mut Env) {
         name: "enumerate".to_string(),
         body: |mut a| {
             Ok(Obj::list(
-                mut_obj_into_iter(&mut a, "enumerate conversion")?
+                mut_obj_into_finite_iter(&mut a, "enumerate conversion")?
                     .enumerate()
                     .map(|(k, v)| Obj::list(vec![Obj::from(k), v]))
                     .collect(),
