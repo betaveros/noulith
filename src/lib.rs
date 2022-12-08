@@ -1536,7 +1536,10 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     }
 }
 
-fn mut_seq_into_finite_iter<'a, 'b>(seq: &'a mut Seq, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
+fn mut_seq_into_finite_iter<'a, 'b>(
+    seq: &'a mut Seq,
+    purpose: &'b str,
+) -> NRes<MutObjIntoIter<'a>> {
     if seq.len().is_none() {
         Err(NErr::value_error(format!(
             "{}: infinite, will not terminate",
@@ -2889,7 +2892,7 @@ impl Builtin for Zip {
                 if !any_finite {
                     return Err(NErr::value_error(format!(
                         "zip: infinite, will not terminate"
-                    )))
+                    )));
                 }
                 let mut ret = Vec::new();
                 while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
@@ -7901,7 +7904,10 @@ pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) {
     match freeze(&mut frenv, &expr) {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("\x1b[1;35mWARNING: expr warn failed: {}\x1b[0m", e);
+            eprintln!(
+                "\x1b[1;33mWARNING\x1b[0;33m: expr warn failed: {}\x1b[0m",
+                e
+            );
         }
     }
 }
@@ -8648,9 +8654,9 @@ impl FreezeEnv {
         if self.warn {
             let rebound = self.bound.intersection(&ids).collect::<Vec<&String>>();
             if !rebound.is_empty() {
-                eprintln!("\x1b[1;35mWARNING: rebinding variables:");
+                eprint!("\x1b[1;33mWARNING\x1b[0;33m: rebinding variables:");
                 for r in rebound {
-                    eprintln!("  {}", r);
+                    eprint!(" {}", r);
                 }
                 eprintln!("\x1b[0m");
             }
@@ -8707,6 +8713,19 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
         Lvalue::IndexedIdent(s, ioses) => {
             if env.bound.contains(s) {
+                Ok(Lvalue::IndexedIdent(
+                    s.clone(),
+                    ioses
+                        .iter()
+                        .map(|ios| freeze_ios(env, ios))
+                        .collect::<NRes<Vec<IndexOrSlice>>>()?,
+                ))
+            } else if env.warn {
+                eprintln!(
+                    "\x1b[1;33mWARNING\x1b[0;33m: ident in lvalue not bound: {}\x1b[0m",
+                    s
+                );
+                env.bound.insert(s.clone());
                 Ok(Lvalue::IndexedIdent(
                     s.clone(),
                     ioses
@@ -8815,7 +8834,7 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         Err(e) => {
                             if env.warn {
                                 eprintln!(
-                                    "\x1b[1;35mWARNING: variable not found: {} (binding and continuing)\x1b[0m",
+                                    "\x1b[1;33mWARNING\x1b[0;33m: variable not found: {}\x1b[0m",
                                     s
                                 );
                                 env.bound.insert(s.clone());
@@ -8900,7 +8919,7 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                             expr: Expr::Sequence(_, true),
                             ..
                         }) => {
-                            eprintln!("\x1b[1;35mWARNING: for loop yields semicolon-terminated sequence\x1b[0m");
+                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence\x1b[0m");
                         }
                         _ => {}
                     }
@@ -8996,22 +9015,22 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                                     Ok(Some(code)) => match freeze(env, &code) {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            eprintln!("\x1b[1;35mWARNING: analyzing import failed: {}\x1b[0m", e.render(&c));
+                                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: analyzing import failed: {}\x1b[0m", e.render(&c));
                                         }
                                     },
                                     Ok(None) => {
-                                        eprintln!("\x1b[1;35mWARNING: import of empty file\x1b[0m");
+                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: import of empty file\x1b[0m");
                                     }
                                     Err(s) => {
                                         eprintln!(
-                                            "\x1b[1;35mWARNING: lexing import failed: {}\x1b[0m",
+                                            "\x1b[1;33mWARNING\x1b[0;33m: lexing import failed: {}\x1b[0m",
                                             s.render(&c)
                                         );
                                     }
                                 },
                                 Err(e) => {
                                     eprintln!(
-                                    "\x1b[1;35mWARNING: io error when handling import: {}\x1b[0m",
+                                    "\x1b[1;33mWARNING\x1b[0;33m: io error when handling import: {}\x1b[0m",
                                     e
                                 );
                                 }
@@ -9019,7 +9038,7 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         }
                         inner => {
                             eprintln!(
-                                "\x1b[1;35mWARNING: can't handle nonliteral import: {:?}\x1b[0m",
+                                "\x1b[1;33mWARNING\x1b[0;33m: can't handle nonliteral import: {:?}\x1b[0m",
                                 inner
                             );
                         }
@@ -9142,7 +9161,9 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
 fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
     match a {
         Obj::Seq(Seq::List(v)) => Ok(v),
-        mut a => Ok(Rc::new(mut_obj_into_finite_iter(&mut a, "to_rc_vec")?.collect())),
+        mut a => Ok(Rc::new(
+            mut_obj_into_finite_iter(&mut a, "to_rc_vec")?.collect(),
+        )),
     }
 }
 
