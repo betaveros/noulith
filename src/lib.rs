@@ -1772,6 +1772,12 @@ impl NErr {
     fn type_error(s: String) -> NErr {
         NErr::throw(format!("type error: {}", s))
     }
+    fn type_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
+        NErr::Throw(
+            Obj::from(format!("type error: {}", s)),
+            vec![(msg, start, end, None)],
+        )
+    }
     fn value_error(s: String) -> NErr {
         NErr::throw(format!("value error: {}", s))
     }
@@ -3491,6 +3497,49 @@ impl Builtin for TwoArgBuiltin {
                 self.name,
                 f.len()
             ))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IdBuiltin;
+
+impl Builtin for IdBuiltin {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(arg) => Ok(arg),
+            a => err_add_name(Err(NErr::argument_error_few(&a)), "id"),
+        }
+    }
+    fn builtin_name(&self) -> &str {
+        "id"
+    }
+}
+
+// Takes a sequence and a function. If given only a function, partially applies it. If given only a
+// sequence, runs it with the identity function.
+
+#[derive(Clone)]
+pub struct SeqAndIdPredBuiltin {
+    name: String,
+    body: fn(env: &REnv, s: Seq, f: Func) -> NRes<Obj>,
+}
+standard_three_part_debug!(SeqAndIdPredBuiltin);
+
+impl Builtin for SeqAndIdPredBuiltin {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(Obj::Seq(s)) => (self.body)(env, s, Func::Builtin(Rc::new(IdBuiltin))),
+            Few2::One(f @ Obj::Func(..)) => Ok(clone_and_part_app_2(self, f)),
+            Few2::Two(Obj::Seq(s), Obj::Func(f, _)) => {
+                err_add_name((self.body)(env, s, f), &self.name)
+            }
+            a => err_add_name(Err(NErr::argument_error_few2(&a)), &self.name),
         }
     }
 
@@ -7057,8 +7106,8 @@ fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
                     ce.give(b, prec, oprd)?;
                 } else {
                     return Err(NErr::type_error(format!(
-                        "Destructure chain cannot use nonblock in operand position: {:?}",
-                        oprr
+                        "Destructure chain cannot use nonblock in operand position: {}",
+                        FmtObj::debug(&oprr)
                     )));
                 }
             }
@@ -7880,7 +7929,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             (x, i) => {
                 let xr = evaluate(env, x)?;
                 let ir = eval_index_or_slice(env, i)?;
-                index_or_slice(xr, &ir)
+                add_trace(
+                    index_or_slice(xr, &ir),
+                    format!("index/slice"),
+                    expr.start,
+                    expr.end,
+                )
             }
         },
         Expr::Chain(op1, ops) => {
@@ -7896,7 +7950,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     _ => Some(Box::new(evaluate(env, op1)?)),
                 };
                 let mut acc = Vec::new();
-                for (oper, opd) in ops {
+                for (i, (oper, opd)) in ops.iter().enumerate() {
                     let oprr = evaluate(env, oper)?;
                     if let Obj::Func(b, prec) = oprr {
                         match &((**opd).expr) {
@@ -7915,25 +7969,35 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             }
                         }
                     } else {
-                        return Err(NErr::type_error(format!(
-                            "Chain section cannot use nonblock in operand position: {:?}",
-                            oprr
-                        )));
+                        return Err(NErr::type_error_loc(
+                            format!(
+                                "Chain section cannot use nonblock in operator position: {}",
+                                FmtObj::debug(&oprr)
+                            ),
+                            format!("op {}/{}", i + 1, ops.len()),
+                            oper.start,
+                            oper.end,
+                        ));
                     }
                 }
                 Ok(Obj::Func(Func::ChainSection(v1, acc), Precedence::zero()))
             } else {
                 let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
-                for (oper, opd) in ops {
+                for (i, (oper, opd)) in ops.iter().enumerate() {
                     let oprr = evaluate(env, oper)?;
                     if let Obj::Func(b, prec) = oprr {
                         let oprd = evaluate(env, opd)?;
                         ev.give(env, b, prec, oprd, oper.start, oper.end)?;
                     } else {
-                        return Err(NErr::type_error(format!(
-                            "Chain cannot use nonblock in operand position: {:?}",
-                            oprr
-                        )));
+                        return Err(NErr::type_error_loc(
+                            format!(
+                                "Chain cannot use nonblock in operator position: {}",
+                                FmtObj::debug(&oprr)
+                            ),
+                            format!("op {}/{}", i + 1, ops.len()),
+                            oper.start,
+                            oper.end,
+                        ));
                     }
                 }
                 ev.finish(env)
@@ -7999,24 +8063,34 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 .ok_or(NErr::type_error("failed to consume??".to_string()))?,
             _ => Err(NErr::type_error("can't consume, weird pattern".to_string())),
         },
-        Expr::Pop(pat) => match eval_lvalue(env, pat)? {
-            EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
-                .modify_existing_var(&s, |(_type, vv)| {
-                    modify_existing_index(
-                        &mut *try_borrow_mut_nres(vv, "var for pop", &s)?,
-                        &ixs,
-                        |x| match x {
-                            Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
-                                .pop()
-                                .ok_or(NErr::name_error("can't pop empty".to_string())),
-                            _ => Err(NErr::type_error("can't pop".to_string())),
-                        },
-                    )
-                })
-                .ok_or(NErr::type_error("failed to pop??".to_string()))?,
-            _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
-        },
-        Expr::Remove(pat) => {
+        Expr::Pop(pat) => add_trace(
+            match eval_lvalue(env, pat)? {
+                EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
+                    .modify_existing_var(&s, |(_type, vv)| {
+                        modify_existing_index(
+                            &mut *try_borrow_mut_nres(vv, "var for pop", &s)?,
+                            &ixs,
+                            |x| match x {
+                                Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
+                                    .pop()
+                                    .ok_or(NErr::empty_error("can't pop empty".to_string())),
+                                _ => Err(NErr::type_error("can't pop".to_string())),
+                            },
+                        )
+                    })
+                    .unwrap_or(Err(NErr::type_error("failed to pop??".to_string()))),
+                _ => Err(NErr::type_error_loc(
+                    "can't pop, weird pattern".to_string(),
+                    "pop".to_string(),
+                    expr.start,
+                    expr.end,
+                )),
+            },
+            format!("pop"),
+            expr.start,
+            expr.end,
+        ),
+        Expr::Remove(pat) => add_trace(
             match eval_lvalue(env, pat)? {
                 EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
                     [] => Err(NErr::value_error(
@@ -8062,12 +8136,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                     },
                                 )
                             })
-                            .ok_or(NErr::name_error("var not found to remove".to_string()))?
+                            .unwrap_or(Err(NErr::name_error("var not found to remove".to_string())))
                     }
                 },
                 _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
-            }
-        }
+            },
+            format!("remove"),
+            expr.start,
+            expr.end,
+        ),
         Expr::Swap(a, b) => {
             let al = eval_lvalue(env, a)?;
             let bl = eval_lvalue(env, b)?;
@@ -8205,7 +8282,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         }
                     }
                     (Expr::Splat(_), Some(_)) => {
-                        Err(NErr::type_error(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve)))?
+                        Err(NErr::type_error_loc(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve),
+                        format!("dict lit"),
+                        ke.start,
+                        ke.end))?
                     }
                     _ => {
                         let k = evaluate(env, ke)?;
@@ -10122,44 +10202,26 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(SeqAndIdPredBuiltin {
         name: "any".to_string(),
-        body: |env, args| match few2(args) {
-            Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
-            Few2::One(mut a) => Ok(Obj::from(
-                mut_obj_into_iter(&mut a, "any")?.any(|x| x.truthy()),
-            )),
-            Few2::Two(mut a, Obj::Func(b, _)) => {
-                for e in mut_obj_into_iter(&mut a, "any")? {
-                    if b.run(env, vec![e])?.truthy() {
-                        return Ok(Obj::from(true));
-                    }
+        body: |env, mut s, f| {
+            for e in mut_seq_into_iter(&mut s) {
+                if f.run(env, vec![e])?.truthy() {
+                    return Ok(Obj::from(true));
                 }
-                Ok(Obj::from(false))
             }
-            _ => Err(NErr::argument_error("too many args".to_string())),
+            Ok(Obj::from(false))
         },
     });
-    env.insert_builtin(BasicBuiltin {
+    env.insert_builtin(SeqAndIdPredBuiltin {
         name: "all".to_string(),
-        body: |env, args| match few2(args) {
-            Few2::Zero => Err(NErr::argument_error("zero args".to_string())),
-            Few2::One(mut a) => Ok(Obj::from(
-                mut_obj_into_iter(&mut a, "all")?.all(|x| x.truthy()),
-            )),
-            Few2::Two(mut a, Obj::Func(b, _)) => {
-                for e in mut_obj_into_iter(&mut a, "all")? {
-                    if !b.run(env, vec![e])?.truthy() {
-                        return Ok(Obj::from(false));
-                    }
+        body: |env, mut s, f| {
+            for e in mut_seq_into_iter(&mut s) {
+                if !f.run(env, vec![e])?.truthy() {
+                    return Ok(Obj::from(false));
                 }
-                Ok(Obj::from(true))
             }
-            Few2::Two(_, b) => Err(NErr::type_error(format!(
-                "second arg not func: {}",
-                FmtObj::debug(&b)
-            ))),
-            ff => Err(NErr::argument_error(format!("too many args: {:?}", ff))),
+            Ok(Obj::from(true))
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
