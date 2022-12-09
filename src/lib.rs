@@ -685,7 +685,10 @@ struct Iterate(Option<(Obj, Func, REnv)>);
 // directly debug-printing env can easily recurse infinitely
 impl Debug for Iterate {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(fmt, "Iterate???")
+        match &self.0 {
+            None => write!(fmt, "Iterate(done)"),
+            Some((obj, func, _)) => write!(fmt, "Iterate({:?}, {:?}, ...)", obj, func),
+        }
     }
 }
 impl Iterator for Iterate {
@@ -711,7 +714,10 @@ impl Iterator for Iterate {
 }
 impl Display for Iterate {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "Iterate???")
+        match &self.0 {
+            None => write!(formatter, "Iterate(done)"),
+            Some((obj, func, _)) => write!(formatter, "Iterate({}, {}, ...)", obj, func),
+        }
     }
 }
 impl Stream for Iterate {
@@ -723,6 +729,77 @@ impl Stream for Iterate {
     }
     fn len(&self) -> Option<usize> {
         None
+    }
+}
+
+// maybe even more illegal? not sure
+struct MappedStream(Option<(Box<dyn Stream>, Func, REnv)>);
+impl Clone for MappedStream {
+    fn clone(&self) -> MappedStream {
+        match &self.0 {
+            None => MappedStream(None),
+            Some((inner, func, renv)) => {
+                MappedStream(Some((inner.clone_box(), func.clone(), renv.clone())))
+            }
+        }
+    }
+}
+// directly debug-printing env can easily recurse infinitely
+impl Debug for MappedStream {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match &self.0 {
+            None => write!(fmt, "MappedStream(done)"),
+            Some((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func)
+        }
+    }
+}
+impl Iterator for MappedStream {
+    type Item = Obj;
+    fn next(&mut self) -> Option<Obj> {
+        let (inner, func, renv) = self.0.as_mut()?;
+        match inner.next() {
+            Some(cur) => match func.run(&renv, vec![cur]) {
+                Ok(nxt) => Some(nxt),
+                Err(e) => {
+                    eprintln!("INTERNAL ERROR: map function failed! {} terminating...", e);
+                    self.0 = None;
+                    None
+                }
+            },
+            None => {
+                self.0 = None;
+                None
+            }
+        }
+    }
+}
+impl Display for MappedStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match &self.0 {
+            None => write!(formatter, "MappedStream(done)"),
+            Some((inner, func, _)) => write!(formatter, "MappedStream({}, {}, ...)", inner, func)
+        }
+    }
+}
+impl Stream for MappedStream {
+    fn peek(&self) -> Option<Obj> {
+        let (inner, func, renv) = self.0.as_ref()?;
+        match func.run(&renv, vec![inner.peek()?]) {
+            Ok(nxt) => Some(nxt),
+            Err(e) => {
+                eprintln!("INTERNAL ERROR: map function failed! {}", e);
+                None
+            }
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+    fn len(&self) -> Option<usize> {
+        match &self.0 {
+            Some((inner, _, _)) => inner.len(),
+            None => Some(0),
+        }
     }
 }
 
@@ -10515,6 +10592,16 @@ pub fn initialize(env: &mut Env) {
                 env.clone(),
             ))))))),
             f => Err(NErr::argument_error_2(&a, &f)),
+        },
+    });
+    // haxx!!!
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "lazy_map".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(Seq::Stream(s)), Obj::Func(b, _)) => Ok(Obj::Seq(Seq::Stream(Rc::new(
+                MappedStream(Some((s.clone_box(), b, Rc::clone(env)))),
+            )))),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
