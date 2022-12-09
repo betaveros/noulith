@@ -2989,6 +2989,88 @@ impl Builtin for Count {
     }
 }
 
+struct CataSet(HashMap<ObjKey, Obj>);
+impl Catamorphism for CataSet {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        self.0.insert(to_key(arg)?, Obj::Null);
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Ok(Obj::dict(std::mem::take(&mut self.0), None))
+    }
+}
+
+// just for cata
+#[derive(Debug, Clone)]
+struct Set;
+impl Builtin for Set {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(Obj::Seq(mut s)) => {
+                Ok(Obj::dict(
+                    mut_seq_into_finite_iter(&mut s, "set conversion")?
+                        .map(|k| Ok((to_key(k)?, Obj::Null)))
+                        .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                    None,
+                ))
+            }
+            f => err_add_name(Err(NErr::argument_error_few(&f)), "set"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "set"
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataSet(HashMap::new())))
+    }
+}
+
+struct CataCountDistinct(HashSet<ObjKey>);
+impl Catamorphism for CataCountDistinct {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        self.0.insert(to_key(arg)?);
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Ok(Obj::from(self.0.len()))
+    }
+}
+
+// just for cata
+#[derive(Debug, Clone)]
+struct CountDistinct;
+impl Builtin for CountDistinct {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(Obj::Seq(mut s)) => {
+                Ok(Obj::from(
+                    mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
+                        .map(to_key)
+                        .collect::<NRes<HashSet<ObjKey>>>()?.len()))
+            }
+            f => err_add_name(Err(NErr::argument_error_few(&f)), "count_distinct"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "count_distinct"
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataCountDistinct(HashSet::new())))
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TilBuiltin;
 
@@ -11648,17 +11730,8 @@ pub fn initialize(env: &mut Env) {
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "set".to_string(),
-        body: |mut a| {
-            Ok(Obj::dict(
-                mut_obj_into_finite_iter(&mut a, "set conversion")?
-                    .map(|k| Ok((to_key(k)?, Obj::Null)))
-                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
-                None,
-            ))
-        },
-    });
+    env.insert_builtin(Set);
+    env.insert_builtin(CountDistinct);
     env.insert_builtin(OneArgBuiltin {
         name: "items".to_string(),
         body: |a| match a {
