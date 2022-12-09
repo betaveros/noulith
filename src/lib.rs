@@ -1682,7 +1682,7 @@ pub enum NErr {
     ),
     // Optional (source file, source code), added when we pass through an eval boundary roughly
     // speaking. Is this bonkers? Idk.
-    Break(Obj),
+    Break(Option<Obj>),
     Return(Obj),
     Continue,
 }
@@ -1766,7 +1766,8 @@ impl NErr {
                 }
                 out
             }
-            NErr::Break(e) => format!("break {}", e),
+            NErr::Break(None) => format!("break"),
+            NErr::Break(Some(e)) => format!("break {}", e),
             NErr::Continue => format!("continue"),
             NErr::Return(e) => format!("return {}", e),
         }
@@ -1925,7 +1926,8 @@ impl fmt::Display for NErr {
                 }
                 Ok(())
             }
-            NErr::Break(e) => write!(formatter, "break {}", e),
+            NErr::Break(None) => write!(formatter, "break"),
+            NErr::Break(Some(e)) => write!(formatter, "break {}", e),
             NErr::Continue => write!(formatter, "continue"),
             NErr::Return(e) => write!(formatter, "return {}", e),
         }
@@ -2219,6 +2221,25 @@ impl Display for Func {
     }
 }
 
+pub trait Catamorphism {
+    // can return Break
+    fn give(&mut self, arg: Obj) -> NRes<()>;
+    fn finish(&mut self) -> NRes<Obj>;
+}
+
+struct CataCounter(usize);
+impl Catamorphism for CataCounter {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        if arg.truthy() {
+            self.0 += 1;
+        }
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Ok(Obj::from(self.0))
+    }
+}
+
 pub trait Builtin: Debug {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
@@ -2227,6 +2248,10 @@ pub trait Builtin: Debug {
     fn builtin_name(&self) -> &str;
 
     fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
         None
     }
 
@@ -2600,6 +2625,22 @@ impl Builtin for ComparisonOperator {
     }
 }
 
+struct CataExtremum(Ordering, Option<Obj>);
+impl Catamorphism for CataExtremum {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        if match &self.1 {
+            None => true,
+            Some(r) => ncmp(&arg, r)? == self.0,
+        } {
+            self.1 = Some(arg)
+        }
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        std::mem::take(&mut self.1).ok_or(NErr::empty_error(format!("cata-extremum: empty")))
+    }
+}
+
 // min or max. conditional partial application
 #[derive(Debug, Clone)]
 struct Extremum {
@@ -2720,6 +2761,66 @@ impl Builtin for Extremum {
 
     fn try_chain(&self, _other: &Func) -> Option<Func> {
         None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataExtremum(self.bias, None)))
+    }
+}
+
+// count. conditional partial application, cata
+// not quite an id pred because there's "count equal".
+#[derive(Debug, Clone)]
+struct Count;
+impl Builtin for Count {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::Zero => Err(NErr::type_error(format!("count: at least 1 arg"))),
+            Few2::One(Obj::Seq(mut s)) => {
+                let mut c = 0usize;
+                for b in mut_seq_into_finite_iter(&mut s, "count")? {
+                    if b.truthy() {
+                        c += 1
+                    }
+                }
+                Ok(Obj::from(c))
+            }
+            Few2::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few2::Two(mut a, b) => {
+                let it = mut_obj_into_finite_iter(&mut a, "count")?;
+                let mut c = 0usize;
+                match b {
+                    Obj::Func(b, _) => {
+                        for e in it {
+                            if b.run(env, vec![e])?.truthy() {
+                                c += 1;
+                            }
+                        }
+                    }
+                    b => {
+                        for e in it {
+                            if e == b {
+                                c += 1;
+                            }
+                        }
+                    }
+                }
+                Ok(Obj::from(c))
+            }
+            Few2::Many(x) => err_add_name(Err(NErr::argument_error_args(&x)), "count"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "count"
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataCounter(0)))
     }
 }
 
@@ -3569,24 +3670,60 @@ impl Builtin for IdBuiltin {
     }
 }
 
-// Takes a sequence and a function. If given only a function, partially applies it. If given only a
-// sequence, runs it with the identity function.
+struct CataMapped(Obj, fn(state: Obj, next: Obj) -> NRes<Obj>);
+impl Catamorphism for CataMapped {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        self.0 = (self.1)(std::mem::take(&mut self.0), arg)?;
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Ok(std::mem::take(&mut self.0))
+    }
+}
+
+// Folds a sequence with an optional mapping function. If given only a function, partially applies
+// it. If given only a sequence, runs it with the identity function.
+//
+// Requires the fold to have a valid identity (max/min aren't this)
+// Expects finite sequences only.
+// body can return Break. But it can't break with null I think.
 
 #[derive(Clone)]
-pub struct SeqAndIdPredBuiltin {
+pub struct SeqAndMappedFoldBuiltin {
     name: String,
-    body: fn(env: &REnv, s: Seq, f: Func) -> NRes<Obj>,
+    identity: Obj,
+    body: fn(state: Obj, next: Obj) -> NRes<Obj>,
 }
-standard_three_part_debug!(SeqAndIdPredBuiltin);
+standard_three_part_debug!(SeqAndMappedFoldBuiltin);
 
-impl Builtin for SeqAndIdPredBuiltin {
+impl Builtin for SeqAndMappedFoldBuiltin {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
             // partial application, spicy
-            Few2::One(Obj::Seq(s)) => (self.body)(env, s, Func::Builtin(Rc::new(IdBuiltin))),
+            Few2::One(Obj::Seq(mut s)) => {
+                let mut state = self.identity.clone();
+                // Some have termination conditions but still not reasonable.
+                for e in mut_seq_into_finite_iter(&mut s, &self.name)? {
+                    state = match (self.body)(state, e) {
+                        Ok(r) => r,
+                        Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        e @ Err(_) => return err_add_name(e, &self.name),
+                    }
+                }
+                Ok(state)
+            }
             Few2::One(f @ Obj::Func(..)) => Ok(clone_and_part_app_2(self, f)),
-            Few2::Two(Obj::Seq(s), Obj::Func(f, _)) => {
-                err_add_name((self.body)(env, s, f), &self.name)
+            Few2::Two(Obj::Seq(mut s), Obj::Func(f, _)) => {
+                let mut state = self.identity.clone();
+                // Some have termination conditions but still not reasonable.
+                for e in mut_seq_into_finite_iter(&mut s, &self.name)? {
+                    state = match (self.body)(state, f.run(env, vec![e])?) {
+                        Ok(r) => r,
+                        Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        e @ Err(_) => return err_add_name(e, &self.name),
+                    }
+                }
+                Ok(state)
             }
             a => err_add_name(Err(NErr::argument_error_few2(&a)), &self.name),
         }
@@ -3594,6 +3731,10 @@ impl Builtin for SeqAndIdPredBuiltin {
 
     fn builtin_name(&self) -> &str {
         &self.name
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataMapped(self.identity.clone(), self.body)))
     }
 }
 
@@ -3885,6 +4026,7 @@ pub enum Token {
     While,
     For,
     Yield,
+    Into,
     If,
     Else,
     Switch,
@@ -3939,7 +4081,7 @@ pub enum ForIteration {
 #[derive(Debug)]
 pub enum ForBody {
     Execute(LocExpr),
-    Yield(LocExpr),
+    Yield(LocExpr, Option<LocExpr>),
     YieldItem(LocExpr, LocExpr),
 }
 
@@ -4650,6 +4792,7 @@ impl<'a> Lexer<'a> {
                                 "while" => Token::While,
                                 "for" => Token::For,
                                 "yield" => Token::Yield,
+                                "into" => Token::Into,
                                 "switch" => Token::Switch,
                                 "case" => Token::Case,
                                 "null" => Token::Null,
@@ -5247,14 +5390,16 @@ impl Parser {
                             )))?,
                         }
                     }
-                    let do_yield = self.try_consume(&Token::Yield).is_some();
-                    let (end, body) = if do_yield {
+                    let (end, body) = if self.try_consume(&Token::Yield).is_some() {
                         let key_body = self.single("for-yield body")?;
                         if self.try_consume(&Token::Colon).is_some() {
                             let value_body = self.single("for-yield value")?;
                             (value_body.end, ForBody::YieldItem(key_body, value_body))
+                        } else if self.try_consume(&Token::Into).is_some() {
+                            let into_body = self.single("for-yield into")?;
+                            (key_body.end, ForBody::Yield(key_body, Some(into_body)))
                         } else {
-                            (key_body.end, ForBody::Yield(key_body))
+                            (key_body.end, ForBody::Yield(key_body, None))
                         }
                     } else {
                         let body = self.assignment()?;
@@ -5502,6 +5647,7 @@ impl Parser {
             Some(Token::Else) => true,
             Some(Token::Case) => true,
             Some(Token::Catch) => true,
+            Some(Token::Into) => true,
             None => true,
             _ => false,
         }
@@ -7636,6 +7782,7 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     }
 }
 
+// Important: callers are responsible for absorbing NErr::Break!
 fn evaluate_for(
     env: &Rc<RefCell<Env>>,
     its: &[ForIteration],
@@ -8428,19 +8575,51 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             Ok(())
                         }) {
                             Ok(()) => Ok(Obj::Null),
-                            Err(NErr::Break(e)) => Ok(e),
+                            Err(NErr::Break(e)) => Ok(e.unwrap_or(Obj::Null)),
                             Err(e) => Err(e),
                         }
                     }
-                    ForBody::Yield(body) => {
-                        let mut acc = Vec::new();
-                        match evaluate_for(env, iteratees.as_slice(), &mut |e| {
-                            acc.push(evaluate(e, body)?);
-                            Ok(())
-                        }) {
-                            Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::list(acc)),
-                            Err(NErr::Break(e)) => Ok(e), // ??????
-                            Err(e) => Err(e),
+                    ForBody::Yield(body, into) => {
+                        let (cata, into_res) = match into {
+                            Some(into_body) => {
+                                let f = evaluate(env, into_body)?;
+                                match &f {
+                                    Obj::Func(Func::Builtin(ref b), _) => {
+                                        let cat = b.catamorphism();
+                                        (cat, Some(f))
+                                    }
+                                    _ => (None, Some(f)),
+                                }
+                            }
+                            None => (None, None),
+                        };
+                        match cata {
+                            Some(mut cata) => {
+                                let inner = evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                                    cata.give(evaluate(e, body)?)
+                                });
+                                match inner {
+                                    Ok(()) | Err(NErr::Break(None)) => cata.finish(),
+                                    Err(NErr::Break(Some(e))) => Ok(e),
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            None => {
+                                let mut acc = Vec::new();
+                                let inner = evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                                    acc.push(evaluate(e, body)?);
+                                    Ok(())
+                                });
+                                let res = match inner {
+                                    Ok(()) | Err(NErr::Break(None)) => Ok(Obj::list(acc)),
+                                    Err(NErr::Break(Some(e))) => Ok(e),
+                                    Err(e) => Err(e),
+                                }?;
+                                match into_res {
+                                    Some(f) => call_or_part_apply(env, f, vec![res]),
+                                    None => Ok(res),
+                                }
+                            }
                         }
                     }
                     ForBody::YieldItem(key_body, value_body) => {
@@ -8449,8 +8628,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             acc.insert(to_key(evaluate(e, key_body)?)?, evaluate(e, value_body)?);
                             Ok(())
                         }) {
-                            Ok(()) | Err(NErr::Break(Obj::Null)) => Ok(Obj::dict(acc, None)),
-                            Err(NErr::Break(e)) => Ok(e), // ??????
+                            Ok(()) | Err(NErr::Break(None)) => Ok(Obj::dict(acc, None)),
+                            Err(NErr::Break(Some(e))) => Ok(e),
                             Err(e) => Err(e),
                         }
                     }
@@ -8481,7 +8660,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     expr.end,
                 ) {
                     Ok(_) => (),
-                    Err(NErr::Break(e)) => return Ok(e),
+                    Err(NErr::Break(e)) => return Ok(e.unwrap_or(Obj::Null)),
                     Err(NErr::Continue) => continue,
                     Err(e) => return Err(e),
                 }
@@ -8632,8 +8811,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             expr.start,
             expr.end,
         )),
-        Expr::Break(Some(e)) => Err(NErr::Break(evaluate(env, e)?)),
-        Expr::Break(None) => Err(NErr::Break(Obj::Null)),
+        Expr::Break(Some(e)) => Err(NErr::Break(Some(evaluate(env, e)?))),
+        Expr::Break(None) => Err(NErr::Break(None)),
         Expr::Continue => Err(NErr::Continue),
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
@@ -8915,10 +9094,13 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::For(iteratees, body) => {
                 if env.warn {
                     match &**body {
-                        ForBody::Yield(LocExpr {
-                            expr: Expr::Sequence(_, true),
-                            ..
-                        }) => {
+                        ForBody::Yield(
+                            LocExpr {
+                                expr: Expr::Sequence(_, true),
+                                ..
+                            },
+                            _,
+                        ) => {
                             eprintln!("\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence\x1b[0m");
                         }
                         _ => {}
@@ -8953,7 +9135,11 @@ fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         .collect::<NRes<Vec<ForIteration>>>()?,
                     Box::new(match &**body {
                         ForBody::Execute(b) => ForBody::Execute(freeze(&mut env2, b)?),
-                        ForBody::Yield(b) => ForBody::Yield(freeze(&mut env2, b)?),
+                        ForBody::Yield(b, None) => ForBody::Yield(freeze(&mut env2, b)?, None),
+                        // this is technically wrong order
+                        ForBody::Yield(b, Some(s)) => {
+                            ForBody::Yield(freeze(&mut env2, b)?, Some(freeze(&mut env2, s)?))
+                        }
                         ForBody::YieldItem(kb, vb) => {
                             ForBody::YieldItem(freeze(&mut env2, kb)?, freeze(&mut env2, vb)?)
                         }
@@ -9743,25 +9929,15 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| Ok(Obj::Num(a ^ b)),
     });
     env.insert_builtin(Times);
-    env.insert_builtin(OneArgBuiltin {
+    env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "sum".to_string(),
-        body: |mut arg| {
-            let mut acc = Obj::zero();
-            for x in mut_obj_into_finite_iter(&mut arg, "sum")? {
-                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), acc, x, "inner +")?;
-            }
-            Ok(acc)
-        },
+        identity: Obj::zero(),
+        body: |s, f| expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), s, f, "inner +"),
     });
-    env.insert_builtin(OneArgBuiltin {
+    env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "product".to_string(),
-        body: |mut arg| {
-            let mut acc = Obj::one();
-            for x in mut_obj_into_finite_iter(&mut arg, "product")? {
-                acc = expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), acc, x, "inner *")?;
-            }
-            Ok(acc)
-        },
+        identity: Obj::one(),
+        body: |s, f| expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), s, f, "inner *"),
     });
     env.insert_builtin(ComparisonOperator::of("==", |a, b| Ok(a == b)));
     env.insert_builtin(ComparisonOperator::of("!=", |a, b| Ok(a != b)));
@@ -10409,54 +10585,29 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(SeqAndIdPredBuiltin {
+    env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "any".to_string(),
-        body: |env, mut s, f| {
-            // Have a termination condition but still not reasonable.
-            for e in mut_seq_into_finite_iter(&mut s, "any")? {
-                if f.run(env, vec![e])?.truthy() {
-                    return Ok(Obj::from(true));
-                }
+        identity: Obj::from(false),
+        body: |s, f| {
+            if f.truthy() {
+                Err(NErr::Break(Some(Obj::from(true))))
+            } else {
+                Ok(s)
             }
-            Ok(Obj::from(false))
         },
     });
-    env.insert_builtin(SeqAndIdPredBuiltin {
+    env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "all".to_string(),
-        body: |env, mut s, f| {
-            // Have a termination condition but still not reasonable.
-            for e in mut_seq_into_finite_iter(&mut s, "all")? {
-                if !f.run(env, vec![e])?.truthy() {
-                    return Ok(Obj::from(false));
-                }
+        identity: Obj::from(true),
+        body: |s, f| {
+            if !f.truthy() {
+                Err(NErr::Break(Some(Obj::from(false))))
+            } else {
+                Ok(s)
             }
-            Ok(Obj::from(true))
         },
     });
-    env.insert_builtin(EnvTwoArgBuiltin {
-        name: "count".to_string(),
-        body: |env, mut a, b| {
-            let it = mut_obj_into_finite_iter(&mut a, "count")?;
-            let mut c = 0usize;
-            match b {
-                Obj::Func(b, _) => {
-                    for e in it {
-                        if b.run(env, vec![e])?.truthy() {
-                            c += 1;
-                        }
-                    }
-                }
-                b => {
-                    for e in it {
-                        if e == b {
-                            c += 1;
-                        }
-                    }
-                }
-            }
-            Ok(Obj::from(c))
-        },
-    });
+    env.insert_builtin(Count);
     env.insert_builtin(Group { strict: false });
     env.insert_builtin(Group { strict: true });
     env.insert_builtin(Merge);
@@ -10981,10 +11132,7 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "id".to_string(),
-        body: |a| Ok(a),
-    });
+    env.insert_builtin(IdBuiltin);
     env.insert_builtin(TwoArgBuiltin {
         name: "const".to_string(),
         body: |_, b| Ok(b),

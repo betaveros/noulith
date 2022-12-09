@@ -281,6 +281,14 @@ fn for_loops() {
         simple_eval("sum (for (i, x <<- 1 to 5) yield i * x)"),
         i(40)
     );
+    assert_eq!(
+        simple_eval("for (i, x <<- 1 to 5) yield i * x into sum"),
+        i(40)
+    );
+    assert_eq!(
+        simple_eval("for (i, x <<- 1 to 5) yield i * x into \\s -> sum s"),
+        i(40)
+    );
     assert_eq!(simple_eval("x := 0; for (y := 5) x += y + 1; x"), i(6));
 }
 
@@ -289,6 +297,75 @@ fn function_stuff() {
     assert_eq!(
         simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"),
         Obj::from("253253")
+    );
+}
+
+#[test]
+fn basic_hofs() {
+    assert_eq!(
+        simple_eval("1 to 10 map - join ''"),
+        Obj::from("-1-2-3-4-5-6-7-8-9-10")
+    );
+    assert_eq!(
+        simple_eval("1 to 10 filter even join ''"),
+        Obj::from("246810")
+    );
+}
+
+#[test]
+fn folds() {
+    assert_eq!(simple_eval("1 to 10 fold +"), i(55));
+    assert_eq!(simple_eval("1 to 10 fold + from 1000"), i(1055));
+    assert_eq!(simple_eval("1 to 10 then sum"), i(55));
+    assert_eq!(simple_eval("1 to 10 sum (+1)"), i(65));
+    assert_eq!(simple_eval("1 to 10 then product"), i(3628800));
+    assert_eq!(simple_eval("1 to 10 product (+1)"), i(39916800));
+    assert_eq!(simple_eval("1 to 5 count even"), i(2));
+    assert_eq!(simple_eval("1 to 5 any even"), i(1));
+    assert_eq!(simple_eval("1 to 5 all even"), i(0));
+    assert_eq!(simple_eval("1 to 10 by 2 any even"), i(0));
+    assert_eq!(simple_eval("1 to 10 by 2 any odd"), i(1));
+    assert_eq!(simple_eval("1 to 10 by 2 all even"), i(0));
+    assert_eq!(simple_eval("1 to 10 by 2 all odd"), i(1));
+
+    assert_eq!(
+        simple_eval("for (i <- 1 to 10) yield even(i) into count"),
+        i(5)
+    );
+    assert_eq!(simple_eval("for (i <- 1 to 10) yield i into sum"), i(55));
+    assert_eq!(
+        simple_eval("for (i <- 1 to 10) yield i into product"),
+        i(3628800)
+    );
+}
+
+#[test]
+fn short_circuiting_folds() {
+    assert_eq!(
+        simple_eval("its := 0; [1 to 10 all \\i -> (its += 1; i < 3), its] join ','"),
+        Obj::from("0,3")
+    );
+    assert_eq!(
+        simple_eval("its := 0; [1 to 10 any \\i -> (its += 1; i >= 3), its] join ','"),
+        Obj::from("1,3")
+    );
+    assert_eq!(
+        simple_eval(
+            "its := 0; [for (i <- 1 to 10) yield (its += 1; i < 3) into all, its] join ','"
+        ),
+        Obj::from("0,3")
+    );
+    assert_eq!(
+        simple_eval(
+            "its := 0; [for (i <- 1 to 10) yield (its += 1; i >= 3) into any, its] join ','"
+        ),
+        Obj::from("1,3")
+    );
+    assert_eq!(
+        simple_eval(
+            "its := 0; [for (i <- 1 to 10) yield (its += 1; i < 3) into count, its] join ','"
+        ),
+        Obj::from("2,10")
     );
 }
 
