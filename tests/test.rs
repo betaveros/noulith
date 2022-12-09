@@ -126,12 +126,38 @@ fn lists() {
         simple_eval("[1, 2] ** [3, 4] then flatten join ''"),
         Obj::from("13142324")
     );
-    assert_eq!(
-        simple_eval("[1, 2] ^^ 3 then flatten join ''"),
-        Obj::from("111112121122211212221222")
-    );
     assert_eq!(simple_eval("sort([2, 5, 3]) join ''"), Obj::from("235"));
     assert_eq!(simple_eval("reverse([2, 5, 3]) join ''"), Obj::from("352"));
+}
+
+#[test]
+fn streams() {
+    assert_eq!(
+        simple_eval("[1, 2] ^^ 3 map (join '') join ','"),
+        Obj::from("111,112,121,122,211,212,221,222")
+    );
+    assert_eq!(
+        simple_eval("permutations([1, 2, 3]) map (join '') join ','"),
+        Obj::from("123,132,213,231,312,321")
+    );
+    assert_eq!(
+        simple_eval("combinations([1, 2, 3, 4, 5], 2) map (join '') join ','"),
+        Obj::from("12,13,14,15,23,24,25,34,35,45")
+    );
+    assert_eq!(
+        simple_eval("subsequences([1, 2, 3]) map (join '') join ','"),
+        Obj::from(",3,2,23,1,13,12,123")
+    );
+    assert_eq!(simple_eval("len! (1 to 6) ^^ 7 drop 12345"), i(267591));
+    assert_eq!(
+        simple_eval("len! permutations(1 to 10) drop 12345"),
+        i(3616455)
+    );
+    assert_eq!(
+        simple_eval("len! combinations(1 to 10, 5) drop 100"),
+        i(152)
+    );
+    assert_eq!(simple_eval("len! subsequences(1 to 10) drop 100"), i(924));
 }
 
 #[test]

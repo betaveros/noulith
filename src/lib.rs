@@ -362,6 +362,7 @@ impl Stream for Range {
     }
 }
 
+// Order: lexicographic indexes
 #[derive(Debug, Clone)]
 struct Permutations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
 impl Iterator for Permutations {
@@ -427,8 +428,34 @@ impl Stream for Permutations {
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
+    fn len(&self) -> Option<usize> {
+        match &self.1 {
+            None => Some(0),
+            Some(v) => {
+                let mut cur = 1usize;
+                Some(
+                    (1..v.len())
+                        .map(|i| {
+                            // Each way we could replace v[len - 1 - i] with a later number that's larger
+                            // gives us cur.
+                            // i = 0, cur = undef
+                            // i = 1, cur = 1
+                            // i = 2, cur = 2
+                            // i = 3, cur = 6
+                            cur *= i;
+                            cur * (v.len() - i..v.len())
+                                .filter(|j| v[*j] > v[v.len() - 1 - i])
+                                .count()
+                        })
+                        .sum::<usize>()
+                        + 1usize,
+                )
+            }
+        }
+    }
 }
 
+// Order: lexicographic indexes
 #[derive(Debug, Clone)]
 struct Combinations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
 impl Iterator for Combinations {
@@ -484,8 +511,22 @@ impl Stream for Combinations {
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
+    // FIXME this math is hard
+    /*
+    fn len(&self) -> Option<usize> {
+        match &self.1 {
+            None => Some(0),
+            Some(v) => {
+                Some((0..v.len()).rev().map(|i| {
+                    // ...
+                }).sum::<usize>() + 1usize)
+            }
+        }
+    }
+    */
 }
 
+// Order: big-endian binary
 #[derive(Debug, Clone)]
 struct Subsequences(Rc<Vec<Obj>>, Option<Rc<Vec<bool>>>);
 impl Iterator for Subsequences {
@@ -541,6 +582,30 @@ impl Stream for Subsequences {
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
+    fn len(&self) -> Option<usize> {
+        match &self.1 {
+            None => Some(0),
+            Some(v) => {
+                let mut cur = 1usize;
+                Some(
+                    (0..v.len())
+                        .rev()
+                        .map(|i| {
+                            let s = if !v[i] {
+                                // If we keep everything before this and set this to true:
+                                cur
+                            } else {
+                                0
+                            };
+                            cur *= 2;
+                            s
+                        })
+                        .sum::<usize>()
+                        + 1usize,
+                )
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +657,26 @@ impl Stream for CartesianPower {
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
+    fn len(&self) -> Option<usize> {
+        match &self.1 {
+            None => Some(0),
+            Some(v) => {
+                let mut cur = 1usize;
+                Some(
+                    (0..v.len())
+                        .rev()
+                        .map(|i| {
+                            // If we keep everything before this and increase this:
+                            let s = (self.0.len() - 1 - v[i]) * cur;
+                            cur *= self.0.len();
+                            s
+                        })
+                        .sum::<usize>()
+                        + 1usize,
+                )
+            }
+        }
+    }
 }
 
 // very illegal
@@ -635,6 +720,9 @@ impl Stream for Iterate {
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
+    }
+    fn len(&self) -> Option<usize> {
+        None
     }
 }
 
