@@ -749,7 +749,7 @@ impl Debug for MappedStream {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
             None => write!(fmt, "MappedStream(done)"),
-            Some((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func)
+            Some((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func),
         }
     }
 }
@@ -777,7 +777,7 @@ impl Display for MappedStream {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match &self.0 {
             None => write!(formatter, "MappedStream(done)"),
-            Some((inner, func, _)) => write!(formatter, "MappedStream({}, {}, ...)", inner, func)
+            Some((inner, func, _)) => write!(formatter, "MappedStream({}, {}, ...)", inner, func),
         }
     }
 }
@@ -12067,6 +12067,33 @@ pub fn initialize(env: &mut Env) {
                         Ok(_size) => Ok(Obj::Null),
                         Err(e) => Err(NErr::io_error(format!("{}", e))),
                     },
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "run_process".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::String(s)), Obj::Seq(mut args)) => {
+                match std::process::Command::new(&*s)
+                    .args(
+                        mut_seq_into_finite_iter(&mut args, "run_process args")?
+                            .map(|s| format!("{}", s)),
+                    )
+                    .output()
+                {
+                    Ok(res) => {
+                        if res.status.success() {
+                            Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
+                        } else {
+                            Err(NErr::io_error(format!(
+                                "subprocess exited with nonzero status {}",
+                                res.status
+                            )))
+                        }
+                    }
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
