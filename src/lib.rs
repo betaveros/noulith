@@ -11916,14 +11916,14 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(OneArgBuiltin {
-        name: "utf8encode".to_string(),
+        name: "utf8_encode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             _ => Err(NErr::type_error("must utf8encode string".to_string())),
         },
     });
     env.insert_builtin(OneArgBuiltin {
-        name: "utf8decode".to_string(),
+        name: "utf8_decode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::Bytes(b)) => match String::from_utf8(unwrap_or_clone(b)) {
                 Ok(s) => Ok(Obj::from(s)),
@@ -11987,14 +11987,14 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(OneArgBuiltin {
-        name: "base64encode".to_string(),
+        name: "base64_encode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::Bytes(b)) => Ok(Obj::from(base64::encode(&*b))),
             _ => Err(NErr::type_error("must hex_encode bytes".to_string())),
         },
     });
     env.insert_builtin(OneArgBuiltin {
-        name: "base64decode".to_string(),
+        name: "base64_decode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => match base64::decode(&*s) {
                 Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
