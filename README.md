@@ -199,7 +199,7 @@ One corner case in the semantics here: While the operator is being called, the L
 
 ```
 x := 0
-f := \a: (print x; a)
+f := \a -> (print x; a)
 x .= f
 ```
 
@@ -240,7 +240,7 @@ z := remove x[0]
 You can implement your own "mutable data cells" easily (?) with a closure:
 
 ```
-make_cell := \init: (x := init; [\: x, \y: (x = y)])
+make_cell := \init -> (x := init; [\ -> x, \y -> (x = y)])
 get_a, set_a := make_cell(0)
 ```
 
