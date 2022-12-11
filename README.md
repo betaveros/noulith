@@ -153,9 +153,11 @@ Looser  (alphanumerics)
 
 Types double as conversion functions: `str(3)` `int(3)` `dict([[1, 2], [3, 4]])` etc. Bending internal consistency for pure syntax sweetness, `to` is overloaded to takes a type as its second argument to call the same conversion. Test types explicitly with `is`: `3 is int`, `int is type`. The type of `null` is `nulltype`. Strings are `str` and functions are `func`. The "top" type is `anything`.
 
-We got `eval`, a dumb dynamic guy; `import`, a stupid transclusion right now; `vars` for examining local variables; `assert`, which is currently a silly function and will probably become a keyword so it can inspect the expression being asserted.
+We got `eval`, a dumb dynamic guy; `vars` for examining local variables; `assert`, which is currently a silly function and will probably become a keyword so it can inspect the expression being asserted.
 
 `freeze` is a wonky keyword that goes through an expression and eagerly resolves each free variable to what it points to outside. It can slightly optimize some functions, surface some name errors earlier, and more elegantly(??) handle some binding acrobatics that you might have to write IIFEs for in other languages.
+
+The `import` statement takes a filename and approximately just parses it and splices it in where written, sort of like how C/C++'s `#include` works. This is an awful hack and might be fixed one day.
 
 ### Variables and assignments
 
