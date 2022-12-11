@@ -3006,14 +3006,12 @@ struct Set;
 impl Builtin for Set {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(Obj::Seq(mut s)) => {
-                Ok(Obj::dict(
-                    mut_seq_into_finite_iter(&mut s, "set conversion")?
-                        .map(|k| Ok((to_key(k)?, Obj::Null)))
-                        .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
-                    None,
-                ))
-            }
+            Few::One(Obj::Seq(mut s)) => Ok(Obj::dict(
+                mut_seq_into_finite_iter(&mut s, "set conversion")?
+                    .map(|k| Ok((to_key(k)?, Obj::Null)))
+                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                None,
+            )),
             f => err_add_name(Err(NErr::argument_error_few(&f)), "set"),
         }
     }
@@ -3048,12 +3046,12 @@ struct CountDistinct;
 impl Builtin for CountDistinct {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(Obj::Seq(mut s)) => {
-                Ok(Obj::from(
-                    mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
-                        .map(to_key)
-                        .collect::<NRes<HashSet<ObjKey>>>()?.len()))
-            }
+            Few::One(Obj::Seq(mut s)) => Ok(Obj::from(
+                mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
+                    .map(to_key)
+                    .collect::<NRes<HashSet<ObjKey>>>()?
+                    .len(),
+            )),
             f => err_add_name(Err(NErr::argument_error_few(&f)), "count_distinct"),
         }
     }
@@ -3639,6 +3637,16 @@ struct Replace;
 impl Builtin for Replace {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few3(args) {
+            Few3::Two(a @ Obj::Seq(Seq::String(_)), b @ Obj::Seq(Seq::String(_))) => Ok(Obj::Func(
+                Func::PartialAppLast(
+                    Box::new(Func::PartialAppLast(
+                        Box::new(Func::Builtin(Rc::new(self.clone()))),
+                        Box::new(b),
+                    )),
+                    Box::new(a),
+                ),
+                Precedence::zero(),
+            )),
             Few3::Three(
                 Obj::Seq(Seq::String(a)),
                 Obj::Seq(Seq::String(b)),
@@ -3676,7 +3684,7 @@ impl Builtin for Replace {
                 Ok(res)
             }
             _ => Err(NErr::type_error(
-                "replace: must get three strings".to_string(),
+                "replace: must get three strings (or two for partial app)".to_string(),
             )),
         }
     }
