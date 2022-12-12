@@ -399,14 +399,14 @@ fn short_circuiting_folds() {
 fn bases() {
     assert_eq!(simple_eval("int_radix('105', 8)"), i(69));
     assert_eq!(simple_eval("str_radix(105, 16)"), Obj::from("69"));
-    assert_eq!(simple_eval("base64encode B'aaa'"), Obj::from("YWFh"));
+    assert_eq!(simple_eval("base64_encode B'aaa'"), Obj::from("YWFh"));
     assert_eq!(
-        simple_eval("utf8decode! base64decode 'YWFh'"),
+        simple_eval("utf8_decode! base64_decode 'YWFh'"),
         Obj::from("aaa")
     );
     assert_eq!(simple_eval("hex_encode B'lox'"), Obj::from("6c6f78"));
     assert_eq!(
-        simple_eval("utf8decode! hex_decode '6c6f78'"),
+        simple_eval("utf8_decode! hex_decode '6c6f78'"),
         Obj::from("lox")
     );
 }
