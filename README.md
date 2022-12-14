@@ -1,4 +1,4 @@
-An attempt to give myself a new Pareto-optional choice for quick-and-dirty scripts, particularly when I'm not on a dev computer, and to practice writing a more realistic programming language instead of the [overengineered stack-based nonsense](https://github.com/betaveros/paradoc) I spend too much time on. ([Crafting Interpreters](https://craftinginterpreters.com/) is such a good book, I have no excuses.)
+An attempt to give myself a new Pareto-optimal choice for quick-and-dirty scripts, particularly when I'm not on a dev computer, and to practice writing a more realistic programming language instead of the [overengineered stack-based nonsense](https://github.com/betaveros/paradoc) I spend too much time on. ([Crafting Interpreters](https://craftinginterpreters.com/) is such a good book, I have no excuses.)
 
 ## Elevator pitches (and anti-pitches)
 
