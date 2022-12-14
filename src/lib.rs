@@ -119,10 +119,12 @@ pub enum Obj {
 // https://doc.rust-lang.org/reference/items/traits.html#object-safety
 //
 // more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
-pub trait Stream: Iterator<Item = Obj> + Display + Debug {
-    fn peek(&self) -> Option<Obj>;
+pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug {
+    fn peek(&self) -> Option<NRes<Obj>>;
     fn clone_box(&self) -> Box<dyn Stream>;
-    // for now this means length or infinity, not sure yet
+    // FIXME: this used to mean "length or infinity" but it increasingly looks like we actually
+    // want streams where we can't determine their length by inspection, so this type doesn't make
+    // sense any more. is it NErr<usize>? Option<NErr<usize>>?
     fn len(&self) -> Option<usize> {
         let mut s = self.clone_box();
         let mut ret = 0;
@@ -131,40 +133,41 @@ pub trait Stream: Iterator<Item = Obj> + Display + Debug {
         }
         Some(ret)
     }
-    fn force(&self) -> Option<Vec<Obj>> {
-        Some(self.clone_box().collect())
+    fn force(&self) -> NRes<Vec<Obj>> {
+        self.clone_box().collect()
     }
-    fn pythonic_index_isize(&self, mut i: isize) -> Option<Obj> {
+    fn pythonic_index_isize(&self, i0: isize) -> NRes<Obj> {
+        let mut i = i0;
         if i >= 0 {
             let mut it = self.clone_box();
             while let Some(e) = it.next() {
                 if i == 0 {
-                    return Some(e);
+                    return e;
                 }
                 i -= 1;
             }
-            None
+            Err(NErr::index_error(format!("Index out of bounds: {}", i0)))
         } else {
             let mut v = self.force()?;
             let i2 = (i + (v.len() as isize)) as usize;
             if i2 < v.len() {
-                Some(v.swap_remove(i2))
+                Ok(v.swap_remove(i2))
             } else {
-                None
+                Err(NErr::index_error(format!("Index out of bounds: {}", i0)))
             }
         }
     }
-    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
+    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> NRes<Seq> {
         let lo = lo.unwrap_or(0);
         match (lo, hi) {
             (lo, None) if lo >= 0 => {
                 let mut it = self.clone_box();
                 for _ in 0..lo {
                     if it.next().is_none() {
-                        return Some(Seq::Stream(Rc::from(it)));
+                        return Ok(Seq::Stream(Rc::from(it)));
                     }
                 }
-                Some(Seq::Stream(Rc::from(it)))
+                Ok(Seq::Stream(Rc::from(it)))
             }
             (lo, Some(hi)) if lo >= 0 && hi >= 0 => {
                 let mut it = self.clone_box();
@@ -177,31 +180,31 @@ pub trait Stream: Iterator<Item = Obj> + Display + Debug {
                 }
                 for _ in lo..hi {
                     match it.next() {
-                        Some(x) => v.push(x),
+                        Some(x) => v.push(x?),
                         None => break,
                     }
                 }
-                Some(Seq::List(Rc::new(v)))
+                Ok(Seq::List(Rc::new(v)))
             }
             (lo, hi) => {
                 let mut v = self.force()?;
                 let (lo, hi) = pythonic_slice(v.as_slice(), Some(lo), hi);
-                Some(Seq::List(Rc::new(v.drain(lo..hi).collect())))
+                Ok(Seq::List(Rc::new(v.drain(lo..hi).collect())))
             }
         }
     }
-    fn reversed(&self) -> Option<Seq> {
+    fn reversed(&self) -> NRes<Seq> {
         let mut xs = self.force()?;
         xs.reverse();
-        Some(Seq::List(Rc::new(xs)))
+        Ok(Seq::List(Rc::new(xs)))
     }
 }
 #[derive(Debug, Clone)]
 struct Repeat(Obj);
 impl Iterator for Repeat {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
-        Some(self.0.clone())
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        Some(Ok(self.0.clone()))
     }
 }
 impl Display for Repeat {
@@ -210,8 +213,8 @@ impl Display for Repeat {
     }
 }
 impl Stream for Repeat {
-    fn peek(&self) -> Option<Obj> {
-        Some(self.0.clone())
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(self.0.clone()))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -219,13 +222,15 @@ impl Stream for Repeat {
     fn len(&self) -> Option<usize> {
         None
     }
-    fn force(&self) -> Option<Vec<Obj>> {
-        None
+    fn force(&self) -> NRes<Vec<Obj>> {
+        Err(NErr::value_error(
+            "Cannot force repeat because it's infinite".to_string(),
+        ))
     }
-    fn pythonic_index_isize(&self, _: isize) -> Option<Obj> {
-        Some(self.0.clone())
+    fn pythonic_index_isize(&self, _: isize) -> NRes<Obj> {
+        Ok(self.0.clone())
     }
-    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> Option<Seq> {
+    fn pythonic_slice(&self, lo: Option<isize>, hi: Option<isize>) -> NRes<Seq> {
         let lo = match lo {
             Some(x) => {
                 if x < 0 {
@@ -246,7 +251,7 @@ impl Stream for Repeat {
             }
             None => -1,
         };
-        Some(match (lo < 0, hi < 0) {
+        Ok(match (lo < 0, hi < 0) {
             (true, true) | (false, false) => {
                 Seq::List(Rc::new(vec![self.0.clone(); (hi - lo).max(0) as usize]))
             }
@@ -254,19 +259,19 @@ impl Stream for Repeat {
             (false, true) => Seq::Stream(Rc::new(self.clone())),
         })
     }
-    fn reversed(&self) -> Option<Seq> {
-        Some(Seq::Stream(Rc::new(self.clone())))
+    fn reversed(&self) -> NRes<Seq> {
+        Ok(Seq::Stream(Rc::new(self.clone())))
     }
 }
 #[derive(Debug, Clone)]
 // just gonna say this has to be nonempty
 struct Cycle(Rc<Vec<Obj>>, usize);
 impl Iterator for Cycle {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         let ret = self.0[self.1].clone();
         self.1 = (self.1 + 1) % self.0.len();
-        Some(ret)
+        Some(Ok(ret))
     }
 }
 impl Display for Cycle {
@@ -275,8 +280,8 @@ impl Display for Cycle {
     }
 }
 impl Stream for Cycle {
-    fn peek(&self) -> Option<Obj> {
-        Some(self.0[self.1].clone())
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(self.0[self.1].clone()))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -284,18 +289,20 @@ impl Stream for Cycle {
     fn len(&self) -> Option<usize> {
         None
     }
-    fn force(&self) -> Option<Vec<Obj>> {
-        None
+    fn force(&self) -> NRes<Vec<Obj>> {
+        Err(NErr::value_error(
+            "Cannot force cycle because it's infinite".to_string(),
+        ))
     }
-    fn pythonic_index_isize(&self, i: isize) -> Option<Obj> {
-        Some(self.0[(self.1 as isize + i).rem_euclid(self.0.len() as isize) as usize].clone())
+    fn pythonic_index_isize(&self, i: isize) -> NRes<Obj> {
+        Ok(self.0[(self.1 as isize + i).rem_euclid(self.0.len() as isize) as usize].clone())
     }
-    fn reversed(&self) -> Option<Seq> {
+    fn reversed(&self) -> NRes<Seq> {
         let mut v: Vec<Obj> = (*self.0).clone();
         v.reverse();
         // 0 -> 0, 1 -> n - 1...
         let i = (v.len() - self.1) % v.len();
-        Some(Seq::Stream(Rc::new(Cycle(Rc::new(v), i))))
+        Ok(Seq::Stream(Rc::new(Cycle(Rc::new(v), i))))
     }
 }
 #[derive(Debug, Clone)]
@@ -311,15 +318,15 @@ impl Range {
     }
 }
 impl Iterator for Range {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         if self.empty() {
             None
         } else {
             let Range(start, _end, step) = self;
             let ret = start.clone();
             *start += &*step;
-            Some(Obj::from(ret))
+            Some(Ok(Obj::from(ret)))
         }
     }
 }
@@ -332,11 +339,11 @@ impl Display for Range {
     }
 }
 impl Stream for Range {
-    fn peek(&self) -> Option<Obj> {
+    fn peek(&self) -> Option<NRes<Obj>> {
         if self.empty() {
             None
         } else {
-            Some(Obj::from(self.0.clone()))
+            Some(Ok(Obj::from(self.0.clone())))
         }
     }
     fn clone_box(&self) -> Box<dyn Stream> {
@@ -366,8 +373,8 @@ impl Stream for Range {
 #[derive(Debug, Clone)]
 struct Permutations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
 impl Iterator for Permutations {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         let v = Rc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
 
@@ -397,7 +404,7 @@ impl Iterator for Permutations {
                 self.1 = None;
             }
         }
-        Some(ret)
+        Some(Ok(ret))
     }
 }
 impl Display for Permutations {
@@ -416,14 +423,14 @@ impl Display for Permutations {
     }
 }
 impl Stream for Permutations {
-    fn peek(&self) -> Option<Obj> {
-        Some(Obj::list(
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(Obj::list(
             self.1
                 .as_ref()?
                 .iter()
                 .map(|i| self.0[*i].clone())
                 .collect(),
-        ))
+        )))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -459,8 +466,8 @@ impl Stream for Permutations {
 #[derive(Debug, Clone)]
 struct Combinations(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
 impl Iterator for Combinations {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         let v = Rc::make_mut(self.1.as_mut()?);
         if v.len() > self.0.len() {
             return None;
@@ -475,12 +482,12 @@ impl Iterator for Combinations {
                 for j in i + 1..v.len() {
                     v[j] = v[j - 1] + 1;
                 }
-                return Some(ret);
+                return Some(Ok(ret));
             }
             last -= 1;
         }
         self.1 = None;
-        Some(ret)
+        Some(Ok(ret))
     }
 }
 impl Display for Combinations {
@@ -499,14 +506,14 @@ impl Display for Combinations {
     }
 }
 impl Stream for Combinations {
-    fn peek(&self) -> Option<Obj> {
-        Some(Obj::list(
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(Obj::list(
             self.1
                 .as_ref()?
                 .iter()
                 .map(|i| self.0[*i].clone())
                 .collect(),
-        ))
+        )))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -530,8 +537,8 @@ impl Stream for Combinations {
 #[derive(Debug, Clone)]
 struct Subsequences(Rc<Vec<Obj>>, Option<Rc<Vec<bool>>>);
 impl Iterator for Subsequences {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         let v = Rc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(
             v.iter()
@@ -546,11 +553,11 @@ impl Iterator for Subsequences {
                 for j in i + 1..v.len() {
                     v[j] = false;
                 }
-                return Some(ret);
+                return Some(Ok(ret));
             }
         }
         self.1 = None;
-        Some(ret)
+        Some(Ok(ret))
     }
 }
 impl Display for Subsequences {
@@ -569,15 +576,15 @@ impl Display for Subsequences {
     }
 }
 impl Stream for Subsequences {
-    fn peek(&self) -> Option<Obj> {
-        Some(Obj::list(
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(Obj::list(
             self.1
                 .as_ref()?
                 .iter()
                 .zip(self.0.iter())
                 .filter_map(|(b, x)| if *b { Some(x.clone()) } else { None })
                 .collect(),
-        ))
+        )))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -611,8 +618,8 @@ impl Stream for Subsequences {
 #[derive(Debug, Clone)]
 struct CartesianPower(Rc<Vec<Obj>>, Option<Rc<Vec<usize>>>);
 impl Iterator for CartesianPower {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
         let v = Rc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
 
@@ -622,11 +629,11 @@ impl Iterator for CartesianPower {
             if v[i] == self.0.len() {
                 v[i] = 0;
             } else {
-                return Some(ret);
+                return Some(Ok(ret));
             }
         }
         self.1 = None;
-        Some(ret)
+        Some(Ok(ret))
     }
 }
 impl Display for CartesianPower {
@@ -645,14 +652,14 @@ impl Display for CartesianPower {
     }
 }
 impl Stream for CartesianPower {
-    fn peek(&self) -> Option<Obj> {
-        Some(Obj::list(
+    fn peek(&self) -> Option<NRes<Obj>> {
+        Some(Ok(Obj::list(
             self.1
                 .as_ref()?
                 .iter()
                 .map(|i| self.0[*i].clone())
                 .collect(),
-        ))
+        )))
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -679,50 +686,58 @@ impl Stream for CartesianPower {
     }
 }
 
-// very illegal
+// moderately illegal
+// we'll treat NErr::Break as graceful termination
 #[derive(Clone)]
-struct Iterate(Option<(Obj, Func, REnv)>);
+struct Iterate(NRes<(Obj, Func, REnv)>);
 // directly debug-printing env can easily recurse infinitely
 impl Debug for Iterate {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
-            None => write!(fmt, "Iterate(done)"),
-            Some((obj, func, _)) => write!(fmt, "Iterate({:?}, {:?}, ...)", obj, func),
+            Ok((obj, func, _)) => write!(fmt, "Iterate({:?}, {:?}, ...)", obj, func),
+            Err(NErr::Break(None)) => write!(fmt, "Iterate(stopped)"),
+            Err(e) => write!(fmt, "Iterate(ERROR: {:?})", e),
         }
     }
 }
 impl Iterator for Iterate {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
-        let (obj, func, renv) = self.0.as_mut()?;
-        let ret = obj.clone();
-        let cur = std::mem::take(obj);
-        match func.run(&renv, vec![cur]) {
-            Ok(nxt) => {
-                *obj = nxt;
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        match &mut self.0 {
+            Ok((obj, func, renv)) => {
+                let ret = obj.clone();
+                let cur = std::mem::take(obj);
+                match func.run(&renv, vec![cur]) {
+                    Ok(nxt) => {
+                        *obj = nxt;
+                    }
+                    Err(e) => {
+                        self.0 = Err(e);
+                    }
+                }
+                Some(Ok(ret))
             }
-            Err(e) => {
-                eprintln!(
-                    "INTERNAL ERROR: iterate function failed! {} terminating...",
-                    e
-                );
-                self.0 = None;
-            }
+            Err(NErr::Break(None)) => None,
+            Err(e) => Some(Err(e.clone()))
         }
-        Some(ret)
     }
 }
 impl Display for Iterate {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match &self.0 {
-            None => write!(formatter, "Iterate(done)"),
-            Some((obj, func, _)) => write!(formatter, "Iterate({}, {}, ...)", obj, func),
+            Ok((obj, func, _)) => write!(formatter, "Iterate({}, {}, ...)", obj, func),
+            Err(NErr::Break(None)) => write!(formatter, "Iterate(stopped)"),
+            Err(e) => write!(formatter, "Iterate(ERROR: {})", e),
         }
     }
 }
 impl Stream for Iterate {
-    fn peek(&self) -> Option<Obj> {
-        Some(self.0.as_ref()?.0.clone())
+    fn peek(&self) -> Option<NRes<Obj>> {
+        match &self.0 {
+            Ok((obj, _, _)) => Some(Ok(obj.clone())),
+            Err(NErr::Break(None)) => None,
+            Err(e) => Some(Err(e.clone()))
+        }
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
@@ -733,13 +748,14 @@ impl Stream for Iterate {
 }
 
 // maybe even more illegal? not sure
-struct MappedStream(Option<(Box<dyn Stream>, Func, REnv)>);
+// again we'll treat NErr::Break as graceful termination
+struct MappedStream(NRes<(Box<dyn Stream>, Func, REnv)>);
 impl Clone for MappedStream {
     fn clone(&self) -> MappedStream {
         match &self.0 {
-            None => MappedStream(None),
-            Some((inner, func, renv)) => {
-                MappedStream(Some((inner.clone_box(), func.clone(), renv.clone())))
+            Err(e) => MappedStream(Err(e.clone())),
+            Ok((inner, func, renv)) => {
+                MappedStream(Ok((inner.clone_box(), func.clone(), renv.clone())))
             }
         }
     }
@@ -748,26 +764,30 @@ impl Clone for MappedStream {
 impl Debug for MappedStream {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
-            None => write!(fmt, "MappedStream(done)"),
-            Some((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func),
+            Err(NErr::Break(None)) => write!(fmt, "MappedStream(stopped)"),
+            Err(e) => write!(fmt, "MappedStream(ERROR: {:?})", e),
+            Ok((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func),
         }
     }
 }
 impl Iterator for MappedStream {
-    type Item = Obj;
-    fn next(&mut self) -> Option<Obj> {
-        let (inner, func, renv) = self.0.as_mut()?;
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        let (inner, func, renv) = self.0.as_mut().ok()?;
         match inner.next() {
-            Some(cur) => match func.run(&renv, vec![cur]) {
-                Ok(nxt) => Some(nxt),
+            Some(Err(e)) => {
+                self.0 = Err(e.clone());
+                Some(Err(e))
+            }
+            Some(Ok(cur)) => match func.run(&renv, vec![cur]) {
+                Ok(nxt) => Some(Ok(nxt)),
                 Err(e) => {
-                    eprintln!("INTERNAL ERROR: map function failed! {} terminating...", e);
-                    self.0 = None;
-                    None
+                    self.0 = Err(e.clone());
+                    Some(Err(e))
                 }
             },
             None => {
-                self.0 = None;
+                self.0 = Err(NErr::Break(None));
                 None
             }
         }
@@ -776,31 +796,34 @@ impl Iterator for MappedStream {
 impl Display for MappedStream {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match &self.0 {
-            None => write!(formatter, "MappedStream(done)"),
-            Some((inner, func, _)) => write!(formatter, "MappedStream({}, {}, ...)", inner, func),
+            Ok((inner, func, _)) => write!(formatter, "MappedStream({}, {}, ...)", inner, func),
+            Err(e) => write!(formatter, "MappedStream(ERROR: {})", e),
         }
     }
 }
 impl Stream for MappedStream {
-    fn peek(&self) -> Option<Obj> {
-        let (inner, func, renv) = self.0.as_ref()?;
-        match func.run(&renv, vec![inner.peek()?]) {
-            Ok(nxt) => Some(nxt),
-            Err(e) => {
-                eprintln!("INTERNAL ERROR: map function failed! {}", e);
-                None
-            }
+    fn peek(&self) -> Option<NRes<Obj>> {
+        let (inner, func, renv) = self.0.as_ref().ok()?;
+        match inner.peek()? {
+            Ok(inxt) => match func.run(&renv, vec![inxt]) {
+                Ok(nxt) => Some(Ok(nxt)),
+                Err(e) => Some(Err(e.clone())),
+            },
+            Err(NErr::Break(None)) => None,
+            Err(e) => Some(Err(e)),
         }
     }
     fn clone_box(&self) -> Box<dyn Stream> {
         Box::new(self.clone())
     }
+    /*
     fn len(&self) -> Option<usize> {
         match &self.0 {
-            Some((inner, _, _)) => inner.len(),
-            None => Some(0),
+            Ok((inner, _, _)) => inner.len(),
+            Err(_) => Some(0),
         }
     }
+    */
 }
 
 #[derive(Debug, Clone)]
@@ -957,7 +980,8 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
         ObjType::List => match expect_one(arg, "list")? {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(
-                mut_obj_into_finite_iter(&mut arg, "list conversion")?.collect(),
+                mut_obj_into_iter(&mut arg, "list conversion")?
+                    .collect::<NRes<Vec<Obj>>>()?,
             )),
         },
         ObjType::String => Ok(Obj::from(format!("{}", expect_one(arg, "str")?))),
@@ -965,16 +989,14 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
-                mut_obj_into_finite_iter(&mut arg, "bytes conversion")?
-                    .map(|e| to_byte(e, "bytes conversion"))
+                mut_obj_into_iter(&mut arg, "bytes conversion")?
+                    .map(|e| to_byte(e?, "bytes conversion"))
                     .collect::<NRes<Vec<u8>>>()?,
             )))),
         },
         ObjType::Vector => match expect_one(arg, "vector")? {
             Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
-            mut arg => {
-                to_obj_vector(mut_obj_into_finite_iter(&mut arg, "vector conversion")?.map(Ok))
-            }
+            mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?),
         },
         ObjType::Dict => match expect_one(arg, "dict")? {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
@@ -984,8 +1006,8 @@ fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                     Rc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
                     */
             mut arg => Ok(Obj::dict(
-                mut_obj_into_finite_iter(&mut arg, "dict conversion")?
-                    .map(|p| match p {
+                mut_obj_into_iter(&mut arg, "dict conversion")?
+                    .map(|p| match p? {
                         Obj::Seq(Seq::List(xs)) => match few2(unwrap_or_clone(xs)) {
                             Few2::Two(k, v) => Ok((to_key(k)?, v)),
                             _ => Err(NErr::type_error("dict conversion: not pair".to_string())),
@@ -1245,8 +1267,7 @@ fn to_key(obj: Obj) -> NRes<ObjKey> {
         ))),
         Obj::Seq(Seq::Bytes(x)) => Ok(ObjKey::Bytes(x)),
         Obj::Seq(Seq::Stream(s)) => Ok(ObjKey::List(Rc::new(
-            s.force()
-                .ok_or(NErr::type_error("infinite stream as key".to_string()))?
+            s.force()?
                 .into_iter()
                 .map(|e| to_key(e))
                 .collect::<NRes<Vec<ObjKey>>>()?,
@@ -1656,16 +1677,16 @@ fn obj_to_cloning_iter<'a, 'b>(obj: &'a Obj, purpose: &'b str) -> NRes<ObjToClon
 }
 
 impl Iterator for ObjToCloningIter<'_> {
-    type Item = Obj;
+    type Item = NRes<Obj>;
 
-    fn next(&mut self) -> Option<Obj> {
+    fn next(&mut self) -> Option<NRes<Obj>> {
         match self {
-            ObjToCloningIter::List(it) => it.next().cloned(),
-            ObjToCloningIter::Dict(it) => Some(key_to_obj(it.next()?.0.clone())),
-            ObjToCloningIter::String(it) => Some(Obj::from(it.next()?)),
-            ObjToCloningIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
-            ObjToCloningIter::Bytes(it) => Some(Obj::from(*it.next()? as usize)),
-            ObjToCloningIter::Stream(it) => Some(Obj::from(it.next()?)),
+            ObjToCloningIter::List(it) => it.next().cloned().map(Ok),
+            ObjToCloningIter::Dict(it) => Some(Ok(key_to_obj(it.next()?.0.clone()))),
+            ObjToCloningIter::String(it) => Some(Ok(Obj::from(it.next()?))),
+            ObjToCloningIter::Vector(it) => Some(Ok(Obj::Num(it.next()?.clone()))),
+            ObjToCloningIter::Bytes(it) => Some(Ok(Obj::from(*it.next()? as usize))),
+            ObjToCloningIter::Stream(it) => it.next(),
         }
     }
 }
@@ -1677,7 +1698,7 @@ pub enum MutObjIntoIter<'a> {
     String(RcStringIter<'a>),
     Vector(RcVecIter<'a, NNum>),
     Bytes(RcVecIter<'a, u8>),
-    Stream(Box<dyn Stream>),
+    Stream(&'a mut Rc<dyn Stream>),
 }
 
 // iterates over (index, value) or (key, value)
@@ -1687,7 +1708,7 @@ pub enum MutObjIntoIterPairs<'a> {
     String(usize, RcStringIter<'a>),
     Vector(usize, RcVecIter<'a, NNum>),
     Bytes(usize, RcVecIter<'a, u8>),
-    Stream(usize, Box<dyn Stream>),
+    Stream(usize, &'a mut Rc<dyn Stream>),
 }
 
 fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
@@ -1697,7 +1718,7 @@ fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
         Seq::String(s) => MutObjIntoIter::String(RcStringIter::of(s)),
         Seq::Vector(v) => MutObjIntoIter::Vector(RcVecIter::of(v)),
         Seq::Bytes(v) => MutObjIntoIter::Bytes(RcVecIter::of(v)),
-        Seq::Stream(v) => MutObjIntoIter::Stream(v.clone_box()),
+        Seq::Stream(v) => MutObjIntoIter::Stream(v),
     }
 }
 
@@ -1726,31 +1747,25 @@ fn mut_obj_into_iter<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjI
     }
 }
 
-fn mut_obj_into_finite_iter<'a, 'b>(
-    obj: &'a mut Obj,
-    purpose: &'b str,
-) -> NRes<MutObjIntoIter<'a>> {
-    match obj {
-        Obj::Seq(s) => mut_seq_into_finite_iter(s, purpose),
-        e => Err(NErr::value_error(format!(
-            "{}: not iterable: {}",
-            purpose,
-            FmtObj::debug(e)
-        ))),
-    }
-}
-
 impl Iterator for MutObjIntoIter<'_> {
-    type Item = Obj;
+    type Item = NRes<Obj>;
 
-    fn next(&mut self) -> Option<Obj> {
+    fn next(&mut self) -> Option<NRes<Obj>> {
         match self {
-            MutObjIntoIter::List(it) => it.next(),
-            MutObjIntoIter::Dict(it) => Some(key_to_obj(it.next()?.0)),
-            MutObjIntoIter::String(it) => Some(Obj::from(it.next()?)),
-            MutObjIntoIter::Vector(it) => Some(Obj::Num(it.next()?.clone())),
-            MutObjIntoIter::Bytes(it) => Some(Obj::from(it.next()? as usize)),
-            MutObjIntoIter::Stream(it) => Some(Obj::from(it.next()?)),
+            MutObjIntoIter::List(it) => it.next().map(Ok),
+            MutObjIntoIter::Dict(it) => Some(Ok(key_to_obj(it.next()?.0))),
+            MutObjIntoIter::String(it) => Some(Ok(Obj::from(it.next()?))),
+            MutObjIntoIter::Vector(it) => Some(Ok(Obj::Num(it.next()?.clone()))),
+            MutObjIntoIter::Bytes(it) => Some(Ok(Obj::from(it.next()? as usize))),
+            MutObjIntoIter::Stream(it) => match Rc::get_mut(it) {
+                Some(it) => it.next(),
+                None => {
+                    let mut it2 = it.clone_box();
+                    let ret = it2.next();
+                    **it = Rc::from(it2);
+                    ret
+                }
+            },
         }
     }
 }
@@ -1762,7 +1777,7 @@ fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
         Seq::String(s) => MutObjIntoIterPairs::String(0, RcStringIter::of(s)),
         Seq::Vector(v) => MutObjIntoIterPairs::Vector(0, RcVecIter::of(v)),
         Seq::Bytes(v) => MutObjIntoIterPairs::Bytes(0, RcVecIter::of(v)),
-        Seq::Stream(v) => MutObjIntoIterPairs::Stream(0, v.clone_box()),
+        Seq::Stream(v) => MutObjIntoIterPairs::Stream(0, v),
     }
 }
 
@@ -1777,40 +1792,53 @@ fn mut_obj_into_iter_pairs<'a, 'b>(
 }
 
 impl Iterator for MutObjIntoIterPairs<'_> {
-    type Item = (ObjKey, Obj);
+    type Item = NRes<(ObjKey, Obj)>;
 
-    fn next(&mut self) -> Option<(ObjKey, Obj)> {
+    fn next(&mut self) -> Option<NRes<(ObjKey, Obj)>> {
         match self {
             MutObjIntoIterPairs::List(i, it) => {
                 let o = it.next()?;
                 let j = *i;
                 *i += 1;
-                Some((ObjKey::from(j), o))
+                Some(Ok((ObjKey::from(j), o)))
             }
-            MutObjIntoIterPairs::Dict(it) => it.next(),
+            MutObjIntoIterPairs::Dict(it) => it.next().map(Ok),
             MutObjIntoIterPairs::String(i, it) => {
                 let o = it.next()?;
                 let j = *i;
                 *i += 1;
-                Some((ObjKey::from(j), Obj::from(o)))
+                Some(Ok((ObjKey::from(j), Obj::from(o))))
             }
             MutObjIntoIterPairs::Vector(i, it) => {
                 let o = it.next()?;
                 let j = *i;
                 *i += 1;
-                Some((ObjKey::from(j), Obj::Num(o)))
+                Some(Ok((ObjKey::from(j), Obj::Num(o))))
             }
             MutObjIntoIterPairs::Bytes(i, it) => {
                 let o = it.next()?;
                 let j = *i;
                 *i += 1;
-                Some((ObjKey::from(j), Obj::from(o as usize)))
+                Some(Ok((ObjKey::from(j), Obj::from(o as usize))))
             }
             MutObjIntoIterPairs::Stream(i, s) => {
-                let o = s.next()?;
-                let j = *i;
-                *i += 1;
-                Some((ObjKey::from(j), Obj::from(o)))
+                let o = match Rc::get_mut(s) {
+                    Some(it) => it.next()?,
+                    None => {
+                        let mut it2 = s.clone_box();
+                        let ret = it2.next();
+                        **s = Rc::from(it2);
+                        ret?
+                    }
+                };
+                match o {
+                    Ok(o) => {
+                        let j = *i;
+                        *i += 1;
+                        Some(Ok((ObjKey::from(j), o)))
+                    }
+                    Err(e) => Some(Err(e)),
+                }
             }
         }
     }
@@ -1839,7 +1867,7 @@ impl Seq {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NErr {
     Throw(
         Obj,
@@ -2174,7 +2202,7 @@ impl Func {
                         match seq.len() {
                             Some(n) if n == fs.len() => {
                                 for (f, a) in fs.iter().zip(mut_seq_into_iter(&mut seq)) {
-                                    res.push(f.run(env, vec![a])?);
+                                    res.push(f.run(env, vec![a?])?);
                                 }
                             }
                             Some(n) => return Err(NErr::type_error(format!("Parallel argument seq has wrong length {}: {:?}", n, seq))),
@@ -2754,7 +2782,7 @@ impl Builtin for ComparisonOperator {
         let rvalues = if slots == 1 {
             vec![rvalue]
         } else {
-            obj_to_cloning_iter(&rvalue, "comparison unpacking")?.collect::<Vec<Obj>>()
+            obj_to_cloning_iter(&rvalue, "comparison unpacking")?.collect::<NRes<Vec<Obj>>>()?
         };
         let mut ret = Vec::new();
         let mut riter = rvalues.into_iter();
@@ -2818,7 +2846,8 @@ impl Builtin for Extremum {
             Few::Zero => Err(NErr::type_error(format!("{}: at least 1 arg", self.name))),
             Few::One(Obj::Seq(mut s)) => {
                 let mut ret: Option<Obj> = None;
-                for b in mut_seq_into_finite_iter(&mut s, &self.name)? {
+                for b in mut_seq_into_iter(&mut s) {
+                    let b = b?;
                     if match &ret {
                         None => true,
                         Some(r) => ncmp(&b, r)? == self.bias,
@@ -2854,7 +2883,8 @@ impl Builtin for Extremum {
                 match (i_func, few(t)) {
                     (None, Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
-                        for b in mut_obj_into_finite_iter(&mut a, &self.name)? {
+                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                            let b = b?;
                             if match &ret {
                                 None => true,
                                 Some(r) => ncmp(&b, r)? == self.bias,
@@ -2882,7 +2912,8 @@ impl Builtin for Extremum {
                     }
                     (Some((_, f)), Few::One(mut a)) => {
                         let mut ret: Option<Obj> = None;
-                        for b in mut_obj_into_finite_iter(&mut a, &self.name)? {
+                        for b in mut_obj_into_iter(&mut a, &self.name)? {
+                            let b = b?;
                             if match &ret {
                                 None => true,
                                 Some(r) => {
@@ -2943,8 +2974,8 @@ impl Builtin for Count {
             Few2::Zero => Err(NErr::type_error(format!("count: at least 1 arg"))),
             Few2::One(Obj::Seq(mut s)) => {
                 let mut c = 0usize;
-                for b in mut_seq_into_finite_iter(&mut s, "count")? {
-                    if b.truthy() {
+                for b in mut_seq_into_iter(&mut s) {
+                    if b?.truthy() {
                         c += 1
                     }
                 }
@@ -2952,19 +2983,19 @@ impl Builtin for Count {
             }
             Few2::One(a) => Ok(clone_and_part_app_last(self, a)),
             Few2::Two(mut a, b) => {
-                let it = mut_obj_into_finite_iter(&mut a, "count")?;
+                let it = mut_obj_into_iter(&mut a, "count")?;
                 let mut c = 0usize;
                 match b {
                     Obj::Func(b, _) => {
                         for e in it {
-                            if b.run(env, vec![e])?.truthy() {
+                            if b.run(env, vec![e?])?.truthy() {
                                 c += 1;
                             }
                         }
                     }
                     b => {
                         for e in it {
-                            if e == b {
+                            if e? == b {
                                 c += 1;
                             }
                         }
@@ -3007,8 +3038,8 @@ impl Builtin for Set {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
             Few::One(Obj::Seq(mut s)) => Ok(Obj::dict(
-                mut_seq_into_finite_iter(&mut s, "set conversion")?
-                    .map(|k| Ok((to_key(k)?, Obj::Null)))
+                mut_seq_into_iter(&mut s)
+                    .map(|k| Ok((to_key(k?)?, Obj::Null)))
                     .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                 None,
             )),
@@ -3048,7 +3079,7 @@ impl Builtin for CountDistinct {
         match few(args) {
             Few::One(Obj::Seq(mut s)) => Ok(Obj::from(
                 mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
-                    .map(to_key)
+                    .map(|e| to_key(e?))
                     .collect::<NRes<HashSet<ObjKey>>>()?
                     .len(),
             )),
@@ -3241,10 +3272,14 @@ impl Builtin for Zip {
                     )));
                 }
                 let mut ret = Vec::new();
-                while let Some(batch) = iterators.iter_mut().map(|a| a.next()).collect() {
+                while let Some(batch) = iterators
+                    .iter_mut()
+                    .map(|a| a.next())
+                    .collect::<Option<NRes<Vec<Obj>>>>()
+                {
                     ret.push(match &func {
-                        Some(f) => f.run(env, batch)?,
-                        None => Obj::list(batch),
+                        Some(f) => f.run(env, batch?)?,
+                        None => Obj::list(batch?),
                     })
                 }
                 Ok(Obj::list(ret))
@@ -3288,7 +3323,7 @@ impl Builtin for ZipLongest {
                         (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
                             "ziplongest: more than one function".to_string(),
                         ))?,
-                        (arg, _) => iterators.push(mut_obj_into_finite_iter(arg, "ziplongest")?),
+                        (arg, _) => iterators.push(mut_obj_into_iter(arg, "ziplongest")?),
                     }
                 }
                 if iterators.is_empty() {
@@ -3301,19 +3336,24 @@ impl Builtin for ZipLongest {
                     let mut batch = iterators.iter_mut().flat_map(|a| a.next());
                     match batch.next() {
                         None => return Ok(Obj::list(ret)),
-                        Some(mut x) => match &func {
-                            Some(f) => {
-                                for y in batch {
-                                    x = f.run(env, vec![x, y])?;
+                        Some(x0) => {
+                            let mut x = x0?;
+                            match &func {
+                                Some(f) => {
+                                    for y in batch {
+                                        x = f.run(env, vec![x, y?])?;
+                                    }
+                                    ret.push(x)
                                 }
-                                ret.push(x)
+                                None => {
+                                    let mut v = vec![x];
+                                    for y in batch {
+                                        v.push(y?);
+                                    }
+                                    ret.push(Obj::list(v))
+                                }
                             }
-                            None => {
-                                let mut v = vec![x];
-                                v.extend(batch);
-                                ret.push(Obj::list(v))
-                            }
-                        },
+                        }
                     }
                 }
             }
@@ -3349,7 +3389,7 @@ fn cartesian_foreach(
         [] => f(acc)?,
         [a, rest @ ..] => {
             for e in seq_to_cloning_iter(a) {
-                acc.push(e);
+                acc.push(e?);
                 cartesian_foreach(acc, rest, f)?;
                 acc.pop();
             }
@@ -3388,7 +3428,7 @@ impl Builtin for CartesianProduct {
                         let mut acc = Vec::new();
                         for _ in num::range(BigInt::from(0), s) {
                             for e in seq_to_cloning_iter(&seq) {
-                                acc.push(e);
+                                acc.push(e?);
                             }
                         }
                         Ok(Obj::list(acc))
@@ -3436,13 +3476,14 @@ impl Builtin for Fold {
             Few3::Zero => Err(NErr::argument_error("fold: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few3::Two(mut s, f) => {
-                let mut it = mut_obj_into_finite_iter(&mut s, "fold")?;
+                let mut it = mut_obj_into_iter(&mut s, "fold")?;
                 match f {
                     Obj::Func(f, _) => match it.next() {
-                        Some(mut cur) => {
+                        Some(cur0) => {
+                            let mut cur = cur0?;
                             // not sure if any standard fallible rust methods work...
                             for e in it {
-                                cur = f.run(env, vec![cur, e])?;
+                                cur = f.run(env, vec![cur, e?])?;
                             }
                             Ok(cur)
                         }
@@ -3452,12 +3493,12 @@ impl Builtin for Fold {
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
-                let it = mut_obj_into_finite_iter(&mut s, "fold")?;
+                let it = mut_obj_into_iter(&mut s, "fold")?;
                 match f {
                     Obj::Func(f, _) => {
                         // not sure if any standard fallible rust methods work...
                         for e in it {
-                            cur = f.run(env, vec![cur, e])?;
+                            cur = f.run(env, vec![cur, e?])?;
                         }
                         Ok(cur)
                     }
@@ -3493,13 +3534,14 @@ impl Builtin for Scan {
             Few3::Zero => Err(NErr::argument_error("scan: no args".to_string())),
             Few3::One(arg) => Ok(clone_and_part_app_2(self, arg)),
             Few3::Two(mut s, f) => {
-                let mut it = mut_obj_into_finite_iter(&mut s, "scan")?;
+                let mut it = mut_obj_into_iter(&mut s, "scan")?;
                 match f {
                     Obj::Func(f, _) => match it.next() {
-                        Some(mut cur) => {
+                        Some(cur0) => {
+                            let mut cur = cur0?;
                             let mut acc = vec![cur.clone()];
                             for e in it {
-                                cur = f.run(env, vec![cur, e])?;
+                                cur = f.run(env, vec![cur, e?])?;
                                 acc.push(cur.clone());
                             }
                             Ok(Obj::list(acc))
@@ -3510,12 +3552,12 @@ impl Builtin for Scan {
                 }
             }
             Few3::Three(mut s, f, mut cur) => {
-                let it = mut_obj_into_finite_iter(&mut s, "scan")?;
+                let it = mut_obj_into_iter(&mut s, "scan")?;
                 match f {
                     Obj::Func(f, _) => {
                         let mut acc = vec![cur.clone()];
                         for e in it {
-                            cur = f.run(env, vec![cur, e])?;
+                            cur = f.run(env, vec![cur, e?])?;
                             acc.push(cur.clone());
                         }
                         Ok(Obj::list(acc))
@@ -3957,9 +3999,8 @@ impl Builtin for SeqAndMappedFoldBuiltin {
             // partial application, spicy
             Few2::One(Obj::Seq(mut s)) => {
                 let mut state = self.identity.clone();
-                // Some have termination conditions but still not reasonable.
-                for e in mut_seq_into_finite_iter(&mut s, &self.name)? {
-                    state = match (self.body)(state, e) {
+                for e in mut_seq_into_iter(&mut s) {
+                    state = match (self.body)(state, e?) {
                         Ok(r) => r,
                         Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
                         e @ Err(_) => return err_add_name(e, &self.name),
@@ -3970,9 +4011,8 @@ impl Builtin for SeqAndMappedFoldBuiltin {
             Few2::One(f @ Obj::Func(..)) => Ok(clone_and_part_app_2(self, f)),
             Few2::Two(Obj::Seq(mut s), Obj::Func(f, _)) => {
                 let mut state = self.identity.clone();
-                // Some have termination conditions but still not reasonable.
-                for e in mut_seq_into_finite_iter(&mut s, &self.name)? {
-                    state = match (self.body)(state, f.run(env, vec![e])?) {
+                for e in mut_seq_into_iter(&mut s) {
+                    state = match (self.body)(state, f.run(env, vec![e?])?) {
                         Ok(r) => r,
                         Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
                         e @ Err(_) => return err_add_name(e, &self.name),
@@ -4237,7 +4277,7 @@ impl Closure {
                 &p,
                 Some(&ObjType::Any),
                 args.len(),
-                || args,
+                || Ok(args),
                 "Wrong number of arguments",
             ),
             "argument receiving".to_string(),
@@ -6580,7 +6620,7 @@ fn assign_all(
     lhs: &[Box<EvaluatedLvalue>],
     rt: Option<&ObjType>,
     rhs_len: usize,
-    lazy_rhs: impl FnOnce() -> Vec<Obj>,
+    lazy_rhs: impl FnOnce() -> NRes<Vec<Obj>>,
     err_msg: &str,
 ) -> NRes<()> {
     let mut splat = None;
@@ -6617,7 +6657,7 @@ fn assign_all(
         Some((si, inner)) => {
             // mmm we could compare against rhs len eagerly to not call it, but the bad cases don't
             // involve a splat
-            let mut rhs = lazy_rhs();
+            let mut rhs = lazy_rhs()?;
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, err_msg)?;
@@ -6635,7 +6675,7 @@ fn assign_all(
         }
         None => {
             if lhs.len() == rhs_len {
-                assign_all_basic(env, lhs, rt, lazy_rhs(), err_msg)
+                assign_all_basic(env, lhs, rt, lazy_rhs()?, err_msg)
             } else if rhs_len <= 8 {
                 Err(NErr::value_error(format!(
                     "{}: expected {} ({}), got {} ({})",
@@ -6643,7 +6683,7 @@ fn assign_all(
                     lhs.len(),
                     CommaSeparated(lhs),
                     rhs_len,
-                    CommaSeparatedDebug(&lazy_rhs())
+                    CommaSeparatedDebug(&lazy_rhs()?)
                 )))
             } else {
                 Err(NErr::value_error(format!(
@@ -6671,9 +6711,7 @@ fn set_index(
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
-                "Can't assign to unforceable stream"
-            )))?)
+            *lhs = Obj::list(mm.force()?)
         }
         _ => {}
     }
@@ -6860,9 +6898,7 @@ fn modify_existing_index(
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
-                "Can't assign to unforceable stream"
-            )))?)
+            *lhs = Obj::list(mm.force()?)
         }
         _ => {}
     }
@@ -6925,9 +6961,7 @@ fn modify_every_existing_index(
     match (&*lhs, indexes) {
         (Obj::Seq(Seq::Stream(m)), [_, ..]) => {
             let mm = m.clone_box();
-            *lhs = Obj::list(mm.force().ok_or(NErr::type_error(format!(
-                "Can't assign to unforceable stream"
-            )))?)
+            *lhs = Obj::list(mm.force()?)
         }
         _ => {}
     }
@@ -7069,7 +7103,7 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> 
                 ss,
                 rt,
                 ls.len(),
-                || unwrap_or_clone(ls),
+                || Ok(unwrap_or_clone(ls)),
                 "Can't unpack into mismatched length",
             ),
             Obj::Seq(seq) => match seq.len() {
@@ -7078,7 +7112,7 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> 
                     ss,
                     rt,
                     len,
-                    || seq_to_cloning_iter(&seq).collect::<Vec<Obj>>(),
+                    || seq_to_cloning_iter(&seq).collect::<NRes<Vec<Obj>>>(),
                     "Can't unpack into mismatched length",
                 ),
                 None => Err(NErr::type_error(
@@ -7127,7 +7161,7 @@ fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> 
                     args,
                     rt,
                     res.len(),
-                    || res,
+                    || Ok(res),
                     "Can't destructure into mismatched length",
                 )
             } else {
@@ -7252,7 +7286,7 @@ fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Ob
                     args,
                     rt,
                     res.len(),
-                    || res,
+                    || Ok(res),
                     "Can't destructure into mismatched length",
                 )
             } else {
@@ -7531,7 +7565,9 @@ fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<Obj>>
         match &((**x).expr) {
             Expr::Splat(inner) => {
                 let mut res = evaluate(env, inner)?;
-                acc.extend(mut_obj_into_finite_iter(&mut res, "splat")?);
+                for o in mut_obj_into_iter(&mut res, "splat")? {
+                    acc.push(o?);
+                }
             }
             _ => acc.push(evaluate(env, x)?),
         }
@@ -7743,10 +7779,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
             let i = pythonic_index_isize(bs, i)?;
             Ok(soft_from_utf8(bs[i..i + 1].to_vec()))
         }
-        Seq::Stream(v) => v.pythonic_index_isize(i).ok_or(NErr::type_error(format!(
-            "Can't index stream {:?}[{:?}]",
-            v, i
-        ))),
+        Seq::Stream(v) => v.pythonic_index_isize(i),
         Seq::Dict(..) => Err(NErr::type_error(
             "dict is not a linear sequence".to_string(),
         )),
@@ -7780,10 +7813,7 @@ fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             Seq::Bytes(v) => Ok(Obj::from(v[pythonic_index(v, &ii)?] as usize)),
             Seq::Stream(v) => match ii {
                 Obj::Num(ii) => match ii.to_isize() {
-                    Some(n) => v.pythonic_index_isize(n).ok_or(NErr::type_error(format!(
-                        "Can't index stream {:?}[{:?}]",
-                        v, ii
-                    ))),
+                    Some(n) => v.pythonic_index_isize(n),
                     _ => Err(NErr::index_error(format!(
                         "Index out of bounds of isize or non-integer: {:?}",
                         ii
@@ -7866,9 +7896,7 @@ fn slice_seq(xr: Seq, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
         (Seq::Stream(s), lo, hi) => {
             let lo = obj_to_isize_slice_index(lo.as_ref())?;
             let hi = obj_to_isize_slice_index(hi.as_ref())?;
-            Ok(Obj::Seq(s.pythonic_slice(lo, hi).ok_or(
-                NErr::type_error(format!("can't slice {:?} {:?} {:?}", s, lo, hi)),
-            )?))
+            Ok(Obj::Seq(s.pythonic_slice(lo, hi)?))
         }
         (Seq::Dict(..), _, _) => Err(NErr::type_error("can't slice dictionary".to_string())),
     }
@@ -8001,7 +8029,9 @@ fn apply_section(
             Err(is_splat) => match arg_iter.next() {
                 Some(mut a) => {
                     if is_splat {
-                        out.extend(mut_obj_into_finite_iter(&mut a, "section splat")?)
+                        for o in mut_obj_into_iter(&mut a, "section splat")? {
+                            out.push(o?)
+                        }
                     } else {
                         out.push(a)
                     }
@@ -8074,7 +8104,14 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     match (a, b) {
         (a, Obj::Seq(Seq::Dict(v, _))) => Ok(v.contains_key(&to_key(a)?)),
         (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(v))) => Ok((*v).contains(&*s)),
-        (a, Obj::Seq(mut s)) => Ok(mut_seq_into_iter(&mut s).any(|x| x == a)),
+        (a, Obj::Seq(mut s)) => {
+            for e in mut_seq_into_iter(&mut s) {
+                if e? == a {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
         _ => Err(NErr::type_error("in: not compatible".to_string())),
     }
 }
@@ -8101,12 +8138,13 @@ fn evaluate_for(
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
-                        assign(&ee, &p, Some(&ObjType::Any), x)?;
+                        assign(&ee, &p, Some(&ObjType::Any), x?)?;
                         evaluate_for(&ee, rest, callback)?;
                     }
                 }
                 ForIterationType::Item => {
-                    for (k, v) in mut_obj_into_iter_pairs(&mut itr, "for (item) iteration")? {
+                    for kv in mut_obj_into_iter_pairs(&mut itr, "for (item) iteration")? {
+                        let (k, v) = kv?;
                         let ee = Env::with_parent(env);
                         let p = eval_lvalue(&ee, lvalue)?;
 
@@ -8319,7 +8357,9 @@ fn splat_section_eval(
                 Ok(v)
             }
             ((true, Some(mut e)), Ok(mut v)) => {
-                v.extend(mut_obj_into_finite_iter(&mut e, "call splat")?);
+                for x in mut_obj_into_iter(&mut e, "call splat")? {
+                    v.push(x?);
+                }
                 Ok(v)
             }
             ((false, Some(e)), Err(mut v)) => {
@@ -8327,7 +8367,9 @@ fn splat_section_eval(
                 Err(v)
             }
             ((true, Some(mut e)), Err(mut v)) => {
-                v.extend(mut_obj_into_finite_iter(&mut e, "call splat")?.map(Ok));
+                for x in mut_obj_into_iter(&mut e, "call splat")? {
+                    v.push(Ok(x?))
+                }
                 Err(v)
             }
             ((is_splat, None), Err(mut v)) => {
@@ -8791,8 +8833,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match (&((**ke).expr), ve) {
                     (Expr::Splat(inner), None) => {
                         let mut res = evaluate(env, inner)?;
-                        let it = mut_obj_into_iter_pairs(&mut res, "dictionary splat")?;
-                        for (k, v) in it {
+                        for kv in mut_obj_into_iter_pairs(&mut res, "dictionary splat")? {
+                            let (k, v) = kv?;
                             acc.insert(k, v);
                         }
                     }
@@ -9631,11 +9673,11 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
     // this might coerce too hard but idk
     let mut acc = String::new();
     let mut started = false;
-    for arg in mut_obj_into_finite_iter(&mut obj, "join")? {
+    for arg in mut_obj_into_iter(&mut obj, "join")? {
         if started {
             acc += joiner;
         }
-        acc += format!("{}", arg).as_str();
+        acc += format!("{}", arg?).as_str();
         started = true;
     }
     Ok(acc)
@@ -9644,9 +9686,12 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
 fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
     match a {
         Obj::Seq(Seq::List(v)) => Ok(v),
-        mut a => Ok(Rc::new(
-            mut_obj_into_finite_iter(&mut a, "to_rc_vec")?.collect(),
-        )),
+        mut a => {
+            let ret = Ok(Rc::new(
+                mut_obj_into_iter(&mut a, "to_rc_vec")?.collect::<NRes<Vec<Obj>>>()?,
+            ));
+            ret
+        }
     }
 }
 
@@ -9695,9 +9740,7 @@ macro_rules! multi {
                 Ok(Seq::Bytes(Rc::new($expr?)))
             }
             Seq::Stream($name) => {
-                let $name = $name
-                    .force()
-                    .ok_or(NErr::type_error("can't force this stream".to_string()))?;
+                let $name = $name.force()?;
                 Ok(Seq::List(Rc::new($expr?)))
             }
         }
@@ -9710,10 +9753,7 @@ fn reversed<T>(mut v: Vec<T>) -> NRes<Vec<T>> {
 }
 fn multi_reverse(v: Seq) -> NRes<Seq> {
     match v {
-        Seq::Stream(s) => s.reversed().ok_or(NErr::type_error(format!(
-            "can't reverse this stream {:?}",
-            s
-        ))),
+        Seq::Stream(s) => s.reversed(),
         v => multi!(v, reversed(v)),
     }
 }
@@ -9789,13 +9829,13 @@ fn multi_unique(v: Seq) -> NRes<Seq> {
     multi!(v, uniqued(v))
 }
 
-fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize, strict: bool) -> NRes<Vec<Vec<T>>> {
+fn grouped<T>(mut it: impl Iterator<Item = NRes<T>>, n: usize, strict: bool) -> NRes<Vec<Vec<T>>> {
     let mut acc = Vec::new();
     let mut group = Vec::new();
     loop {
         for _ in 0..n {
             match it.next() {
-                Some(obj) => group.push(obj),
+                Some(obj) => group.push(obj?),
                 None => {
                     if !group.is_empty() {
                         if strict && group.len() != n {
@@ -9814,7 +9854,7 @@ fn grouped<T>(mut it: impl Iterator<Item = T>, n: usize, strict: bool) -> NRes<V
     }
 }
 fn grouped_by<T: Clone + Into<Obj>>(
-    mut it: impl Iterator<Item = T>,
+    mut it: impl Iterator<Item = NRes<T>>,
     mut f: impl FnMut(Obj, Obj) -> NRes<bool>,
 ) -> NRes<Vec<Vec<T>>> {
     let mut acc = Vec::new();
@@ -9822,6 +9862,7 @@ fn grouped_by<T: Clone + Into<Obj>>(
     loop {
         match it.next() {
             Some(obj) => {
+                let obj = obj?;
                 match group.last() {
                     None => {}
                     Some(prev) => {
@@ -9842,22 +9883,22 @@ fn grouped_by<T: Clone + Into<Obj>>(
     }
 }
 
-fn windowed<T: Clone>(mut it: impl Iterator<Item = T>, n: usize) -> Vec<Vec<T>> {
+fn windowed<T: Clone>(mut it: impl Iterator<Item = NRes<T>>, n: usize) -> NRes<Vec<Vec<T>>> {
     let mut window = VecDeque::new();
     window.reserve_exact(n);
     for _ in 0..n {
         match it.next() {
-            Some(obj) => window.push_back(obj),
-            None => return Vec::new(),
+            Some(obj) => window.push_back(obj?),
+            None => return Ok(Vec::new()),
         }
     }
     let mut acc = vec![window.iter().cloned().collect()];
     while let Some(next) = it.next() {
         window.pop_front();
-        window.push_back(next);
+        window.push_back(next?);
         acc.push(window.iter().cloned().collect());
     }
-    acc
+    Ok(acc)
 }
 
 fn take_while_inner<T: Clone + Into<Obj>>(
@@ -9900,7 +9941,19 @@ fn take_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
             env,
             f,
         )?)))),
-        Seq::Stream(s) => Ok(Obj::list(take_while_inner(s.clone_box(), env, f)?)),
+        Seq::Stream(s) => {
+            let mut acc = Vec::new();
+            let mut s = s.clone_box();
+            while let Some(x) = s.next() {
+                let x = x?;
+                if f.run(env, vec![x.clone()])?.truthy() {
+                    acc.push(x)
+                } else {
+                    return Ok(Obj::list(acc));
+                }
+            }
+            Ok(Obj::list(acc))
+        }
     }
 }
 
@@ -9945,6 +9998,7 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
         Seq::Stream(s) => {
             let mut t = s.clone_box();
             while let Some(x) = t.peek() {
+                let x = x?;
                 if f.run(env, vec![x.clone()])?.truthy() {
                     t.next();
                 }
@@ -9955,107 +10009,102 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
 }
 
 // also doesn't fit...
-fn uncons(s: Seq) -> Option<(Obj, Seq)> {
+// want a soft "uncons?" so two layers
+fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
     match s {
         Seq::List(mut s) => {
             if s.is_empty() {
-                None
+                Ok(None)
             } else {
                 let head = Rc::make_mut(&mut s).remove(0);
-                Some((head, Seq::List(s)))
+                Ok(Some((head, Seq::List(s))))
             }
         }
 
         Seq::String(mut s) => {
             if s.is_empty() {
-                None
+                Ok(None)
             } else {
                 let head = Rc::make_mut(&mut s).remove(0);
-                Some((Obj::from(head), Seq::String(s)))
+                Ok(Some((Obj::from(head), Seq::String(s))))
             }
         }
         Seq::Dict(mut s, def) => match s.keys().next().cloned() {
             Some(k) => match Rc::make_mut(&mut s).remove_entry(&k) {
-                Some((kk, v)) => Some((Obj::list(vec![key_to_obj(kk), v]), Seq::Dict(s, def))),
+                Some((kk, v)) => Ok(Some((Obj::list(vec![key_to_obj(kk), v]), Seq::Dict(s, def)))),
                 None => panic!("no"),
             },
-            None => None,
+            None => Ok(None),
         },
         Seq::Vector(mut s) => {
             if s.is_empty() {
-                None
+                Ok(None)
             } else {
                 let head = Rc::make_mut(&mut s).remove(0);
-                Some((Obj::from(head), Seq::Vector(s)))
+                Ok(Some((Obj::from(head), Seq::Vector(s))))
             }
         }
         Seq::Bytes(mut s) => {
             if s.is_empty() {
-                None
+                Ok(None)
             } else {
                 let head = Rc::make_mut(&mut s).remove(0);
-                Some((Obj::from(head), Seq::Bytes(s)))
+                Ok(Some((Obj::from(head), Seq::Bytes(s))))
             }
         }
         Seq::Stream(s) => {
             let mut t = s.clone_box();
             match t.next() {
-                None => None,
-                Some(e) => Some((e, Seq::Stream(Rc::from(t)))),
+                None => Ok(None),
+                Some(e) => Ok(Some((e?, Seq::Stream(Rc::from(t))))),
             }
         }
     }
 }
-fn unsnoc(s: Seq) -> Option<(Seq, Obj)> {
+fn unsnoc(s: Seq) -> NRes<Option<(Seq, Obj)>> {
     match s {
         Seq::List(mut s) => match Rc::make_mut(&mut s).pop() {
-            None => None,
-            Some(e) => Some((Seq::List(s), e)),
+            None => Ok(None),
+            Some(e) => Ok(Some((Seq::List(s), e))),
         },
         Seq::String(mut s) => match Rc::make_mut(&mut s).pop() {
-            None => None,
-            Some(e) => Some((Seq::String(s), Obj::from(e))),
+            None => Ok(None),
+            Some(e) => Ok(Some((Seq::String(s), Obj::from(e)))),
         },
-        dd @ Seq::Dict(..) => match uncons(dd) {
-            None => None,
-            Some((e, s)) => Some((s, e)),
+        dd @ Seq::Dict(..) => {
+            Ok(uncons(dd)?.map(|(e, s)| (s, e)))
         },
         Seq::Vector(mut s) => match Rc::make_mut(&mut s).pop() {
-            None => None,
-            Some(e) => Some((Seq::Vector(s), Obj::from(e))),
+            None => Ok(None),
+            Some(e) => Ok(Some((Seq::Vector(s), Obj::from(e)))),
         },
         Seq::Bytes(mut s) => match Rc::make_mut(&mut s).pop() {
-            None => None,
-            Some(e) => Some((Seq::Bytes(s), Obj::from(e))),
+            None => Ok(None),
+            Some(e) => Ok(Some((Seq::Bytes(s), Obj::from(e)))),
         },
-        Seq::Stream(s) => {
-            match s.force() {
-                None => None, // ???
-                Some(v) => unsnoc(Seq::List(Rc::new(v))),
-            }
-        }
+        Seq::Stream(s) => unsnoc(Seq::List(Rc::new(s.force()?))),
     }
 }
 
-fn prefixes<T: Clone>(mut it: impl Iterator<Item = T>) -> Vec<Vec<T>> {
+fn prefixes<T: Clone>(mut it: impl Iterator<Item = NRes<T>>) -> NRes<Vec<Vec<T>>> {
     let mut prefix = Vec::new();
     let mut acc = vec![Vec::new()];
     while let Some(obj) = it.next() {
-        prefix.push(obj);
+        prefix.push(obj?);
         acc.push(prefix.clone());
     }
-    acc
+    Ok(acc)
 }
-fn reversed_prefixes<T: Clone>(mut it: impl Iterator<Item = T>) -> Vec<Vec<T>> {
+fn reversed_prefixes<T: Clone>(mut it: impl Iterator<Item = NRes<T>>) -> NRes<Vec<Vec<T>>> {
     let mut prefix = Vec::new();
     let mut acc = vec![Vec::new()];
     while let Some(obj) = it.next() {
-        prefix.push(obj);
+        prefix.push(obj?);
         let mut p = prefix.clone();
         p.reverse();
         acc.push(p);
     }
-    acc
+    Ok(acc)
 }
 
 // just return Vec<Obj>
@@ -10063,30 +10112,30 @@ macro_rules! multimulti {
     ($name:ident, $expr:expr) => {
         match $name {
             Seq::List($name) => {
-                let $name = unwrap_or_clone($name).into_iter();
+                let $name = unwrap_or_clone($name).into_iter().map(Ok);
                 Ok($expr?.into_iter().map(|x| Obj::list(x)).collect())
             }
             Seq::String($name) => {
                 let mut $name = unwrap_or_clone($name);
-                let $name = $name.drain(..);
+                let $name = $name.drain(..).map(Ok);
                 Ok($expr?
                     .into_iter()
                     .map(|x| Obj::from(x.into_iter().collect::<String>()))
                     .collect())
             }
             Seq::Dict($name, _def) => {
-                let $name = unwrap_or_clone($name).into_keys().map(|k| key_to_obj(k));
+                let $name = unwrap_or_clone($name).into_keys().map(|k| Ok(key_to_obj(k)));
                 Ok($expr?.into_iter().map(|x| Obj::list(x)).collect())
             }
             Seq::Vector($name) => {
-                let $name = unwrap_or_clone($name).into_iter();
+                let $name = unwrap_or_clone($name).into_iter().map(Ok);
                 Ok($expr?
                     .into_iter()
                     .map(|x| Obj::Seq(Seq::Vector(Rc::new(x))))
                     .collect())
             }
             Seq::Bytes($name) => {
-                let $name = unwrap_or_clone($name).into_iter();
+                let $name = unwrap_or_clone($name).into_iter().map(Ok);
                 Ok($expr?
                     .into_iter()
                     .map(|x| Obj::Seq(Seq::Bytes(Rc::new(x))))
@@ -10113,14 +10162,14 @@ fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
     )
 }
 fn multi_window(v: Seq, n: usize) -> NRes<Vec<Obj>> {
-    multimulti!(v, Ok(windowed(v, n)))
+    multimulti!(v, windowed(v, n))
 }
 fn multi_prefixes(v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, Ok(prefixes(v)))
+    multimulti!(v, prefixes(v))
 }
 fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
     let v = multi_reverse(v)?;
-    multimulti!(v, Ok(reversed_prefixes(v)))
+    multimulti!(v, reversed_prefixes(v))
 }
 
 fn json_encode(x: Obj) -> NRes<serde_json::Value> {
@@ -10144,12 +10193,14 @@ fn json_encode(x: Obj) -> NRes<serde_json::Value> {
                     .into_iter()
                     .collect::<serde_json::Map<String, serde_json::Value>>(),
             )),
-            mut s => Ok(serde_json::Value::Array(
-                mut_seq_into_finite_iter(&mut s, "json_encode")?
-                    .into_iter()
-                    .map(json_encode)
-                    .collect::<NRes<Vec<serde_json::Value>>>()?,
-            )),
+            mut s => {
+                Ok(serde_json::Value::Array(
+                    mut_seq_into_iter(&mut s)
+                        .into_iter()
+                        .map(|e| e.and_then(json_encode))
+                        .collect::<NRes<Vec<serde_json::Value>>>()?,
+                ))
+            }
         },
         s => Err(NErr::type_error(format!(
             "Can't serialize into JSON: {}",
@@ -10539,11 +10590,17 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "apply".to_string(),
-        body: |env, mut a, b| call(env, b, mut_obj_into_finite_iter(&mut a, "apply")?.collect()),
+        body: |env, mut a, b| {
+            call(
+                env,
+                b,
+                mut_obj_into_iter(&mut a, "apply")?.collect::<NRes<Vec<Obj>>>()?,
+            )
+        },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "of".to_string(),
-        body: |env, a, mut b| call(env, a, mut_obj_into_finite_iter(&mut b, "of")?.collect()),
+        body: |env, a, mut b| call(env, a, mut_obj_into_iter(&mut b, "of")?.collect::<NRes<Vec<Obj>>>()?),
     });
     env.insert_builtin(Preposition("by".to_string()));
     env.insert_builtin(Preposition("with".to_string()));
@@ -10676,7 +10733,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "iterate".to_string(),
         body: |env, a, f| match f {
-            Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Rc::new(Iterate(Some((
+            Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Rc::new(Iterate(Ok((
                 a,
                 f,
                 env.clone(),
@@ -10689,7 +10746,7 @@ pub fn initialize(env: &mut Env) {
         name: "lazy_map".to_string(),
         body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Stream(s)), Obj::Func(b, _)) => Ok(Obj::Seq(Seq::Stream(Rc::new(
-                MappedStream(Some((s.clone_box(), b, Rc::clone(env)))),
+                MappedStream(Ok((s.clone_box(), b, Rc::clone(env)))),
             )))),
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
@@ -10701,7 +10758,7 @@ pub fn initialize(env: &mut Env) {
             match b {
                 Obj::Func(b, _) => {
                     for e in it {
-                        b.run(env, vec![e])?;
+                        b.run(env, vec![e?])?;
                     }
                     Ok(Obj::Null)
                 }
@@ -10712,14 +10769,17 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_finite_iter(&mut a, "map")?;
-            match b {
-                Obj::Func(b, _) => Ok(Obj::list(
-                    it.map(|e| b.run(env, vec![e]))
-                        .collect::<NRes<Vec<Obj>>>()?,
-                )),
-                _ => Err(NErr::type_error("not callable".to_string())),
-            }
+            let ret = {
+                let it = mut_obj_into_iter(&mut a, "map")?;
+                match b {
+                    Obj::Func(b, _) => Ok(Obj::list(
+                        it.map(|e| b.run(env, vec![e?]))
+                            .collect::<NRes<Vec<Obj>>>()?,
+                    )),
+                    _ => Err(NErr::type_error("not callable".to_string())),
+                }
+            };
+            ret
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
@@ -10755,9 +10815,9 @@ pub fn initialize(env: &mut Env) {
         name: "flatten".to_string(),
         body: |mut a| {
             let mut acc = Vec::new();
-            for mut e in mut_obj_into_finite_iter(&mut a, "flatten (outer)")? {
-                for k in mut_obj_into_finite_iter(&mut e, "flatten (inner)")? {
-                    acc.push(k);
+            for e in mut_obj_into_iter(&mut a, "flatten (outer)")? {
+                for k in mut_obj_into_iter(&mut e?, "flatten (inner)")? {
+                    acc.push(k?);
                 }
             }
             Ok(Obj::list(acc))
@@ -10768,8 +10828,8 @@ pub fn initialize(env: &mut Env) {
         name: "keys".to_string(),
         body: |mut a| {
             let mut acc = Vec::new();
-            for (k, _) in mut_obj_into_iter_pairs(&mut a, "keys")? {
-                acc.push(key_to_obj(k));
+            for kv in mut_obj_into_iter_pairs(&mut a, "keys")? {
+                acc.push(key_to_obj(kv?.0));
             }
             Ok(Obj::list(acc))
         },
@@ -10778,8 +10838,8 @@ pub fn initialize(env: &mut Env) {
         name: "values".to_string(),
         body: |mut a| {
             let mut acc = Vec::new();
-            for (_, v) in mut_obj_into_iter_pairs(&mut a, "values")? {
-                acc.push(v);
+            for kv in mut_obj_into_iter_pairs(&mut a, "values")? {
+                acc.push(kv?.1);
             }
             Ok(Obj::list(acc))
         },
@@ -10787,14 +10847,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "flat_map".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_finite_iter(&mut a, "flat_map (outer)")?;
+            let it = mut_obj_into_iter(&mut a, "flat_map (outer)")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc = Vec::new();
                     for e in it {
-                        let mut r = b.run(env, vec![e])?;
-                        for k in mut_obj_into_finite_iter(&mut r, "flat_map (inner)")? {
-                            acc.push(k);
+                        let mut r = b.run(env, vec![e?])?;
+                        for k in mut_obj_into_iter(&mut r, "flat_map (inner)")? {
+                            acc.push(k?);
                         }
                     }
                     Ok(Obj::list(acc))
@@ -10807,22 +10867,21 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "pairwise".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_finite_iter(&mut a, "pairwise")?;
+            let it = mut_obj_into_iter(&mut a, "pairwise")?;
             match b {
-                Obj::Func(b, _) => Ok(Obj::list(
-                    it.scan(None, |prev, a| {
-                        let ret = match prev.take() {
-                            Some(prev) => Some(b.run(env, vec![prev, a.clone()])),
-                            None => None,
+                Obj::Func(b, _) => {
+                    let mut prev = None;
+                    let mut acc = Vec::new();
+                    for a in it {
+                        let a = a?;
+                        match prev.take() {
+                            Some(prev) => acc.push(b.run(env, vec![prev, a.clone()])?),
+                            None => ()
                         };
-                        *prev = Some(a);
-                        // this outer Some is used by the iterator protocol to mean continue
-                        // iteration
-                        Some(ret)
-                    })
-                    .flatten()
-                    .collect::<NRes<Vec<Obj>>>()?,
-                )),
+                        prev = Some(a);
+                    }
+                    Ok(Obj::list(acc))
+                }
                 _ => Err(NErr::type_error("not callable".to_string())),
             }
         },
@@ -10838,14 +10897,14 @@ pub fn initialize(env: &mut Env) {
             let v = Rc::make_mut(&mut v);
             let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
             for arg in v.iter_mut() {
-                iterators.push(mut_obj_into_finite_iter(arg, "zip")?)
+                iterators.push(mut_obj_into_iter(arg, "zip")?)
             }
             let mut ret = Vec::new();
             loop {
                 let batch = iterators
                     .iter_mut()
                     .flat_map(|a| a.next())
-                    .collect::<Vec<Obj>>();
+                    .collect::<NRes<Vec<Obj>>>()?;
                 if batch.is_empty() {
                     return Ok(Obj::list(ret));
                 }
@@ -10874,12 +10933,13 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "partition".to_string(),
         body: |env, mut a, b| {
-            let it = mut_obj_into_finite_iter(&mut a, "partition")?;
+            let it = mut_obj_into_iter(&mut a, "partition")?;
             match b {
                 Obj::Func(b, _) => {
                     let mut acc_t = Vec::new();
                     let mut acc_f = Vec::new();
                     for e in it {
+                        let e = e?;
                         if b.run(env, vec![e.clone()])?.truthy() {
                             acc_t.push(e)
                         } else {
@@ -10952,10 +11012,10 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "frequencies".to_string(),
         body: |mut a| {
-            let it = mut_obj_into_finite_iter(&mut a, "frequencies")?;
+            let it = mut_obj_into_iter(&mut a, "frequencies")?;
             let mut c = HashMap::<ObjKey, usize>::new();
             for e in it {
-                *c.entry(to_key(e)?).or_insert(0) += 1;
+                *c.entry(to_key(e?)?).or_insert(0) += 1;
             }
             Ok(Obj::Seq(Seq::Dict(
                 Rc::new(c.into_iter().map(|(k, v)| (k, Obj::from(v))).collect()),
@@ -11177,14 +11237,14 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::Bytes(b)) => {
                 let mut acc: Vec<u8> = Vec::new();
                 let mut started = false;
-                for mut arg in mut_obj_into_finite_iter(&mut a, "join (bytes)")? {
+                for arg in mut_obj_into_iter(&mut a, "join (bytes)")? {
                     if started {
                         acc.extend(b.iter())
                     }
                     started = true;
                     acc.extend(
-                        mut_obj_into_finite_iter(&mut arg, "join (bytes) byte conversion")?
-                            .map(|e| to_byte(e, "join (bytes) byte conversion"))
+                        mut_obj_into_iter(&mut arg?, "join (bytes) byte conversion")?
+                            .map(|e| to_byte(e?, "join (bytes) byte conversion"))
                             .collect::<NRes<Vec<u8>>>()?
                             .iter(),
                     );
@@ -11490,7 +11550,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "uncons".to_string(),
         body: |a| match a {
-            Obj::Seq(s) => match uncons(s) {
+            Obj::Seq(s) => match uncons(s)? {
                 None => Err(NErr::index_error(
                     "Can't uncons empty (or infinite) seq".to_string(),
                 )),
@@ -11502,7 +11562,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "unsnoc".to_string(),
         body: |a| match a {
-            Obj::Seq(s) => match unsnoc(s) {
+            Obj::Seq(s) => match unsnoc(s)? {
                 None => Err(NErr::index_error(
                     "Can't unsnoc empty (or infinite) seq".to_string(),
                 )),
@@ -11514,7 +11574,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "uncons?".to_string(),
         body: |a| match a {
-            Obj::Seq(s) => match uncons(s) {
+            Obj::Seq(s) => match uncons(s)? {
                 None => Ok(Obj::Null),
                 Some((e, s)) => Ok(Obj::list(vec![e, Obj::Seq(s)])),
             },
@@ -11524,7 +11584,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "unsnoc?".to_string(),
         body: |a| match a {
-            Obj::Seq(s) => match unsnoc(s) {
+            Obj::Seq(s) => match unsnoc(s)? {
                 None => Ok(Obj::Null),
                 Some((s, e)) => Ok(Obj::list(vec![Obj::Seq(s), e])),
             },
@@ -11551,6 +11611,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Func(f, _) => {
                 let mut it = mut_obj_into_iter(&mut a, "find")?;
                 while let Some(x) = it.next() {
+                    let x = x?;
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(x);
                     }
@@ -11566,6 +11627,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Func(f, _) => {
                 let mut it = mut_obj_into_iter(&mut a, "find?")?;
                 while let Some(x) = it.next() {
+                    let x = x?;
                     if f.run(env, vec![x.clone()])?.truthy() {
                         return Ok(x);
                     }
@@ -11581,7 +11643,7 @@ pub fn initialize(env: &mut Env) {
             (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
-                    if f.run(env, vec![x.clone()])?.truthy() {
+                    if f.run(env, vec![x?.clone()])?.truthy() {
                         return Ok(Obj::from(i));
                     }
                 }
@@ -11597,7 +11659,7 @@ pub fn initialize(env: &mut Env) {
             (mut a, b) => {
                 let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
-                    if x == b {
+                    if x? == b {
                         return Ok(Obj::from(i));
                     }
                 }
@@ -11611,7 +11673,7 @@ pub fn initialize(env: &mut Env) {
             (mut a, Obj::Func(f, _)) => {
                 let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
-                    if f.run(env, vec![x.clone()])?.truthy() {
+                    if f.run(env, vec![x?.clone()])?.truthy() {
                         return Ok(Obj::from(i));
                     }
                 }
@@ -11627,7 +11689,7 @@ pub fn initialize(env: &mut Env) {
             (mut a, b) => {
                 let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
-                    if x == b {
+                    if x? == b {
                         return Ok(Obj::from(i));
                     }
                 }
@@ -11693,7 +11755,7 @@ pub fn initialize(env: &mut Env) {
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(v), None) => {
                         // TODO maybe fail if key exists? have |.. = "upsert"?
-                        Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
+                        Rc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
                         Ok(Obj::Seq(Seq::Dict(a, d)))
                     }
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
@@ -11709,7 +11771,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_seq_into_iter(&mut s);
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(v), None) => {
-                        Rc::make_mut(&mut a).insert(to_key(k.clone())?, v.clone());
+                        Rc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
                         Ok(Obj::Seq(Seq::Dict(a, d)))
                     }
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
@@ -11745,8 +11807,11 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Seq(mut s @ Seq::Dict(..)) => Ok(Obj::list(
                 mut_seq_into_iter_pairs(&mut s)
-                    .map(|(k, v)| Obj::list(vec![key_to_obj(k), v]))
-                    .collect(),
+                    .map(|kv| {
+                        let (k, v) = kv?;
+                        Ok(Obj::list(vec![key_to_obj(k), v]))
+                    })
+                    .collect::<NRes<Vec<Obj>>>()?,
             )),
             a => Err(NErr::argument_error_1(&a)),
         },
@@ -11755,10 +11820,10 @@ pub fn initialize(env: &mut Env) {
         name: "enumerate".to_string(),
         body: |mut a| {
             Ok(Obj::list(
-                mut_obj_into_finite_iter(&mut a, "enumerate conversion")?
+                mut_obj_into_iter(&mut a, "enumerate conversion")?
                     .enumerate()
-                    .map(|(k, v)| Obj::list(vec![Obj::from(k), v]))
-                    .collect(),
+                    .map(|(k, v)| Ok(Obj::list(vec![Obj::from(k), v?])))
+                    .collect::<NRes<Vec<Obj>>>()?,
             ))
         },
     });
@@ -12160,8 +12225,9 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(s)), Obj::Seq(mut args)) => {
                 match std::process::Command::new(&*s)
                     .args(
-                        mut_seq_into_finite_iter(&mut args, "run_process args")?
-                            .map(|s| format!("{}", s)),
+                        mut_seq_into_iter(&mut args)
+                            .map(|s| Ok(format!("{}", s?)))
+                            .collect::<NRes<Vec<String>>>()?,
                     )
                     .output()
                 {

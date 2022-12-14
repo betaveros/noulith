@@ -128,6 +128,48 @@ fn lists() {
     );
     assert_eq!(simple_eval("sort([2, 5, 3]) join ''"), Obj::from("235"));
     assert_eq!(simple_eval("reverse([2, 5, 3]) join ''"), Obj::from("352"));
+    assert_eq!(
+        simple_eval("uncons([2, 5, 3]) join ''"),
+        Obj::from("2[5, 3]")
+    );
+    assert_eq!(
+        simple_eval("unsnoc([2, 5, 3]) join ''"),
+        Obj::from("[2, 5]3")
+    );
+    assert_eq!(
+        simple_eval("uncons?([2, 5, 3]) join ''"),
+        Obj::from("2[5, 3]")
+    );
+    assert_eq!(
+        simple_eval("unsnoc?([2, 5, 3]) join ''"),
+        Obj::from("[2, 5]3")
+    );
+    assert_eq!(simple_eval("uncons?([])"), Obj::Null);
+    assert_eq!(simple_eval("unsnoc?([])"), Obj::Null);
+}
+
+#[test]
+fn more_lists() {
+    assert_eq!(
+        simple_eval("[1,2,3,4,5,6,7] group 3 map (join '') join ','"),
+        Obj::from("123,456,7")
+    );
+    assert_eq!(
+        simple_eval("[1,2,3,4,5].prefixes map (join '') join ','"),
+        Obj::from(",1,12,123,1234,12345")
+    );
+    assert_eq!(
+        simple_eval("[1,2,3,4,5].suffixes map (join '') join ','"),
+        Obj::from(",5,45,345,2345,12345")
+    );
+    assert_eq!(
+        simple_eval("[1,3,5,7,2,4,6] sort >=< join ''"),
+        Obj::from("7654321")
+    );
+    assert_eq!(
+        simple_eval("[1,2,3,4,5,6,7] window 3 map (join '') join ','"),
+        Obj::from("123,234,345,456,567")
+    );
 }
 
 #[test]
