@@ -1446,6 +1446,22 @@ pub fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &Co
     }
 }
 
+struct FmtCodeLocRange<'a>(&'a CodeLoc, &'a CodeLoc);
+impl<'a> Display for FmtCodeLocRange<'a> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let FmtCodeLocRange(start, end) = self;
+        if start.line == end.line {
+            write!(formatter, "{}:{}-{}", start.line, start.col, end.col)
+        } else {
+            write!(
+                formatter,
+                "{}:{}-{}:{}",
+                start.line, start.col, end.line, end.col
+            )
+        }
+    }
+}
+
 impl NErr {
     pub fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
         match self {
@@ -1484,12 +1500,7 @@ impl NErr {
                     if let Some((src_file, _)) = tsrc {
                         write!(out, "{}:", src_file).ok();
                     }
-                    if start.line == end.line {
-                        write!(out, "{}:{}-{}", start.line, start.col, end.col).ok();
-                    } else {
-                        write!(out, "{}:{}-{}:{}", start.line, start.col, end.line, end.col).ok();
-                    }
-                    write!(out, ")").ok();
+                    write!(out, "{})", FmtCodeLocRange(&start, &end)).ok();
                 }
                 out
             }
@@ -1619,14 +1630,14 @@ impl fmt::Display for NErr {
                     match src {
                         Some(srcp) => write!(
                             formatter,
-                            " at {} ({}:{}:{}-{}:{})",
-                            thing, srcp.0, start.line, start.col, end.line, end.col
+                            " at {} ({}:{})",
+                            thing,
+                            srcp.0,
+                            FmtCodeLocRange(start, end)
                         )?,
-                        None => write!(
-                            formatter,
-                            " at {} ({}:{}-{}:{})",
-                            thing, start.line, start.col, end.line, end.col
-                        )?,
+                        None => {
+                            write!(formatter, " at {} ({})", thing, FmtCodeLocRange(start, end))?
+                        }
                     }
                 }
                 Ok(())
@@ -1810,6 +1821,40 @@ impl Lvalue {
     }
 }
 
+// If two lvalues have the same archetype then they pattern-match the same values, so we can
+// statically catch some mistakes where a switch expression has overlapping cases or a catch-all
+// case followed by later cases. Very simple for now, don't think making this much more complicated
+// will catch many more mistakes.
+#[derive(Hash, PartialEq, Eq, Debug)]
+enum LvalueArchetype {
+    Anything,
+    Seq(usize),
+}
+
+fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
+    match lvalue {
+        Lvalue::Underscore => vec![LvalueArchetype::Anything],
+        Lvalue::IndexedIdent(_, ixs) if ixs.is_empty() => vec![LvalueArchetype::Anything],
+        Lvalue::CommaSeq(x) => {
+            if x.iter()
+                .map(|e| to_archetypes(e))
+                .all(|e| e.contains(&LvalueArchetype::Anything))
+            {
+                vec![LvalueArchetype::Seq(x.len())]
+            } else {
+                Vec::new()
+            }
+        }
+        Lvalue::Or(a, b) => {
+            // sus
+            let mut s = to_archetypes(a);
+            s.extend(to_archetypes(b));
+            s
+        }
+        _ => Vec::new(),
+    }
+}
+
 pub trait Builtin: Debug {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
@@ -1872,19 +1917,15 @@ impl ParseError {
                 write_source_error(&mut out, src, &tok.start, &tok.end);
                 write!(
                     out,
-                    "\n    {:?} (at {}:{}-{})",
-                    tok.token, tok.start.line, tok.start.col, tok.end.col
+                    "\n    {:?} (at {})",
+                    tok.token,
+                    FmtCodeLocRange(&tok.start, &tok.end)
                 )
                 .ok();
             }
             ParseErrorLoc::Expr(start, end) => {
                 write_source_error(&mut out, src, &start, &end);
-                write!(
-                    out,
-                    "\n    (expr {}:{}-{}:{})",
-                    start.line, start.col, end.line, end.col
-                )
-                .ok();
+                write!(out, "\n    (expr {})", FmtCodeLocRange(&start, &end)).ok();
             }
             ParseErrorLoc::Eof => {
                 write!(out, "\n    at EOF").ok();
@@ -2191,8 +2232,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         Err(e) => {
                             if env.warn {
                                 eprintln!(
-                                    "\x1b[1;33mWARNING\x1b[0;33m: variable not found: {}\x1b[0m",
-                                    s
+                                    "\x1b[1;33mWARNING\x1b[0;33m: variable not found: {} (at {})\x1b[0m",
+                                    s,
+                                    FmtCodeLocRange(&expr.start, &expr.end)
                                 );
                                 env.bound.insert(s.clone());
                                 Ok(Expr::Ident(s.clone()))
@@ -2279,7 +2321,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                             },
                             _,
                         ) => {
-                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence\x1b[0m");
+                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence (at {})\x1b[0m",
+                                    FmtCodeLocRange(&expr.start, &expr.end)
+                            );
                         }
                         _ => {}
                     }
@@ -2331,19 +2375,36 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     box_freeze(&mut env2, body)?,
                 ))
             }
-            Expr::Switch(scrutinee, arms) => Ok(Expr::Switch(
-                box_freeze(env, scrutinee)?,
-                arms.iter()
-                    .map(|(pat, rhs)| {
-                        let mut env2 = env.clone();
-                        env2.bind(pat.collect_identifiers(false /* declared_only */));
-                        Ok((
-                            box_freeze_lvalue(&mut env2, pat)?,
-                            box_freeze(&mut env2, rhs)?,
-                        ))
-                    })
-                    .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>)>>>()?,
-            )),
+            Expr::Switch(scrutinee, arms) => {
+                let mut seen = HashSet::new();
+                Ok(Expr::Switch(
+                    box_freeze(env, scrutinee)?,
+                    arms.iter()
+                        .map(|(pat, rhs)| {
+                            if env.warn {
+                                for t in to_archetypes(pat) {
+                                    // FIXME: we really really should report the pat's location but
+                                    // we don't track it now lmao
+                                    if seen.contains(&LvalueArchetype::Anything) {
+                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: unreachable pattern in switch after a catch-all pattern (at {})\x1b[0m",
+                                        FmtCodeLocRange(&rhs.start, &rhs.end));
+                                    } else if !seen.insert(t) {
+                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: unreachable pattern in switch, already saw same pattern (at {})\x1b[0m",
+                                        FmtCodeLocRange(&rhs.start, &rhs.end));
+                                    }
+                                }
+                            }
+
+                            let mut env2 = env.clone();
+                            env2.bind(pat.collect_identifiers(false /* declared_only */));
+                            Ok((
+                                box_freeze_lvalue(&mut env2, pat)?,
+                                box_freeze(&mut env2, rhs)?,
+                            ))
+                        })
+                        .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>)>>>()?,
+                ))
+            }
             Expr::Try(a, pat, catcher) => {
                 // FIXME hmmm is the main try branch really scoped this way
                 let body = box_freeze(env, a)?;
@@ -2635,7 +2696,7 @@ impl Parser {
     fn peek_err(&self) -> String {
         match self.tokens.get(self.i) {
             Some(LocToken { token, start, end }) => {
-                format!("{:?} (at {}:{}-{})", token, start.line, start.col, end.col)
+                format!("{:?} (at {})", token, FmtCodeLocRange(start, end))
             }
             None => "EOF".to_string(),
         }
