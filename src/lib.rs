@@ -3260,7 +3260,7 @@ pub fn initialize(env: &mut Env) {
         name: "reject".to_string(),
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => {
-                Ok(Obj::Seq(multi_filter(env, f, s, false /* neg */)?))
+                Ok(Obj::Seq(multi_filter(env, f, s, true /* neg */)?))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
