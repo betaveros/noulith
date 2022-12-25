@@ -4174,6 +4174,16 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "|..".to_string(),
         body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::List(mut a)), Obj::Seq(mut s)) => {
+                let mut it = mut_seq_into_iter(&mut s);
+                match (it.next(), it.next(), it.next()) {
+                    (Some(k), Some(v), None) => {
+                        Rc::make_mut(&mut a)[obj_clamp_to_usize_ok(&k?.clone())?] = v?.clone();
+                        Ok(Obj::Seq(Seq::List(a)))
+                    }
+                    _ => Err(NErr::argument_error("RHS must be pair".to_string())),
+                }
+            }
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(mut s)) => {
                 let mut it = mut_seq_into_iter(&mut s);
                 match (it.next(), it.next(), it.next()) {
