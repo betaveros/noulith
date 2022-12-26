@@ -12,6 +12,15 @@ use rustyline_derive::{Helper, Hinter, Validator};
 #[derive(Helper, Hinter, Validator)]
 struct NoulithHelper(Rc<RefCell<Env>>);
 
+const APP_INFO: app_dirs2::AppInfo = app_dirs2::AppInfo {
+    name: "noulith-cli",
+    author: "betaveros",
+};
+
+fn app_dir_root() -> Result<std::path::PathBuf, app_dirs2::AppDirsError> {
+    app_dirs2::app_root(app_dirs2::AppDataType::UserData, &APP_INFO)
+}
+
 impl rustyline::highlight::Highlighter for NoulithHelper {
     fn highlight<'a>(&self, line: &'a str, _pos: usize) -> std::borrow::Cow<'a, str> {
         let tokens = lex(line);
@@ -160,6 +169,15 @@ pub fn repl() {
     let e = Rc::new(RefCell::new(env));
 
     let mut rl = Editor::<NoulithHelper>::new().expect("readline failed");
+    if let Ok(path) = app_dir_root() {
+        if let Err(e) = rl.load_history(&*path.join("history")) {
+            eprintln!(
+                "\x1b[31mCan't load history\x1b[0m: {} ({})",
+                e,
+                path.display()
+            );
+        }
+    };
     rl.set_helper(Some(NoulithHelper(Rc::clone(&e))));
     loop {
         let readline = rl.readline("\x1b[38;5;67mnoulith>\x1b[0m ");
@@ -204,6 +222,15 @@ pub fn repl() {
                 println!("Error: {:?}", err);
                 break;
             }
+        }
+    }
+    if let Ok(path) = app_dir_root() {
+        if let Err(e) = rl.save_history(&*path.join("history")) {
+            eprintln!(
+                "\x1b[31mCan't load history\x1b[0m: {} ({})",
+                e,
+                path.display()
+            );
         }
     }
 }
