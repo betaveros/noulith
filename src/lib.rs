@@ -4585,10 +4585,10 @@ pub fn initialize(env: &mut Env) {
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
-    env.insert_builtin(TwoArgBuiltin {
+    env.insert_builtin(BasicBuiltin {
         name: "run_process".to_string(),
-        body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::String(s)), Obj::Seq(mut args)) => {
+        body: |_env, args| match few3(args) {
+            Few3::Two(Obj::Seq(Seq::String(s)), Obj::Seq(mut args)) => {
                 match std::process::Command::new(&*s)
                     .args(
                         mut_seq_into_iter(&mut args)
@@ -4610,7 +4610,40 @@ pub fn initialize(env: &mut Env) {
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
                 }
             }
-            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+            Few3::Three(Obj::Seq(Seq::String(s)), Obj::Seq(mut args), Obj::Seq(Seq::Bytes(b))) => {
+                match std::process::Command::new(&*s)
+                    .args(
+                        mut_seq_into_iter(&mut args)
+                            .map(|s| Ok(format!("{}", s?)))
+                            .collect::<NRes<Vec<String>>>()?,
+                    )
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(mut child) => {
+                        child
+                            .stdin
+                            .take()
+                            .unwrap()
+                            .write_all(&b)
+                            .map_err(|e| NErr::io_error(format!("{}", e)))?;
+                        let res = child
+                            .wait_with_output()
+                            .map_err(|e| NErr::io_error(format!("{}", e)))?;
+                        if res.status.success() {
+                            Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
+                        } else {
+                            Err(NErr::io_error(format!(
+                                "subprocess exited with nonzero status {}",
+                                res.status
+                            )))
+                        }
+                    }
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+            }
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "run_process"),
         },
     });
     env.insert_builtin(OneArgBuiltin {
