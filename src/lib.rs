@@ -2587,6 +2587,14 @@ fn json_decode(v: serde_json::Value) -> Obj {
     }
 }
 
+fn read_input(env: &Rc<RefCell<Env>>) -> NRes<Obj> {
+    let mut input = String::new();
+    match try_borrow_nres(env, "input", "")?.mut_top_env(|t| t.input.read_line(&mut input)) {
+        Ok(_) => Ok(Obj::from(input)),
+        Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+    }
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
@@ -4258,18 +4266,16 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(BasicBuiltin {
         name: "input".to_string(),
-        body: |env, args| {
-            if args.is_empty() {
-                let mut input = String::new();
-                match try_borrow_nres(env, "input", "")?
-                    .mut_top_env(|t| t.input.read_line(&mut input))
-                {
-                    Ok(_) => Ok(Obj::from(input)),
-                    Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
-                }
-            } else {
-                Err(NErr::argument_error_args(&args))
+        body: |env, args| match few(args) {
+            Few::Zero => read_input(env),
+            Few::One(Obj::Seq(Seq::String(s))) => {
+                print!("{}", s);
+                std::io::stdout()
+                    .flush()
+                    .map_err(|e| NErr::io_error(format!("flushing {}", e)))?;
+                read_input(env)
             }
+            c => err_add_name(Err(NErr::argument_error_few(&c)), "input"),
         },
     });
     env.insert_builtin(BasicBuiltin {
