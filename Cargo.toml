@@ -14,7 +14,7 @@ regex = "1"
 rustyline = { version = "10.0.0", optional = true }
 rustyline-derive = { version = "0.7.0", optional = true }
 chrono = "0.4"
-reqwest = { version = "0.11", features = ["blocking"], optional = true }
+reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
 aes = { version = "0.8.1", optional = true }
 # minimizing dependencies since i already needed aes for stuff even though
 # in a vacuum i'd prefer xchacha20-poly1305

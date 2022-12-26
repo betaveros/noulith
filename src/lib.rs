@@ -2587,6 +2587,88 @@ fn json_decode(v: serde_json::Value) -> Obj {
     }
 }
 
+#[cfg(feature = "request")]
+fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
+    match few2(args) {
+        Few2::One(Obj::Seq(Seq::String(url))) => {
+            reqwest::blocking::get(&*url).map_err(|e| NErr::io_error(format!("failed: {}", e)))
+        }
+        Few2::Two(Obj::Seq(Seq::String(url)), Obj::Seq(Seq::Dict(opts, _))) => {
+            let client = reqwest::blocking::Client::new();
+            let method = match opts.get(&ObjKey::from("method")) {
+                Some(Obj::Seq(Seq::String(s))) => match reqwest::Method::from_bytes(s.as_bytes()) {
+                    Ok(m) => m,
+                    Err(e) => return Err(NErr::value_error(format!("bad method: {}", e))),
+                },
+                Some(k) => return Err(NErr::type_error(format!("bad method: {}", k))),
+                None => reqwest::Method::GET,
+            };
+            let mut builder = client.request(method, &*url);
+            match opts.get(&ObjKey::from("headers")) {
+                Some(Obj::Seq(Seq::Dict(d, _))) => {
+                    for (k, v) in d.iter() {
+                        builder = builder.header(format!("{}", k), format!("{}", v))
+                    }
+                }
+                Some(k) => {
+                    return Err(NErr::type_error(format!(
+                        "bad headers, should be dict: {}",
+                        k
+                    )))
+                }
+                None => {}
+            }
+            match opts.get(&ObjKey::from("query")) {
+                Some(Obj::Seq(Seq::Dict(d, _))) => {
+                    builder = builder.query(
+                        d.iter()
+                            .map(|(k, v)| (format!("{}", k), format!("{}", v)))
+                            .collect::<Vec<(String, String)>>()
+                            .as_slice(),
+                    );
+                }
+                Some(k) => {
+                    return Err(NErr::type_error(format!(
+                        "bad query, should be dict: {}",
+                        k
+                    )))
+                }
+                None => {}
+            }
+            match opts.get(&ObjKey::from("form")) {
+                Some(Obj::Seq(Seq::Dict(d, _))) => {
+                    builder = builder.form(
+                        d.iter()
+                            .map(|(k, v)| (format!("{}", k), format!("{}", v)))
+                            .collect::<Vec<(String, String)>>()
+                            .as_slice(),
+                    );
+                }
+                Some(k) => {
+                    return Err(NErr::type_error(format!("bad form, should be dict: {}", k)))
+                }
+                None => {}
+            }
+            match opts.get(&ObjKey::from("json")) {
+                Some(map @ Obj::Seq(Seq::Dict(..))) => {
+                    builder = builder.json(&json_encode(map.clone())?);
+                }
+                Some(k) => {
+                    return Err(NErr::type_error(format!("bad form, should be dict: {}", k)))
+                }
+                None => {}
+            }
+            // builder = builder.header(key, value);
+            // builder = builder.query(&[(key, value)]);
+            // builder = builder.form(&[(key, value)]);
+            builder
+                .send()
+                .map_err(|e| NErr::io_error(format!("built request failed: {}", e)))
+        }
+        f => Err(NErr::argument_error_few2(&f)),
+    }
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
@@ -4940,83 +5022,31 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "request".to_string(),
         body: |_env, args| {
-            let resp = match few2(args) {
-                Few2::One(Obj::Seq(Seq::String(url))) => reqwest::blocking::get(&*url)
-                    .map_err(|e| NErr::io_error(format!("failed: {}", e))),
-                Few2::Two(Obj::Seq(Seq::String(url)), Obj::Seq(Seq::Dict(opts, _))) => {
-                    let client = reqwest::blocking::Client::new();
-                    let method = match opts.get(&ObjKey::from("method")) {
-                        Some(Obj::Seq(Seq::String(s))) => {
-                            match reqwest::Method::from_bytes(s.as_bytes()) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    return Err(NErr::value_error(format!("bad method: {}", e)))
-                                }
-                            }
-                        }
-                        Some(k) => return Err(NErr::type_error(format!("bad method: {}", k))),
-                        None => reqwest::Method::GET,
-                    };
-                    let mut builder = client.request(method, &*url);
-                    match opts.get(&ObjKey::from("headers")) {
-                        Some(Obj::Seq(Seq::Dict(d, _))) => {
-                            for (k, v) in d.iter() {
-                                builder = builder.header(format!("{}", k), format!("{}", v))
-                            }
-                        }
-                        Some(k) => {
-                            return Err(NErr::type_error(format!(
-                                "bad headers, should be dict: {}",
-                                k
-                            )))
-                        }
-                        None => {}
-                    }
-                    match opts.get(&ObjKey::from("query")) {
-                        Some(Obj::Seq(Seq::Dict(d, _))) => {
-                            builder = builder.query(
-                                d.iter()
-                                    .map(|(k, v)| (format!("{}", k), format!("{}", v)))
-                                    .collect::<Vec<(String, String)>>()
-                                    .as_slice(),
-                            );
-                        }
-                        Some(k) => {
-                            return Err(NErr::type_error(format!(
-                                "bad query, should be dict: {}",
-                                k
-                            )))
-                        }
-                        None => {}
-                    }
-                    match opts.get(&ObjKey::from("form")) {
-                        Some(Obj::Seq(Seq::Dict(d, _))) => {
-                            builder = builder.form(
-                                d.iter()
-                                    .map(|(k, v)| (format!("{}", k), format!("{}", v)))
-                                    .collect::<Vec<(String, String)>>()
-                                    .as_slice(),
-                            );
-                        }
-                        Some(k) => {
-                            return Err(NErr::type_error(format!(
-                                "bad form, should be dict: {}",
-                                k
-                            )))
-                        }
-                        None => {}
-                    }
-                    // builder = builder.header(key, value);
-                    // builder = builder.query(&[(key, value)]);
-                    // builder = builder.form(&[(key, value)]);
-                    builder
-                        .send()
-                        .map_err(|e| NErr::io_error(format!("built request failed: {}", e)))
-                }
-                f => Err(NErr::argument_error_few2(&f)),
-            }?;
+            let resp = request_response(args)?;
             match resp.text() {
                 Ok(s) => Ok(Obj::from(s)),
+                Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
+            }
+        },
+    });
+
+    #[cfg(feature = "request")]
+    env.insert_builtin(BasicBuiltin {
+        name: "request_bytes".to_string(),
+        body: |_env, args| {
+            match request_response(args)?.bytes() {
+                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b.to_vec())))),
+                Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
+            }
+        },
+    });
+
+    #[cfg(feature = "request")]
+    env.insert_builtin(BasicBuiltin {
+        name: "request_json".to_string(),
+        body: |_env, args| {
+            match request_response(args)?.json() {
+                Ok(j) => Ok(json_decode(j)),
                 Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
             }
         },
