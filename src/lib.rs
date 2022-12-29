@@ -2553,7 +2553,7 @@ fn json_decode(v: serde_json::Value) -> Obj {
         serde_json::Value::Object(d) => Obj::Seq(Seq::Dict(
             Rc::new(
                 d.into_iter()
-                    .map(|(k, v)| (ObjKey::String(Rc::new(k)), json_decode(v)))
+                    .map(|(k, v)| (ObjKey::from(k), json_decode(v)))
                     .collect::<HashMap<ObjKey, Obj>>(),
             ),
             None,
@@ -2794,8 +2794,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneNumBuiltin {
         name: "complex_parts".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
-            Ok(f) => Ok(Obj::list(vec![Obj::from(f), Obj::from(0.0)])),
-            Err(c) => Ok(Obj::list(vec![Obj::from(c.re), Obj::from(c.im)])),
+            Ok(f) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![NNum::from(f), NNum::from(0.0)])))),
+            Err(c) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![NNum::from(c.re), NNum::from(c.im)])))),
         },
     });
 
@@ -4945,7 +4945,7 @@ pub fn initialize(env: &mut Env) {
                         .iter()
                         .map(|(k, (_t, v))| {
                             Ok((
-                                ObjKey::String(Rc::new(k.clone())),
+                                ObjKey::from(k.clone()),
                                 try_borrow_nres(v, "vars", k)?.clone(),
                             ))
                         })

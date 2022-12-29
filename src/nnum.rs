@@ -12,7 +12,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::{Product, Sum};
 use std::mem;
-use std::ops::{Add, BitAnd, BitOr, BitXor, Deref, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub};
+use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Shl, Shr, Sub};
 use std::ops::{AddAssign, SubAssign};
 
 use crate::gamma;
@@ -580,55 +580,6 @@ impl NNum {
     }
 }
 
-// Tries to follow the laws
-#[derive(Debug, Clone)]
-pub struct NTotalNum(pub NNum);
-
-macro_rules! forward_total_display {
-    ($impl:ident) => {
-        impl fmt::$impl for NTotalNum {
-            fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                fmt::$impl::fmt(&self.0, formatter)
-            }
-        }
-    };
-}
-forward_total_display!(Display);
-forward_total_display!(UpperHex);
-forward_total_display!(LowerHex);
-forward_total_display!(Octal);
-forward_total_display!(Binary);
-forward_total_display!(LowerExp);
-forward_total_display!(UpperExp);
-
-impl Deref for NTotalNum {
-    type Target = NNum;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-// Considers NaNs equal
-impl PartialEq for NTotalNum {
-    fn eq(&self, other: &Self) -> bool {
-        NNum::eq(&**self, &**other) || self.is_nan() && other.is_nan()
-    }
-}
-
-impl Eq for NTotalNum {}
-
-impl Ord for NTotalNum {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.total_cmp_small_nan(&**other)
-    }
-}
-impl PartialOrd for NTotalNum {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
     match to_bigint_if_int(f) {
         Some(s) => BigInt::hash(&s, state),
@@ -645,9 +596,9 @@ fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
     }
 }
 
-impl Hash for NTotalNum {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match &**self {
+impl NNum {
+    pub fn total_hash<H: Hasher>(&self, state: &mut H) {
+        match self {
             NNum::Int(a) => BigInt::hash(&a, state),
             NNum::Rational(r) => {
                 // TODO: should we make rationals consistent with floats?
@@ -671,6 +622,10 @@ impl Hash for NTotalNum {
 // return the other
 
 impl NNum {
+    pub fn total_eq(&self, other: &Self) -> bool {
+        self == other || self.is_nan() && other.is_nan()
+    }
+
     pub fn min<'a>(&'a self, other: &'a Self) -> &'a NNum {
         match self.total_cmp_big_nan(other) {
             Ordering::Greater => other,

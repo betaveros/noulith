@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use num::bigint::BigInt;
@@ -21,7 +22,6 @@ use crate::iter::*;
 use crate::lex::*;
 
 use crate::nnum::NNum;
-use crate::nnum::NTotalNum;
 
 // The fundamental unitype and all its types...
 #[derive(Debug, Clone)]
@@ -772,12 +772,17 @@ forward_from!(Complex64);
 
 impl From<usize> for ObjKey {
     fn from(n: usize) -> Self {
-        ObjKey::Num(NTotalNum(NNum::from(n)))
+        ObjKey(Obj::from(n))
+    }
+}
+impl From<String> for ObjKey {
+    fn from(n: String) -> Self {
+        ObjKey(Obj::from(n))
     }
 }
 impl From<&str> for ObjKey {
     fn from(n: &str) -> Self {
-        ObjKey::String(Rc::new(n.to_string()))
+        ObjKey(Obj::from(n))
     }
 }
 
@@ -809,45 +814,132 @@ pub fn to_f64_ok(n: &NNum) -> NRes<f64> {
         .ok_or(NErr::value_error("bad number to float".to_string()))
 }
 
-// For keying hash maps
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
-pub enum ObjKey {
-    Null,
-    Num(NTotalNum),
-    String(Rc<String>),
-    List(Rc<Vec<ObjKey>>),
-    Dict(Rc<Vec<(ObjKey, ObjKey)>>),
-    Vector(Rc<Vec<NTotalNum>>),
-    Bytes(Rc<Vec<u8>>),
+// For keying hash maps. For efficiency, want to share internal structure with Obj. Eq may violate
+// laws and hash may panic if called on an improperly constructed instance, so clients should not
+// construct those themselves.
+#[derive(PartialOrd, Clone, Debug)]
+pub struct ObjKey(Obj);
+
+// These will panic if called on things with unhashable things inside!!
+fn total_eq_of_key_seqs(a: &Seq, b: &Seq) -> bool {
+    match (a, b) {
+        (Seq::List(a), Seq::List(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| total_eq_of_keys(a, b))
+        }
+        (Seq::Dict(a, _), Seq::Dict(b, _)) => {
+            a.len() == b.len()
+                && a.iter().all(|(k, v)| match b.get(k) {
+                    Some(vv) => total_eq_of_keys(v, vv),
+                    None => false,
+                })
+        }
+        (Seq::String(a), Seq::String(b)) => a == b,
+        (Seq::Vector(a), Seq::Vector(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| a.total_eq(b))
+        }
+        (Seq::Bytes(a), Seq::Bytes(b)) => a == b,
+        _ => false,
+    }
 }
 
-pub fn to_key(obj: Obj) -> NRes<ObjKey> {
-    match obj {
-        Obj::Null => Ok(ObjKey::Null),
-        Obj::Num(x) => Ok(ObjKey::Num(NTotalNum(x))),
-        Obj::Seq(Seq::String(x)) => Ok(ObjKey::String(x)),
-        Obj::Seq(Seq::List(mut xs)) => Ok(ObjKey::List(Rc::new(
-            RcVecIter::of(&mut xs)
-                .map(|e| to_key(e))
-                .collect::<NRes<Vec<ObjKey>>>()?,
-        ))),
-        Obj::Seq(Seq::Dict(mut d, _)) => {
-            let mut pairs = RcHashMapIter::of(&mut d)
-                .map(|(k, v)| Ok((k, to_key(v)?)))
-                .collect::<NRes<Vec<(ObjKey, ObjKey)>>>()?;
-            pairs.sort();
-            Ok(ObjKey::Dict(Rc::new(pairs)))
+fn total_eq_of_keys(a: &Obj, b: &Obj) -> bool {
+    match (a, b) {
+        (Obj::Null, Obj::Null) => true,
+        (Obj::Num(a), Obj::Num(b)) => a == b || a.is_nan() && b.is_nan(),
+        (Obj::Seq(a), Obj::Seq(b)) => total_eq_of_key_seqs(a, b),
+        _ => false,
+    }
+}
+
+fn total_hash_of_key<H: Hasher>(a: &Obj, state: &mut H) {
+    match a {
+        Obj::Null => state.write_u8(0),
+        Obj::Num(a) => {
+            state.write_u8(1);
+            a.total_hash(state);
         }
-        Obj::Seq(Seq::Vector(x)) => Ok(ObjKey::Vector(Rc::new(
-            x.iter().map(|e| NTotalNum(e.clone())).collect(),
-        ))),
-        Obj::Seq(Seq::Bytes(x)) => Ok(ObjKey::Bytes(x)),
-        Obj::Seq(Seq::Stream(s)) => Ok(ObjKey::List(Rc::new(
-            s.force()?
-                .into_iter()
-                .map(|e| to_key(e))
-                .collect::<NRes<Vec<ObjKey>>>()?,
-        ))),
+        Obj::Seq(a) => match a {
+            Seq::String(s) => {
+                state.write_u8(2);
+                s.hash(state);
+            }
+            Seq::List(s) => {
+                state.write_u8(3);
+                state.write_usize(s.len());
+                for e in s.iter() {
+                    total_hash_of_key(e, state);
+                }
+            }
+            Seq::Dict(d, _) => {
+                state.write_u8(4);
+                let mut acc: u64 = 0;
+                let mut acc2: u64 = 0;
+                for (k, v) in d.iter() {
+                    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+                    total_hash_of_key(&k.0, &mut h1);
+                    total_hash_of_key(v, &mut h1);
+                    let f = h1.finish();
+                    acc = acc.wrapping_add(f);
+                    acc2 = acc2.wrapping_add(f.wrapping_mul(f));
+                }
+                state.write_u64(acc);
+                state.write_u64(acc2);
+            }
+            Seq::Vector(v) => {
+                state.write_u8(5);
+                state.write_usize(v.len());
+                for e in v.iter() {
+                    e.total_hash(state);
+                }
+            }
+            Seq::Bytes(b) => {
+                state.write_u8(6);
+                b.hash(state);
+            }
+            Seq::Stream(s) => {
+                panic!("Attempting to hash Stream: {}", s)
+            }
+        },
+        _ => panic!("Attempting to hash invalid Obj: {}", a),
+    }
+}
+
+impl PartialEq for ObjKey {
+    fn eq(&self, other: &Self) -> bool {
+        total_eq_of_keys(&self.0, &other.0)
+    }
+}
+
+impl Eq for ObjKey {}
+
+impl Hash for ObjKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        total_hash_of_key(&self.0, state)
+    }
+}
+
+fn check_if_valid_key(obj: &Obj) -> NRes<()> {
+    match obj {
+        Obj::Null => Ok(()),
+        Obj::Num(_) => Ok(()),
+        Obj::Seq(Seq::String(_)) => Ok(()),
+        Obj::Seq(Seq::List(xs)) => {
+            for e in xs.iter() {
+                check_if_valid_key(e)?;
+            }
+            Ok(())
+        }
+        Obj::Seq(Seq::Dict(d, _)) => {
+            for e in d.values() {
+                check_if_valid_key(e)?;
+            }
+            Ok(())
+        }
+        Obj::Seq(Seq::Vector(_)) => Ok(()),
+        Obj::Seq(Seq::Bytes(_)) => Ok(()),
+        Obj::Seq(Seq::Stream(_)) => Err(NErr::type_error(
+            "Using a stream as a dictionary key isn't supported".to_string(),
+        )),
         Obj::Func(..) => Err(NErr::type_error(
             "Using a function as a dictionary key isn't supported".to_string(),
         )),
@@ -857,27 +949,18 @@ pub fn to_key(obj: Obj) -> NRes<ObjKey> {
     }
 }
 
-pub fn key_to_obj(key: ObjKey) -> Obj {
-    match key {
-        ObjKey::Null => Obj::Null,
-        ObjKey::Num(NTotalNum(x)) => Obj::Num(x),
-        ObjKey::String(x) => Obj::Seq(Seq::String(x)),
-        ObjKey::List(mut xs) => Obj::list(
-            RcVecIter::of(&mut xs)
-                .map(|e| key_to_obj(e.clone()))
-                .collect::<Vec<Obj>>(),
-        ),
-        ObjKey::Dict(mut d) => Obj::dict(
-            RcVecIter::of(&mut d)
-                .map(|(k, v)| (k, key_to_obj(v)))
-                .collect::<HashMap<ObjKey, Obj>>(),
-            None,
-        ),
-        ObjKey::Vector(v) => Obj::Seq(Seq::Vector(Rc::new(
-            v.iter().map(|x| x.0.clone()).collect(),
-        ))),
-        ObjKey::Bytes(v) => Obj::Seq(Seq::Bytes(v)),
+pub fn to_key(obj: Obj) -> NRes<ObjKey> {
+    match obj {
+        Obj::Seq(Seq::Stream(s)) => to_key(Obj::list(s.force()?)),
+        _ => {
+            check_if_valid_key(&obj)?;
+            Ok(ObjKey(obj))
+        }
     }
+}
+
+pub fn key_to_obj(key: ObjKey) -> Obj {
+    key.0
 }
 
 // generic Obj impls
@@ -1054,14 +1137,6 @@ impl MyDisplay for NNum {
             s,
             flags.pad.to_string().repeat(right_amt)
         )
-    }
-}
-impl MyDisplay for NTotalNum {
-    fn is_null(&self) -> bool {
-        false
-    }
-    fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
-        self.0.fmt_with_mut(formatter, flags)
     }
 }
 
@@ -1366,31 +1441,10 @@ impl Display for ObjKey {
 
 impl MyDisplay for ObjKey {
     fn is_null(&self) -> bool {
-        self == &ObjKey::Null
+        self.0 == Obj::Null
     } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
-        flags.deduct(1);
-        match self {
-            ObjKey::Null => write!(formatter, "null"),
-            ObjKey::Num(n) => n.fmt_with_mut(formatter, flags),
-            ObjKey::String(s) => write_string(s, formatter, flags),
-            ObjKey::List(xs) => {
-                write!(formatter, "[")?;
-                write_slice(xs.as_slice(), formatter, flags)?;
-                write!(formatter, "]")
-            }
-            ObjKey::Dict(xs) => {
-                write!(formatter, "{{")?;
-                write_pairs(xs.iter().map(|x| (&x.0, &x.1)), formatter, flags)?;
-                write!(formatter, "}}")
-            }
-            ObjKey::Vector(xs) => {
-                write!(formatter, "V[")?;
-                write_slice(xs.as_slice(), formatter, flags)?;
-                write!(formatter, "]")
-            }
-            ObjKey::Bytes(xs) => write_bytes(xs.as_slice(), formatter, flags),
-        }
+        self.0.fmt_with_mut(formatter, flags)
     }
 }
 
