@@ -330,7 +330,7 @@ Most operators for working with lists/dictionaries/other sequences are two chara
 - Replicate is `.*`, e.g. `2 .* 3 == [2, 2, 2]`. List multiplication or (n-ary) cartesian product is `**`. Cartesian exponentiation (?) is `^^`.
 - Dictionary union, intersection, and subtraction are `||`, `&&`, and `--`; `|.` and `|..` and `-.`.
 - Indexing, alternatives to `a[b]` syntax: `!!` and `!?` for or-null (these are Haskell-isms roughly); `!%` for mod the length.
-- `tail` `first` `second` `third` `last` `take` `drop`
+- `tail` `first` `second` `third` `last` `only` `take` `drop`
 - Get keys, values: `keys`, `values`. Get index/key-value pairs: `enumerate`, `items`.
 - String concatenation is `$`. It has quite low precedence and coerces things to strings. String multiplication `$*` / `*$`.
 - Ranges: `a til b` is exclusive, `a to b` is inclusive. Both use chaining to allow `a til b by c`. `iota a` counts from `a` up. These are all lazy.
