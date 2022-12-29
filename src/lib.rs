@@ -3629,6 +3629,36 @@ pub fn initialize(env: &mut Env) {
             a => Err(NErr::argument_error_1(&a)),
         },
     });
+    // I learned from Rust docs that terminologically "start" and "end" are better than "left" and
+    // "right" since languages can be RTL
+    env.insert_builtin(OneArgBuiltin {
+        name: "strip_start".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim_start())),
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "strip_end".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim_end())),
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "trim_start".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim_start())),
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "trim_end".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::from(s.trim_end())),
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "words".to_string(),
         body: |a| match a {
