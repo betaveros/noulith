@@ -149,6 +149,22 @@ Looser  (alphanumerics)
 
 `!` is syntax that's spiritually sort of like what Haskell's `$` lets you write. It's as tight as an opening parenthesis on its left, but performs a function call that lets you can omit the closing one up to the next semicolon or so. `f! a, b` is `f(a, b)`.
 
+So, these three expressions are equivalent (assuming the built-in `.` hasn't been reassigned or shadowed):
+
+```
+print foo
+print(foo)
+foo.print
+```
+
+As are these:
+
+```
+max(foo, bar)
+foo max bar
+max! foo, bar
+```
+
 `_` is special; assigning to it discards (but type checks still happen; see below). Some expressions produce Scala-style anonymous functions, e.g. `1 < _ < 3`, `[_, 2]`, `_[3]`. I might implement more later.
 
 Types double as conversion functions: `str(3)` `int(3)` `dict([[1, 2], [3, 4]])` etc. Bending internal consistency for pure syntax sweetness, `to` is overloaded to takes a type as its second argument to call the same conversion. Test types explicitly with `is`: `3 is int`, `int is type`. The type of `null` is `nulltype`. Strings are `str` and functions are `func`. The "top" type is `anything`.
