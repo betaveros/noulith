@@ -173,6 +173,13 @@ fn more_lists() {
 }
 
 #[test]
+fn strings() {
+    assert_eq!(simple_eval("'1234'[2]"), Obj::from("3"));
+    assert_eq!(simple_eval("ord('β')"), i(946));
+    assert_eq!(simple_eval("chr(946)"), Obj::from("β"));
+}
+
+#[test]
 fn streams() {
     assert_eq!(
         simple_eval("[1, 2] ^^ 3 map (join '') join ','"),

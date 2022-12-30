@@ -2864,10 +2864,11 @@ pub fn initialize(env: &mut Env) {
         name: "ord".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => {
-                if s.len() != 1 {
-                    Err(NErr::value_error("arg string length != 1".to_string()))
-                } else {
-                    Ok(Obj::from(s.chars().next().unwrap() as usize))
+                let mut c = s.chars();
+                match (c.next(), c.next()) {
+                    (Some(ch), None) => Ok(Obj::from(ch as usize)),
+                    (None, _) => Err(NErr::value_error("ord of empty string".to_string())),
+                    (_, Some(_)) => Err(NErr::value_error("ord of string with len > 1".to_string())),
                 }
             }
             _ => Err(NErr::type_error("arg non-string".to_string())),
