@@ -2214,6 +2214,23 @@ fn grouped_by<T: Clone + Into<Obj>>(
     }
 }
 
+fn grouped_all_with<T: Clone + Into<Obj>>(
+    it: impl Iterator<Item = NRes<T>>,
+    mut f: impl FnMut(Obj) -> NRes<Obj>,
+) -> NRes<Vec<Vec<T>>> {
+    let mut map: HashMap<ObjKey, Vec<T>> = HashMap::new();
+    for i in it {
+        let i = i?;
+        let key = to_key(f(i.clone().into())?)?;
+        if map.contains_key(&key) {
+            map.get_mut(&key).unwrap().push(i);
+        } else {
+            map.insert(key, vec![i]);
+        }
+    }
+    Ok(map.into_values().collect())
+}
+
 fn windowed<T: Clone>(mut it: impl Iterator<Item = NRes<T>>, n: usize) -> NRes<Vec<Vec<T>>> {
     let mut window = VecDeque::new();
     window.reserve_exact(n);
@@ -2494,6 +2511,9 @@ fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
         v,
         grouped_by(v, |a, b| Ok(f.run(env, vec![a, b])?.truthy()))
     )
+}
+fn multi_group_all_with(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
+    multimulti!(v, grouped_all_with(v, |x| f.run(env, vec![x])))
 }
 fn multi_window(v: Seq, n: usize) -> NRes<Vec<Obj>> {
     multimulti!(v, windowed(v, n))
@@ -3339,6 +3359,13 @@ pub fn initialize(env: &mut Env) {
                 0 => Err(NErr::value_error("can't window 0".to_string())),
                 n => Ok(Obj::list(multi_window(s, n)?)),
             },
+            _ => Err(NErr::value_error("not number".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "group_all".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::list(multi_group_all_with(env, f, s)?)),
             _ => Err(NErr::value_error("not number".to_string())),
         },
     });
