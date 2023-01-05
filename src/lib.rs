@@ -26,6 +26,9 @@ use base64;
 use rand;
 use rand::RngCore;
 
+use flate2::read::{GzDecoder, GzEncoder};
+use flate2::Compression;
+
 #[cfg(feature = "request")]
 use reqwest;
 
@@ -2794,8 +2797,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneNumBuiltin {
         name: "complex_parts".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
-            Ok(f) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![NNum::from(f), NNum::from(0.0)])))),
-            Err(c) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![NNum::from(c.re), NNum::from(c.im)])))),
+            Ok(f) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![
+                NNum::from(f),
+                NNum::from(0.0),
+            ])))),
+            Err(c) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![
+                NNum::from(c.re),
+                NNum::from(c.im),
+            ])))),
         },
     });
 
@@ -2868,7 +2877,9 @@ pub fn initialize(env: &mut Env) {
                 match (c.next(), c.next()) {
                     (Some(ch), None) => Ok(Obj::from(ch as usize)),
                     (None, _) => Err(NErr::value_error("ord of empty string".to_string())),
-                    (_, Some(_)) => Err(NErr::value_error("ord of string with len > 1".to_string())),
+                    (_, Some(_)) => {
+                        Err(NErr::value_error("ord of string with len > 1".to_string()))
+                    }
                 }
             }
             _ => Err(NErr::type_error("arg non-string".to_string())),
@@ -4245,6 +4256,40 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    env.insert_builtin(BasicBuiltin {
+        name: "read_bytes".to_string(),
+        body: |env, args| {
+            if args.is_empty() {
+                let mut input = Vec::new();
+                // to EOF
+                match try_borrow_nres(env, "read_bytes", "")?
+                    .mut_top_env(|t| t.input.read_to_end(&mut input))
+                {
+                    Ok(_) => Ok(Obj::Seq(Seq::Bytes(Rc::new(input)))),
+                    Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+                }
+            } else {
+                Err(NErr::argument_error_args(&args))
+            }
+        },
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "read_compressed".to_string(),
+        body: |env, args| {
+            if args.is_empty() {
+                let mut input = String::new();
+                // to EOF
+                match try_borrow_nres(env, "read_compressed", "")?
+                    .mut_top_env(|t| GzDecoder::new(&mut t.input).read_to_string(&mut input))
+                {
+                    Ok(_) => Ok(Obj::from(input)),
+                    Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
+                }
+            } else {
+                Err(NErr::argument_error_args(&args))
+            }
+        },
+    });
     // Haskell-ism
     env.insert_builtin(EnvOneArgBuiltin {
         name: "interact".to_string(),
@@ -4466,6 +4511,31 @@ pub fn initialize(env: &mut Env) {
                 Ok(k) => Ok(json_decode(k)),
                 Err(t) => Err(NErr::value_error(format!("json decoding failed: {}", t))),
             },
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "compress".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::Bytes(b)) => {
+                let mut gz = GzEncoder::new(&b[..], Compression::fast());
+                let mut s = Vec::new();
+                gz.read_to_end(&mut s).expect("what");
+                Ok(Obj::Seq(Seq::Bytes(Rc::new(s))))
+            }
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "decompress".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::Bytes(b)) => {
+                let mut gz = GzDecoder::new(&b[..]);
+                let mut s = Vec::new();
+                gz.read_to_end(&mut s).expect("what");
+                Ok(Obj::Seq(Seq::Bytes(Rc::new(s))))
+            }
             a => Err(NErr::argument_error_1(&a)),
         },
     });
@@ -4977,10 +5047,10 @@ impl WasmOutputs {
 
 // stdout and error
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn encapsulated_eval(code: &str, input: &str) -> WasmOutputs {
+pub fn encapsulated_eval(code: &str, input: &[u8]) -> WasmOutputs {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
-        input: Box::new(io::Cursor::new(input.as_bytes().to_vec())),
+        input: Box::new(io::Cursor::new(input.to_vec())),
         output: Box::new(Vec::new()),
     });
     initialize(&mut env);
