@@ -4605,6 +4605,19 @@ pub fn initialize(env: &mut Env) {
             a => Err(NErr::argument_error_1(&a)),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "list_files".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => match fs::read_dir(&*s) {
+                Ok(c) => match c.map(|d| d.map(|e| e.path())).collect::<Result<Vec<_>, io::Error>>() {
+                    Ok(c) => Ok(Obj::list(c.into_iter().map(|s| Obj::from(s.to_string_lossy().into_owned())).collect())),
+                    Err(e) => Err(NErr::io_error(format!("{}", e))),
+                }
+                Err(e) => Err(NErr::io_error(format!("{}", e))),
+            },
+            a => Err(NErr::argument_error_1(&a)),
+        },
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "write_file".to_string(),
         body: |a, b| match (a, b) {
