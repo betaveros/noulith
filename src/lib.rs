@@ -283,15 +283,18 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
         (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
             "Can't compare nums {} and {}",
-            FmtObj::debug(aa), FmtObj::debug(bb)
+            FmtObj::debug(aa),
+            FmtObj::debug(bb)
         ))),
         (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
             "Can't compare seqs {} and {}",
-            FmtObj::debug(aa), FmtObj::debug(bb)
+            FmtObj::debug(aa),
+            FmtObj::debug(bb)
         ))),
         _ => Err(NErr::type_error(format!(
             "Can't compare {} and {}",
-            FmtObj::debug(aa), FmtObj::debug(bb)
+            FmtObj::debug(aa),
+            FmtObj::debug(bb)
         ))),
     }
 }
@@ -4246,7 +4249,10 @@ pub fn initialize(env: &mut Env) {
                     Err(e)
                 }
             },
-            s => Err(NErr::value_error(format!("can't eval {}", FmtObj::debug(&s)))),
+            s => Err(NErr::value_error(format!(
+                "can't eval {}",
+                FmtObj::debug(&s)
+            ))),
         },
     });
 
@@ -4790,15 +4796,21 @@ pub fn initialize(env: &mut Env) {
                     .spawn()
                 {
                     Ok(mut child) => {
-                        child
+                        let mut stdin = child
                             .stdin
                             .take()
-                            .unwrap()
-                            .write_all(&b)
-                            .map_err(|e| NErr::io_error(format!("{}", e)))?;
+                            .ok_or(NErr::io_error(format!("Failed to open child stdin")))?;
+                        let bc: Vec<u8> = (*b).clone();
+                        let writer = std::thread::spawn(move || stdin.write_all(&bc).expect("couldn't write to stdin"));
+
                         let res = child
                             .wait_with_output()
                             .map_err(|e| NErr::io_error(format!("{}", e)))?;
+                        writer
+                            .join()
+                            .map_err(|_| {
+                                NErr::io_error(format!("Failed to join child stdin writer"))
+                            })?;
                         if res.status.success() {
                             Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
                         } else {
