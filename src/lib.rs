@@ -2654,13 +2654,10 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
                     builder = builder.json(&json_encode(map.clone())?);
                 }
                 Some(k) => {
-                    return Err(NErr::type_error(format!("bad form, should be dict: {}", k)))
+                    return Err(NErr::type_error(format!("bad json, should be dict: {}", k)))
                 }
                 None => {}
             }
-            // builder = builder.header(key, value);
-            // builder = builder.query(&[(key, value)]);
-            // builder = builder.form(&[(key, value)]);
             builder
                 .send()
                 .map_err(|e| NErr::io_error(format!("built request failed: {}", e)))
@@ -4883,16 +4880,16 @@ pub fn initialize(env: &mut Env) {
                             .take()
                             .ok_or(NErr::io_error(format!("Failed to open child stdin")))?;
                         let bc: Vec<u8> = (*b).clone();
-                        let writer = std::thread::spawn(move || stdin.write_all(&bc).expect("couldn't write to stdin"));
+                        let writer = std::thread::spawn(move || {
+                            stdin.write_all(&bc).expect("couldn't write to stdin")
+                        });
 
                         let res = child
                             .wait_with_output()
                             .map_err(|e| NErr::io_error(format!("{}", e)))?;
-                        writer
-                            .join()
-                            .map_err(|_| {
-                                NErr::io_error(format!("Failed to join child stdin writer"))
-                            })?;
+                        writer.join().map_err(|_| {
+                            NErr::io_error(format!("Failed to join child stdin writer"))
+                        })?;
                         if res.status.success() {
                             Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
                         } else {
@@ -5033,22 +5030,18 @@ pub fn initialize(env: &mut Env) {
     #[cfg(feature = "request")]
     env.insert_builtin(BasicBuiltin {
         name: "request_bytes".to_string(),
-        body: |_env, args| {
-            match request_response(args)?.bytes() {
-                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b.to_vec())))),
-                Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
-            }
+        body: |_env, args| match request_response(args)?.bytes() {
+            Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b.to_vec())))),
+            Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
         },
     });
 
     #[cfg(feature = "request")]
     env.insert_builtin(BasicBuiltin {
         name: "request_json".to_string(),
-        body: |_env, args| {
-            match request_response(args)?.json() {
-                Ok(j) => Ok(json_decode(j)),
-                Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
-            }
+        body: |_env, args| match request_response(args)?.json() {
+            Ok(j) => Ok(json_decode(j)),
+            Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
         },
     });
 

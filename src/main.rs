@@ -1,4 +1,4 @@
-use noulith::{evaluate, initialize, parse, warn, LocExpr, Expr, Env, Obj, ObjType, TopEnv};
+use noulith::{evaluate, initialize, parse, warn, Env, Expr, LocExpr, Obj, ObjType, TopEnv};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
@@ -87,18 +87,22 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
             warn(&e, &expr);
             let wrapped_expr = match invoke_wrapper {
                 Some(wrap_id) => {
-                    let wrapper = Env::try_borrow_get_var(&e, wrap_id).expect("BUG: env didn't have specified invocation wrapper");
+                    let wrapper = Env::try_borrow_get_var(&e, wrap_id)
+                        .expect("BUG: env didn't have specified invocation wrapper");
                     LocExpr {
                         start: expr.start,
                         end: expr.end,
-                        expr: Expr::Call(Box::new(LocExpr {
-                            start: expr.start,
-                            end: expr.start,
-                            expr: Expr::Frozen(wrapper),
-                        }), vec![Box::new(expr)])
+                        expr: Expr::Call(
+                            Box::new(LocExpr {
+                                start: expr.start,
+                                end: expr.start,
+                                expr: Expr::Frozen(wrapper),
+                            }),
+                            vec![Box::new(expr)],
+                        ),
                     }
                 }
-                None => expr
+                None => expr,
             };
             match evaluate(&e, &wrapped_expr) {
                 Ok(Obj::Null) => {}
