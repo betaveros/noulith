@@ -695,8 +695,8 @@ pub fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj, name: &s
         Obj::Num(a) => body(a),
         Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(RcVecIter::of(&mut a).map(body)),
         x => Err(NErr::argument_error(format!(
-            "{} only accepts numbers, got {:?}",
-            name, x
+            "{} only accepts numbers, got {}",
+            name, FmtObj::debug(&x)
         ))),
     }
 }

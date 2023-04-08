@@ -282,16 +282,16 @@ impl ComparisonOperator {
 fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
     match (aa, bb) {
         (Obj::Num(a), Obj::Num(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
-            "Can't compare nums {:?} and {:?}",
-            a, b
+            "Can't compare nums {} and {}",
+            FmtObj::debug(aa), FmtObj::debug(bb)
         ))),
         (Obj::Seq(a), Obj::Seq(b)) => a.partial_cmp(b).ok_or(NErr::type_error(format!(
-            "Can't compare seqs {:?} and {:?}",
-            a, b
+            "Can't compare seqs {} and {}",
+            FmtObj::debug(aa), FmtObj::debug(bb)
         ))),
         _ => Err(NErr::type_error(format!(
-            "Can't compare {:?} and {:?}",
-            aa, bb
+            "Can't compare {} and {}",
+            FmtObj::debug(aa), FmtObj::debug(bb)
         ))),
     }
 }
@@ -1742,8 +1742,8 @@ impl Builtin for NumsBuiltin {
                     .map(|x| match x {
                         Obj::Num(n) => Ok(n),
                         _ => Err(NErr::argument_error(format!(
-                            "only accepts numbers, got {:?}",
-                            x
+                            "only accepts numbers, got {}",
+                            FmtObj::debug(&x)
                         ))),
                     })
                     .collect::<NRes<Vec<NNum>>>()?,
@@ -4219,7 +4219,7 @@ pub fn initialize(env: &mut Env) {
                     Err(e)
                 }
             },
-            s => Err(NErr::value_error(format!("can't eval {:?}", s))),
+            s => Err(NErr::value_error(format!("can't eval {}", FmtObj::debug(&s)))),
         },
     });
 
@@ -4301,7 +4301,58 @@ pub fn initialize(env: &mut Env) {
                     match try_borrow_nres(env, "interact", "")?
                         .mut_top_env(|t| t.input.read_to_string(&mut input))
                     {
-                        Ok(_) => f.run(env, vec![Obj::from(input)]),
+                        Ok(_) => {
+                            let res = f.run(env, vec![Obj::from(input)])?;
+                            try_borrow_nres(env, "interact print", "")?
+                                .mut_top_env(|t| -> io::Result<()> {
+                                    write!(t.output, "{}", res)?;
+                                    Ok(())
+                                })
+                                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
+                            Ok(Obj::Null)
+                        }
+                        Err(msg) => Err(NErr::value_error(format!(
+                            "interact: input failed: {}",
+                            msg
+                        ))),
+                    }
+                }
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
+    env.insert_builtin(EnvOneArgBuiltin {
+        name: "interact_lines".to_string(),
+        body: |env, arg| {
+            match arg {
+                Obj::Func(f, _) => {
+                    let mut input = String::new();
+                    // to EOF
+                    match try_borrow_nres(env, "interact", "")?
+                        .mut_top_env(|t| t.input.read_to_string(&mut input))
+                    {
+                        Ok(_) => {
+                            let in_lines = Obj::list(
+                                input
+                                    .split_terminator('\n')
+                                    .map(|w| Obj::from(w.to_string()))
+                                    .collect(),
+                            );
+                            let mut out_lines = f.run(env, vec![in_lines])?;
+                            try_borrow_nres(env, "interact lines print", "")?
+                                .mut_top_env(|t| -> NRes<()> {
+                                    for out_line in
+                                        mut_obj_into_iter(&mut out_lines, "interact lines print")?
+                                    {
+                                        writeln!(t.output, "{}", out_line?).map_err(|e| {
+                                            NErr::io_error(format!("writing {}", e))
+                                        })?;
+                                    }
+                                    Ok(())
+                                })
+                                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
+                            Ok(Obj::Null)
+                        }
                         Err(msg) => Err(NErr::value_error(format!(
                             "interact: input failed: {}",
                             msg
@@ -4609,10 +4660,17 @@ pub fn initialize(env: &mut Env) {
         name: "list_files".to_string(),
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::read_dir(&*s) {
-                Ok(c) => match c.map(|d| d.map(|e| e.path())).collect::<Result<Vec<_>, io::Error>>() {
-                    Ok(c) => Ok(Obj::list(c.into_iter().map(|s| Obj::from(s.to_string_lossy().into_owned())).collect())),
+                Ok(c) => match c
+                    .map(|d| d.map(|e| e.path()))
+                    .collect::<Result<Vec<_>, io::Error>>()
+                {
+                    Ok(c) => Ok(Obj::list(
+                        c.into_iter()
+                            .map(|s| Obj::from(s.to_string_lossy().into_owned()))
+                            .collect(),
+                    )),
                     Err(e) => Err(NErr::io_error(format!("{}", e))),
-                }
+                },
                 Err(e) => Err(NErr::io_error(format!("{}", e))),
             },
             a => Err(NErr::argument_error_1(&a)),

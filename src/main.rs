@@ -1,4 +1,4 @@
-use noulith::{evaluate, initialize, parse, warn, Env, Obj, ObjType, TopEnv};
+use noulith::{evaluate, initialize, parse, warn, LocExpr, Expr, Env, Obj, ObjType, TopEnv};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io;
@@ -61,7 +61,7 @@ fn repl() {
     }
 }
 
-fn run_code(code: &str, args: Vec<String>, filename: String) {
+fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>, filename: String) {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(BufReader::new(io::stdin())),
@@ -85,7 +85,22 @@ fn run_code(code: &str, args: Vec<String>, filename: String) {
     match parse(&code) {
         Ok(Some(expr)) => {
             warn(&e, &expr);
-            match evaluate(&e, &expr) {
+            let wrapped_expr = match invoke_wrapper {
+                Some(wrap_id) => {
+                    let wrapper = Env::try_borrow_get_var(&e, wrap_id).expect("BUG: env didn't have specified invocation wrapper");
+                    LocExpr {
+                        start: expr.start,
+                        end: expr.end,
+                        expr: Expr::Call(Box::new(LocExpr {
+                            start: expr.start,
+                            end: expr.start,
+                            expr: Expr::Frozen(wrapper),
+                        }), vec![Box::new(expr)])
+                    }
+                }
+                None => expr
+            };
+            match evaluate(&e, &wrapped_expr) {
                 Ok(Obj::Null) => {}
                 Ok(e) => {
                     println!("{}", e);
@@ -102,6 +117,15 @@ fn run_code(code: &str, args: Vec<String>, filename: String) {
     }
 }
 
+fn get_wrapper(arg: &str) -> Option<Option<&'static str>> {
+    match arg {
+        "-e" => Some(None),
+        "-i" => Some(Some("interact")),
+        "-l" => Some(Some("interact_lines")),
+        _ => None,
+    }
+}
+
 fn main() {
     let mut args = std::env::args().collect::<Vec<String>>();
     if args.len() <= 1 {
@@ -111,27 +135,30 @@ fn main() {
         repl();
     } else {
         args.remove(0);
-        let (code, filename) = if args[0] == "-e" {
-            args.remove(0);
-            if args.is_empty() {
-                panic!("got -e option but nothing after");
+        let (code, filename, wrap_id) = match get_wrapper(&args[0]) {
+            Some(wrap_id) => {
+                args.remove(0);
+                if args.is_empty() {
+                    panic!("got {} option but nothing after", args[0]);
+                }
+                (args.remove(0), "<repl>".to_string(), wrap_id)
             }
-            (args.remove(0), "<repl>".to_string())
-        } else {
-            let mut code = String::new();
-            let arg_filename = args.remove(0);
-            let filename = std::fs::canonicalize(&arg_filename)
-                .expect(&format!("canonicalizing file {} failed", arg_filename));
-            match File::open(&filename) {
-                Ok(mut file) => match file.read_to_string(&mut code) {
-                    Ok(_) => (code, filename.to_string_lossy().into_owned()),
-                    Err(e) => panic!("reading code file {} failed: {}", arg_filename, e),
-                },
-                Err(e) => {
-                    panic!("opening code file {} failed: {}", arg_filename, e);
+            _ => {
+                let mut code = String::new();
+                let arg_filename = args.remove(0);
+                let filename = std::fs::canonicalize(&arg_filename)
+                    .expect(&format!("canonicalizing file {} failed", arg_filename));
+                match File::open(&filename) {
+                    Ok(mut file) => match file.read_to_string(&mut code) {
+                        Ok(_) => (code, filename.to_string_lossy().into_owned(), None),
+                        Err(e) => panic!("reading code file {} failed: {}", arg_filename, e),
+                    },
+                    Err(e) => {
+                        panic!("opening code file {} failed: {}", arg_filename, e);
+                    }
                 }
             }
         };
-        run_code(&code, args, filename);
+        run_code(&code, args, wrap_id, filename);
     }
 }
