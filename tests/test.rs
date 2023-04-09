@@ -67,6 +67,20 @@ fn ranges() {
 }
 
 #[test]
+fn normal_precedence() {
+    assert_eq!(simple_eval("2 + 5 * 3"), i(17));
+    assert_eq!(simple_eval("2 < 5 * 3"), i(1));
+    assert_eq!(simple_eval("2 + 5 < 3"), i(0));
+    assert_eq!(simple_eval("0.1 < 2 < 5 + 3"), i(1));
+    assert_eq!(simple_eval("0.1 < 2 < 5 - 3"), i(0));
+    assert_eq!(simple_eval("0.1 < 2 * 5 < 3"), i(0));
+    assert_eq!(simple_eval("0.1 < 2 / 5 < 3"), i(1));
+    assert_eq!(simple_eval("0.1 - 2 < 5 > 3"), i(1));
+    assert_eq!(simple_eval("0.1 * 2 < 5 * 3"), i(1));
+    assert_eq!(simple_eval("0.1 + 2 < 5 - 3"), i(0));
+}
+
+#[test]
 fn evil_operators() {
     assert_eq!(simple_eval("2 + 5 * 3"), i(17));
     assert_eq!(simple_eval("+, * = *, +; 2 + 5 * 3"), i(13));
