@@ -2674,6 +2674,17 @@ fn read_input(env: &Rc<RefCell<Env>>) -> NRes<Obj> {
     }
 }
 
+fn string_match(a: &Obj, b: &Obj) -> NRes<bool> {
+    match (a, b) {
+        (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
+            let r =
+                Regex::new(&b).map_err(|e| NErr::value_error(format!("invalid regex: {}", e)))?;
+            Ok(r.find(&a).is_some())
+        }
+        (a, b) => Err(NErr::argument_error_2(&a, &b)),
+    }
+}
+
 pub fn initialize(env: &mut Env) {
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
@@ -2731,6 +2742,10 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(ComparisonOperator::of("==", |a, b| Ok(a == b)));
     env.insert_builtin(ComparisonOperator::of("!=", |a, b| Ok(a != b)));
+    env.insert_builtin(ComparisonOperator::of("=~", string_match));
+    env.insert_builtin(ComparisonOperator::of("!~", |a, b| {
+        string_match(a, b).map(|r| !r)
+    }));
     env.insert_builtin(ComparisonOperator::of("<", |a, b| {
         Ok(ncmp(a, b)? == Ordering::Less)
     }));
