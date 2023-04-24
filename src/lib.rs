@@ -20,7 +20,8 @@ use std::time::SystemTime;
 
 use base64;
 use rand;
-use rand::RngCore;
+use rand::prelude::SliceRandom;
+use rand::{Rng, RngCore};
 
 use flate2::read::{GzDecoder, GzEncoder};
 use flate2::Compression;
@@ -5489,10 +5490,91 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "random_range".to_string(),
         body: |a, b| match (a, b) {
-            (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => Ok(Obj::from(
-                rand::thread_rng().gen_bigint_range(&a.to_bigint(), &b.to_bigint()),
-            )),
+            (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => {
+                if a >= b {
+                    Err(NErr::value_error(
+                        "random_range: lower >= upper".to_string(),
+                    ))
+                } else {
+                    Ok(Obj::from(
+                        rand::thread_rng().gen_bigint_range(&a.to_bigint(), &b.to_bigint()),
+                    ))
+                }
+            }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "shuffle".to_string(),
+        body: |a| match a {
+            Obj::Seq(mut seq) => match seq {
+                Seq::Bytes(ref mut l) => {
+                    Rc::make_mut(l).shuffle(&mut rand::thread_rng());
+                    Ok(Obj::Seq(seq))
+                }
+                Seq::Vector(ref mut l) => {
+                    Rc::make_mut(l).shuffle(&mut rand::thread_rng());
+                    Ok(Obj::Seq(seq))
+                }
+                Seq::List(ref mut l) => {
+                    Rc::make_mut(l).shuffle(&mut rand::thread_rng());
+                    Ok(Obj::Seq(seq))
+                }
+                Seq::String(s) => {
+                    let mut chars: Vec<char> = s.chars().collect();
+                    chars.shuffle(&mut rand::thread_rng());
+                    Ok(Obj::Seq(Seq::String(Rc::new(chars.into_iter().collect()))))
+                }
+                s => Err(NErr::argument_error_1(&Obj::Seq(s))),
+            },
+            _ => Err(NErr::argument_error_1(&a)),
+        },
+    });
+    env.insert_builtin(OneArgBuiltin {
+        name: "choose".to_string(),
+        body: |a| match a {
+            Obj::Seq(seq) => {
+                match seq {
+                    Seq::Bytes(l) => l
+                        .choose(&mut rand::thread_rng())
+                        .map(|n| Obj::from(*n as usize))
+                        .ok_or_else(|| {
+                            NErr::value_error("Can't choose from empty bytes".to_string())
+                        }),
+                    Seq::Vector(l) => l
+                        .choose(&mut rand::thread_rng())
+                        .map(|n| Obj::from(n.clone()))
+                        .ok_or_else(|| {
+                            NErr::value_error("Can't choose from empty vector".to_string())
+                        }),
+                    Seq::List(l) => l.choose(&mut rand::thread_rng()).cloned().ok_or_else(|| {
+                        NErr::value_error("Can't choose from empty list".to_string())
+                    }),
+                    Seq::String(s) => {
+                        if s.len() == 0 {
+                            Err(NErr::value_error("Can't choose from empty string".into()))
+                        } else {
+                            let rind = rand::thread_rng().gen_range(0..s.len());
+                            Ok(Obj::Seq(Seq::String(Rc::new(
+                                s.chars().nth(rind).map(String::from).unwrap(),
+                            ))))
+                        }
+                    }
+                    Seq::Dict(d, _) => {
+                        if d.len() == 0 {
+                            // TODO use default value when empty?
+                            Err(NErr::value_error(
+                                "Can't choose from empty dictionary".into(),
+                            ))
+                        } else {
+                            let rind = rand::thread_rng().gen_range(0..d.len());
+                            Ok(d.values().nth(rind).unwrap().clone())
+                        }
+                    }
+                    s => Err(NErr::argument_error_1(&Obj::Seq(s))),
+                }
+            }
+            _ => Err(NErr::argument_error_1(&a)),
         },
     });
 
