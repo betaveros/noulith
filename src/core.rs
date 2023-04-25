@@ -468,14 +468,16 @@ pub struct Struct {
     pub id: usize,
     pub size: usize,
     pub name: Rc<String>,
+    pub fields: Vec<Rc<String>>,
 }
 
 impl Struct {
-    pub fn new(size: usize, name: Rc<String>) -> Self {
+    pub fn new(name: Rc<String>, fields: Vec<Rc<String>>) -> Self {
         Struct {
             id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-            size,
+            size: fields.len(),
             name,
+            fields,
         }
     }
 }
@@ -638,9 +640,7 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
             Precedence::zero(),
         )),
         ObjType::Struct(s) => {
-            if arg.len() == 0 {
-                Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
-            } else if arg.len() == s.size {
+            if arg.len() == s.size {
                 Ok(Obj::Instance(s.clone(), arg))
             } else {
                 Err(NErr::argument_error(format!(
@@ -1803,6 +1803,7 @@ pub enum Expr {
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
     Splat(Box<LocExpr>),
+    Member(Box<LocExpr>, String),
 }
 
 #[derive(Debug)]
@@ -2534,6 +2535,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(env, e)?)),
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
+            Expr::Member(x, field) => Ok(Expr::Member(
+                box_freeze_underscore_ok(env, x)?,
+                field.clone(),
+            )),
         }?,
     })
 }
@@ -3415,6 +3420,28 @@ impl Parser {
                             start,
                             end,
                         };
+                    }
+                }
+                Some(Token::Dot) => {
+                    self.advance();
+                    match self.peek_loc_token() {
+                        Some(LocToken {
+                            token: Token::Ident(s),
+                            end,
+                            ..
+                        }) => {
+                            let end = *end;
+                            let field = s.clone();
+                            self.advance();
+                            cur = LocExpr {
+                                expr: Expr::Member(Box::new(cur), field),
+                                start,
+                                end,
+                            };
+                        }
+                        _ => {
+                            return Err(self.error_here("expected ident".into()));
+                        }
                     }
                 }
                 _ => break Ok(cur),

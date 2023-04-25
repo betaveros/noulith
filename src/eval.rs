@@ -1155,21 +1155,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             })
         }
         Expr::Struct(name, field_names) => {
-            let s = Struct::new(field_names.len(), name.clone());
+            let s = Struct::new(name.clone(), field_names.clone());
             assign(
                 &env,
                 &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
                 Some(&ObjType::Func),
                 Obj::Func(Func::Type(ObjType::Struct(s.clone())), Precedence::zero()),
             )?;
-            for (i, field) in field_names.iter().enumerate() {
-                assign(
-                    &env,
-                    &EvaluatedLvalue::IndexedIdent((&**field).clone(), Vec::new()),
-                    Some(&ObjType::Func),
-                    Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
-                )?;
-            }
             Ok(Obj::Null)
         }
         Expr::Freeze(expr) => {
@@ -1223,6 +1215,29 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Continue => Err(NErr::Continue),
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
+        Expr::Member(x, field) => {
+            let res = match evaluate(env, x)? {
+                Obj::Instance(struc, fields) => {
+                    if let Some(ind) = struc
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, f)| (field == &**f).then_some(i))
+                    {
+                        Ok(fields[ind].clone())
+                    } else {
+                        let fields: Vec<_> = struc.fields.iter().map(|r| r.as_str()).collect();
+                        let fields = fields.join(", ");
+                        Err(NErr::type_error(format!(
+                            "instance of struct {}({}) doesn't contain field {}",
+                            struc.name, fields, field
+                        )))
+                    }
+                }
+                _ => Err(NErr::type_error(format!("not a struct instance"))),
+            };
+            add_trace(res, format!("index/slice"), expr.start, expr.end)
+        }
     }
 }
 
