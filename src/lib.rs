@@ -1552,6 +1552,120 @@ impl Builtin for Preposition {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Split;
+
+impl Builtin for Split {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::One(t) => Ok(clone_and_part_app_2(self, t)),
+            Few3::Two(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
+                s.split(&*t).map(|w| Obj::from(w.to_string())).collect(),
+            )),
+            Few3::Three(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t)), Obj::Num(n)) => {
+                Ok(Obj::list(
+                    s.splitn(clamp_to_usize_ok(&n)?, &*t)
+                        .map(|w| Obj::from(w.to_string()))
+                        .collect(),
+                ))
+            }
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "split"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "split"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RSplit;
+
+impl Builtin for RSplit {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::One(t) => Ok(clone_and_part_app_2(self, t)),
+            Few3::Two(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
+                s.rsplit(&*t).map(|w| Obj::from(w.to_string())).collect(),
+            )),
+            Few3::Three(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t)), Obj::Num(n)) => {
+                Ok(Obj::list(
+                    s.rsplitn(clamp_to_usize_ok(&n)?, &*t)
+                        .map(|w| Obj::from(w.to_string()))
+                        .collect(),
+                ))
+            }
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "rsplit"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "rsplit"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SplitRe;
+
+impl Builtin for SplitRe {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::One(t) => Ok(clone_and_part_app_2(self, t)),
+            Few3::Two(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
+                Regex::new(t.as_str())
+                    .map_err(|e| NErr::value_error(format!("regex error: {}", e)))?
+                    .split(s.as_str())
+                    .map(|w| Obj::from(w.to_string()))
+                    .collect(),
+            )),
+            Few3::Three(Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t)), Obj::Num(n)) => {
+                Ok(Obj::list(
+                    Regex::new(t.as_str())
+                        .map_err(|e| NErr::value_error(format!("regex error: {}", e)))?
+                        .splitn(s.as_str(), clamp_to_usize_ok(&n)?)
+                        .map(|w| Obj::from(w.to_string()))
+                        .collect(),
+                ))
+            }
+            c => err_add_name(Err(NErr::argument_error_few3(&c)), "split_re"),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "split_re"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BasicBuiltin {
     name: String,
@@ -4008,16 +4122,6 @@ pub fn initialize(env: &mut Env) {
             _ => Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
         },
     });
-    // TODO: split with limit
-    env.insert_builtin(TwoArgBuiltin {
-        name: "split".to_string(),
-        body: |a, b| match (a, b) {
-            (Obj::Seq(Seq::String(s)), Obj::Seq(Seq::String(t))) => Ok(Obj::list(
-                s.split(&*t).map(|w| Obj::from(w.to_string())).collect(),
-            )),
-            (a, b) => Err(NErr::argument_error_2(&a, &b)),
-        },
-    });
     env.insert_builtin(TwoArgBuiltin {
         name: "starts_with".to_string(),
         body: |a, b| match (a, b) {
@@ -4485,6 +4589,9 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(Sort);
+    env.insert_builtin(Split);
+    env.insert_builtin(RSplit);
+    env.insert_builtin(SplitRe);
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "sort_on".to_string(),
         body: |env, a, b| match (a, b) {
