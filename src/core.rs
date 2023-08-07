@@ -1747,6 +1747,13 @@ pub struct LocExpr {
     pub expr: Expr,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum CallSyntax {
+    Parentheses,
+    Juxtapose,
+    Bang,
+}
+
 #[derive(Debug)]
 pub enum Expr {
     Null,
@@ -1760,7 +1767,7 @@ pub enum Expr {
     Ident(String),
     Underscore,
     Backref(usize),
-    Call(Box<LocExpr>, Vec<Box<LocExpr>>),
+    Call(Box<LocExpr>, Vec<Box<LocExpr>>, CallSyntax),
     List(Vec<Box<LocExpr>>),
     Dict(
         Option<Box<LocExpr>>,
@@ -2023,7 +2030,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
             Box::new(to_lvalue(*a)?),
             Box::new(to_lvalue(*b)?),
         )),
-        Expr::Call(f, args) => Ok(Lvalue::Destructure(
+        Expr::Call(f, args, _) => Ok(Lvalue::Destructure(
             f,
             args.into_iter()
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
@@ -2346,9 +2353,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, op)?,
                 box_freeze(env, rhs)?,
             )),
-            Expr::Call(f, args) => Ok(Expr::Call(
+            Expr::Call(f, args, syntax) => Ok(Expr::Call(
                 box_freeze_underscore_ok(env, f)?,
                 vec_box_freeze_underscore_ok(env, args)?,
+                *syntax,
             )),
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
@@ -3322,7 +3330,7 @@ impl Parser {
                     self.advance();
                     if let Some(end) = self.try_consume(&Token::RightParen) {
                         cur = LocExpr {
-                            expr: Expr::Call(Box::new(cur), Vec::new()),
+                            expr: Expr::Call(Box::new(cur), Vec::new(), CallSyntax::Parentheses),
                             start,
                             end,
                         };
@@ -3330,7 +3338,7 @@ impl Parser {
                         let (cs, _) = self.annotated_comma_separated(false, "call arg list")?;
                         let end = self.require(Token::RightParen, "call expr".to_string())?;
                         cur = LocExpr {
-                            expr: Expr::Call(Box::new(cur), cs),
+                            expr: Expr::Call(Box::new(cur), cs, CallSyntax::Parentheses),
                             start,
                             end,
                         };
@@ -3400,7 +3408,7 @@ impl Parser {
                     self.advance();
                     if self.peek_csc_stopper() {
                         cur = LocExpr {
-                            expr: Expr::Call(Box::new(cur), Vec::new()),
+                            expr: Expr::Call(Box::new(cur), Vec::new(), CallSyntax::Bang),
                             start,
                             end: bang_end,
                         };
@@ -3411,7 +3419,7 @@ impl Parser {
                             None => bang_end,
                         };
                         cur = LocExpr {
-                            expr: Expr::Call(Box::new(cur), cs),
+                            expr: Expr::Call(Box::new(cur), cs, CallSyntax::Bang),
                             start,
                             end,
                         };
@@ -3504,6 +3512,7 @@ impl Parser {
                                     start: second.start,
                                     end: second.end,
                                 })],
+                                CallSyntax::Juxtapose,
                             ),
                             start,
                             end: second.end,
@@ -3554,7 +3563,11 @@ impl Parser {
                     let ret = LocExpr {
                         start,
                         end: second.end,
-                        expr: Expr::Call(Box::new(op1), vec![Box::new(second)]),
+                        expr: Expr::Call(
+                            Box::new(op1),
+                            vec![Box::new(second)],
+                            CallSyntax::Juxtapose,
+                        ),
                     };
                     if !self.peek_chain_stopper() {
                         Err(self.error_here(format!(
@@ -3727,26 +3740,28 @@ impl Parser {
                 Some(Token::Assign) => {
                     self.advance();
                     match pat.expr {
-                        Expr::Call(lhs, op) => match few(op) {
-                            Few::One(op) => {
-                                let rhs = self.annotated_pattern(false, "op-assign RHS")?;
-                                let end = rhs.end;
-                                Ok(LocExpr {
-                                    expr: Expr::OpAssign(
-                                        every,
-                                        Box::new(to_lvalue_no_literals(*lhs)?),
-                                        Box::new(*op),
-                                        Box::new(rhs),
-                                    ),
-                                    start,
-                                    end,
-                                })
+                        Expr::Call(lhs, op, CallSyntax::Juxtapose | CallSyntax::Bang) => {
+                            match few(op) {
+                                Few::One(op) => {
+                                    let rhs = self.annotated_pattern(false, "op-assign RHS")?;
+                                    let end = rhs.end;
+                                    Ok(LocExpr {
+                                        expr: Expr::OpAssign(
+                                            every,
+                                            Box::new(to_lvalue_no_literals(*lhs)?),
+                                            Box::new(*op),
+                                            Box::new(rhs),
+                                        ),
+                                        start,
+                                        end,
+                                    })
+                                }
+                                _ => Err(self.error_here(format!(
+                                    "call w not 1 arg is not assignop, at {}",
+                                    ag_start_err
+                                ))),
                             }
-                            _ => Err(self.error_here(format!(
-                                "call w not 1 arg is not assignop, at {}",
-                                ag_start_err
-                            ))),
-                        },
+                        }
                         _ => {
                             let rhs = self.annotated_pattern(false, "assign RHS")?;
                             let end = rhs.end;

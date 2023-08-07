@@ -27,6 +27,7 @@ pub enum EvaluatedLvalue {
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     Literal(Obj),
     Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
+    DestructureStruct(Struct, Vec<Box<EvaluatedLvalue>>),
 }
 
 impl Display for EvaluatedLvalue {
@@ -65,6 +66,13 @@ impl Display for EvaluatedLvalue {
             }
             EvaluatedLvalue::Destructure(f, vs) => {
                 write!(formatter, "{}(", f.builtin_name())?;
+                for v in vs {
+                    write!(formatter, "{},", v)?;
+                }
+                write!(formatter, ")")
+            }
+            EvaluatedLvalue::DestructureStruct(s, vs) => {
+                write!(formatter, "{}(", s.name)?;
                 for v in vs {
                     write!(formatter, "{},", v)?;
                 }
@@ -318,8 +326,14 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
                     .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
                     .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
             )),
+            Obj::Func(Func::Type(ObjType::Struct(s)), _) => Ok(EvaluatedLvalue::DestructureStruct(
+                s,
+                args.iter()
+                    .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
+                    .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
+            )),
             ef => Err(NErr::type_error(format!(
-                "destructure callee was not builtin, got {}",
+                "destructure callee was not builtin or struct, got {}",
                 ef
             ))),
         },
@@ -842,7 +856,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             }
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _syntax) => {
             let fr = match &**f {
                 LocExpr {
                     expr: Expr::Underscore,
@@ -1432,9 +1446,28 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
         )),
         // seems questionable
         EvaluatedLvalue::Literal(x) => Ok(x.clone()),
-        EvaluatedLvalue::Destructure(..) => Err(NErr::syntax_error(
-            "Can't evaluate destructure on LHS of assignment??".to_string(),
-        )),
+        // very cursed, but there's only one reasonable definition
+        EvaluatedLvalue::Destructure(f, vs) => f.run(
+            env,
+            vs.iter()
+                .map(|v| eval_lvalue_as_obj(env, v))
+                .collect::<NRes<Vec<Obj>>>()?,
+        ),
+        EvaluatedLvalue::DestructureStruct(s, vs) => {
+            let v: Vec<Obj> = vs
+                .iter()
+                .map(|v| eval_lvalue_as_obj(env, v))
+                .collect::<NRes<Vec<Obj>>>()?;
+            if v.len() == s.size {
+                Ok(Obj::Instance(s.clone(), v))
+            } else {
+                Err(NErr::argument_error(format!(
+                    "struct construction: wrong number of arguments: {}, wanted {}",
+                    v.len(),
+                    s.size
+                )))
+            }
+        }
     }
 }
 
@@ -2054,6 +2087,19 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 )))
             }
         }
+        EvaluatedLvalue::DestructureStruct(s, args) => match rhs {
+            Obj::Instance(s2, vs) if s.id == s2.id => assign_all(
+                env,
+                args,
+                rt,
+                vs.len(),
+                || Ok(vs),
+                "(Shouldn't be possible) Can't destructure into mismatched length struct",
+            ),
+            _ => Err(NErr::type_error(
+                "Destructuring structure failed: not type".to_string(),
+            )),
+        },
     }
 }
 
@@ -2101,9 +2147,8 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
             "can't drop LHS with or for op-assign??".to_string(),
         )),
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
-        EvaluatedLvalue::Destructure(..) => Err(NErr::syntax_error(
-            "can't drop LHS with destructure for op-assign??".to_string(),
-        )),
+        EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
+        EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
     }
 }
 
@@ -2179,6 +2224,10 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
                 )))
             }
         }
+        EvaluatedLvalue::DestructureStruct(..) => Err(NErr::type_error(format!(
+            "Can't assign-every to struct {:?}",
+            lhs
+        ))),
     }
 }
 
@@ -2245,6 +2294,10 @@ pub fn modify_every(
         ))),
         EvaluatedLvalue::Destructure(..) => Err(NErr::type_error(format!(
             "Can't modify destructure {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::DestructureStruct(..) => Err(NErr::type_error(format!(
+            "Can't modify destructure struct {:?}",
             lhs
         ))),
     }

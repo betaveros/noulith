@@ -41,6 +41,10 @@ fn modifications() {
     assert_eq!(simple_eval("x := 2; x += 3; x"), i(5));
     assert_eq!(simple_eval("x := 2; x max= 3; x"), i(3));
     assert_eq!(simple_eval("x := 2; x .= +3; x"), i(5));
+    assert_eq!(
+        simple_eval("x := [2, 5, 3]; x!zip+= [1, 1, 1]; sum x"),
+        i(13)
+    );
 }
 
 #[test]
@@ -506,4 +510,6 @@ fn switch() {
         i(4)
     );
     assert_eq!(simple_eval("switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"), i(4));
+    assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(0, _) -> 0 case Foo(a, b) -> a + b"), i(7));
+    assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(3, b) -> b case Foo(a, b) -> a + b"), i(4));
 }

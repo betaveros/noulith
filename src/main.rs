@@ -99,6 +99,7 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
                                 expr: Expr::Frozen(wrapper),
                             }),
                             vec![Box::new(expr)],
+                            noulith::CallSyntax::Parentheses,
                         ),
                     }
                 }
