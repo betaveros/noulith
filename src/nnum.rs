@@ -17,10 +17,11 @@ use std::ops::{AddAssign, SubAssign};
 
 use crate::gamma;
 
+// wow, BigRationals are huge
 #[derive(Debug, Clone)]
 pub enum NNum {
     Int(BigInt),
-    Rational(BigRational),
+    Rational(Box<BigRational>),
     Float(f64),
     Complex(Complex64),
 }
@@ -37,7 +38,7 @@ macro_rules! forward_display {
             fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 match self {
                     NNum::Int(n) => fmt::$intimpl::fmt(n, formatter),
-                    NNum::Rational(n) => fmt::$intimpl::fmt(n, formatter),
+                    NNum::Rational(n) => fmt::$intimpl::fmt(&**n, formatter),
                     NNum::Float(f) => fmt::$floatimpl::fmt(f, formatter),
                     NNum::Complex(z) => fmt::$floatimpl::fmt(z, formatter),
                 }
@@ -60,7 +61,7 @@ impl From<BigInt> for NNum {
 }
 impl From<BigRational> for NNum {
     fn from(x: BigRational) -> Self {
-        NNum::Rational(x)
+        NNum::Rational(Box::new(x))
     }
 }
 /*
@@ -215,7 +216,7 @@ impl NNum {
     pub fn abs(&self) -> NNum {
         match self {
             NNum::Int(k) => NNum::Int(k.abs()),
-            NNum::Rational(r) => NNum::Rational(r.abs()),
+            NNum::Rational(r) => NNum::Rational(Box::new(r.abs())),
             NNum::Float(f) => NNum::Float(f.abs()),
             NNum::Complex(z) => NNum::Float(z.norm()),
         }
@@ -260,7 +261,7 @@ impl NNum {
     pub fn to_rational(&self) -> Option<BigRational> {
         match self {
             NNum::Int(i) => Some(BigRational::from(i.clone())),
-            NNum::Rational(r) => Some(r.clone()),
+            NNum::Rational(r) => Some(*r.clone()),
             NNum::Float(_) => None,
             NNum::Complex(_) => None,
         }
@@ -326,7 +327,7 @@ impl NNum {
     pub fn imaginary_part(&self) -> NNum {
         match self {
             NNum::Int(_) => NNum::Int(BigInt::from(0)),
-            NNum::Rational(_) => NNum::Rational(BigRational::from(BigInt::from(0))),
+            NNum::Rational(_) => NNum::Rational(Box::new(BigRational::from(BigInt::from(0)))),
             NNum::Float(_) => NNum::Float(0.0),
             NNum::Complex(z) => NNum::Float(z.im),
         }
@@ -339,7 +340,7 @@ impl NNum {
     pub fn pow(&self, e: u32) -> NNum {
         match self {
             NNum::Int(i) => NNum::Int(i.pow(e)),
-            NNum::Rational(r) => NNum::Rational(r.pow(e as i32)),
+            NNum::Rational(r) => NNum::Rational(Box::new((&**r).pow(e as i32))),
             NNum::Float(f) => NNum::Float(f.powi(e as i32)),
             NNum::Complex(z) => NNum::Complex(z.powi(e as i32)),
         }
@@ -353,7 +354,7 @@ impl NNum {
             }
             (NNum::Int(a), NNum::Float(b)) => powf_pdnum(bigint_to_f64_or_inf(a), *b),
 
-            (NNum::Rational(a), NNum::Int(b)) => NNum::from(Pow::pow(a, b)),
+            (NNum::Rational(a), NNum::Int(b)) => NNum::from(Pow::pow(&**a, b)),
             (NNum::Rational(a), NNum::Rational(b)) => {
                 powf_pdnum(rational_to_f64_or_inf(a), rational_to_f64_or_inf(b))
             }
@@ -684,6 +685,18 @@ impl SoftDeref for &f64 {
         *self
     }
 }
+impl SoftDeref for Box<BigRational> {
+    type Output = BigRational;
+    fn soft_deref(self) -> BigRational {
+        *self
+    }
+}
+impl<'a> SoftDeref for &'a Box<BigRational> {
+    type Output = &'a BigRational;
+    fn soft_deref(self) -> &'a BigRational {
+        &**self
+    }
+}
 
 // ????????
 macro_rules! binary_match {
@@ -695,9 +708,9 @@ macro_rules! binary_match {
             (NNum::Float(fa), b) => NNum::Float($floatmethod(fa.soft_deref(), b.to_f64_or_inf_or_complex().expect("complex not elim"))),
             (a, NNum::Float(fb)) => NNum::Float($floatmethod(a.to_f64_or_inf_or_complex().expect("complex not elim"), fb.soft_deref())),
 
-            (NNum::Rational(ra), NNum::Rational(rb)) => NNum::Rational($ratmethod(ra, rb)),
-            (NNum::Rational(ra), NNum::Int(b)) => NNum::Rational($ratmethod(ra, &BigRational::from(b.clone()))),
-            (NNum::Int(a), NNum::Rational(rb)) => NNum::Rational($ratmethod(&BigRational::from(a.clone()), rb)),
+            (NNum::Rational(ra), NNum::Rational(rb)) => NNum::Rational(Box::new($ratmethod(ra.soft_deref(), rb.soft_deref()))),
+            (NNum::Rational(ra), NNum::Int(b)) => NNum::Rational(Box::new($ratmethod(ra.soft_deref(), &BigRational::from(b.clone())))),
+            (NNum::Int(a), NNum::Rational(rb)) => NNum::Rational(Box::new($ratmethod(&BigRational::from(a.clone()), rb.soft_deref()))),
 
             (NNum::Int  (a), NNum::Int  (b)) => NNum::Int($intmethod(a, b)),
         }
@@ -825,7 +838,7 @@ impl Div<&NNum> for &NNum {
     type Output = NNum;
     fn div(self, other: &NNum) -> NNum {
         match (self.to_rational(), other.to_rational()) {
-            (Some(a), Some(b)) if !b.is_zero() => NNum::Rational(a / b),
+            (Some(a), Some(b)) if !b.is_zero() => NNum::Rational(Box::new(a / b)),
             _ => {
                 let a = self.to_f64_or_inf_or_complex();
                 let b = other.to_f64_or_inf_or_complex();
@@ -848,7 +861,7 @@ impl Neg for NNum {
     fn neg(self) -> NNum {
         match self {
             NNum::Int(n) => NNum::Int(-n),
-            NNum::Rational(n) => NNum::Rational(-n),
+            NNum::Rational(n) => NNum::Rational(Box::new(-*n)),
             NNum::Float(f) => NNum::Float(-f),
             NNum::Complex(z) => NNum::Complex(-z),
         }
@@ -860,7 +873,7 @@ impl Neg for &NNum {
     fn neg(self) -> NNum {
         match self {
             NNum::Int(n) => NNum::Int(-n),
-            NNum::Rational(n) => NNum::Rational(-n),
+            NNum::Rational(n) => NNum::Rational(Box::new(-&**n)),
             NNum::Float(f) => NNum::Float(-f),
             NNum::Complex(z) => NNum::Complex(-z),
         }

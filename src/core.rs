@@ -1812,6 +1812,22 @@ pub enum Expr {
     Splat(Box<LocExpr>),
 }
 
+impl Expr {
+    fn constant_value(&self) -> Option<Obj> {
+        match self {
+            Expr::Null => Some(Obj::Null),
+            Expr::IntLit(x) => Some(Obj::from(x.clone())),
+            Expr::RatLit(x) => Some(Obj::from(NNum::from(x.clone()))),
+            Expr::FloatLit(x) => Some(Obj::from(*x)),
+            Expr::ImaginaryFloatLit(x) => Some(Obj::Num(NNum::Complex(Complex64::new(0.0, *x)))),
+            Expr::StringLit(s) => Some(Obj::Seq(Seq::String(Rc::clone(s)))),
+            Expr::BytesLit(s) => Some(Obj::Seq(Seq::Bytes(Rc::clone(s)))),
+            Expr::Frozen(x) => Some(x.clone()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Lvalue {
     Underscore,
@@ -2100,8 +2116,8 @@ pub struct Parser {
     i: usize,
 }
 
-// This is probably eventually going to shed the word "freeze" and become a visitor pattern.
-// If it hasn't already...
+// This originally implemented the "freeze" keyword but is basically just a visitor pattern at this
+// point. Some constant optimizations occur.
 #[derive(Clone)]
 pub struct FreezeEnv {
     pub bound: HashSet<String>,
@@ -2307,12 +2323,19 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     }
                 }
             }
-            Expr::Underscore => Err(NErr::syntax_error_loc(
-                "Can't freeze underscore".to_string(),
-                "_".to_string(),
-                expr.start,
-                expr.end,
-            )),
+            Expr::Underscore => {
+                if env.warn {
+                    eprintln!("\x1b[1;33mWARNING\x1b[0;33m: underscore??\x1b[0m",);
+                    Ok(Expr::Underscore)
+                } else {
+                    Err(NErr::syntax_error_loc(
+                        "Can't freeze underscore".to_string(),
+                        "_".to_string(),
+                        expr.start,
+                        expr.end,
+                    ))
+                }
+            }
             Expr::Index(x, ios) => Ok(Expr::Index(
                 box_freeze_underscore_ok(env, x)?,
                 freeze_ios(env, ios)?,
@@ -2353,14 +2376,40 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, op)?,
                 box_freeze(env, rhs)?,
             )),
-            Expr::Call(f, args, syntax) => Ok(Expr::Call(
-                box_freeze_underscore_ok(env, f)?,
-                vec_box_freeze_underscore_ok(env, args)?,
-                *syntax,
-            )),
+            Expr::Call(f, args, syntax) => {
+                let f = box_freeze_underscore_ok(env, f)?;
+                let args = vec_box_freeze_underscore_ok(env, args)?;
+                let opt_result = match f.expr.constant_value() {
+                    Some(Obj::Func(Func::Builtin(b), _)) => {
+                        if b.builtin_name() == "-" && args.len() == 1 {
+                            match args[0].expr.constant_value() {
+                                Some(Obj::Num(x)) => Some(Obj::from(-x)),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                match opt_result {
+                    Some(x) => Ok(Expr::Frozen(x)),
+                    None => Ok(Expr::Call(f, args, *syntax)),
+                }
+            }
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
-            Expr::List(xs) => Ok(Expr::List(vec_box_freeze_underscore_ok(env, xs)?)),
+            Expr::List(xs) => {
+                let v = vec_box_freeze_underscore_ok(env, xs)?;
+                match v
+                    .iter()
+                    .map(|e| e.expr.constant_value())
+                    .collect::<Option<Vec<Obj>>>()
+                {
+                    Some(xs) => Ok(Expr::Frozen(Obj::list(xs))),
+                    None => Ok(Expr::List(v)),
+                }
+            }
             Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(env, xs)?)),
             Expr::Dict(def, xs) => Ok(Expr::Dict(
                 opt_box_freeze(env, def)?,
@@ -3877,10 +3926,11 @@ pub enum Func {
     ListSection(Vec<Result<Obj, bool>>),
     IndexSection(Option<Box<Obj>>, Option<Box<Obj>>),
     // outer None is nothing; Some(None) is a slot
+    // unusual boxing because bytes
     SliceSection(
         Option<Box<Obj>>,
-        Option<Option<Box<Obj>>>,
-        Option<Option<Box<Obj>>>,
+        Option<Box<Option<Obj>>>,
+        Option<Box<Option<Obj>>>,
     ),
     ChainSection(
         Option<Box<Obj>>,

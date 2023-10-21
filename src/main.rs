@@ -84,7 +84,7 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
 
     match parse(&code) {
         Ok(Some(expr)) => {
-            warn(&e, &expr);
+            let expr = warn(&e, &expr);
             let wrapped_expr = match invoke_wrapper {
                 Some(wrap_id) => {
                     let wrapper = Env::try_borrow_get_var(&e, wrap_id)
@@ -132,6 +132,10 @@ fn get_wrapper(arg: &str) -> Option<Option<&'static str>> {
 }
 
 fn main() {
+    // println!("{}", std::mem::size_of::<Obj>());
+    // println!("{}", std::mem::size_of::<noulith::nnum::NNum>());
+    // println!("{}", std::mem::size_of::<noulith::Seq>());
+    // println!("{}", std::mem::size_of::<noulith::Func>());
     let mut args = std::env::args().collect::<Vec<String>>();
     if args.len() <= 1 {
         #[cfg(feature = "cli")]

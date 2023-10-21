@@ -548,16 +548,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     Some(LocExpr {
                         expr: Expr::Underscore,
                         ..
-                    }) => Some(None), // section slot
-                    Some(e) => Some(Some(Box::new(evaluate(env, e)?))),
+                    }) => Some(Box::new(None)), // section slot
+                    Some(e) => Some(Box::new(Some(evaluate(env, e)?))),
                 };
                 let jj = match j.as_deref() {
                     None => None, // actually nothing
                     Some(LocExpr {
                         expr: Expr::Underscore,
                         ..
-                    }) => Some(None), // section slot
-                    Some(e) => Some(Some(Box::new(evaluate(env, e)?))),
+                    }) => Some(Box::new(None)), // section slot
+                    Some(e) => Some(Box::new(Some(evaluate(env, e)?))),
                 };
                 Ok(Obj::Func(
                     Func::SliceSection(None, ii, jj),
@@ -1390,7 +1390,7 @@ pub fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             },
         },
         (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
-            "precedence" => Ok(Obj::from(*p)),
+            "precedence" => Ok(Obj::from(*p as f64)),
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         },
         (Obj::Instance(struc, fields), Obj::Func(Func::StructField(istruc, field_index), _)) => {
@@ -2451,13 +2451,17 @@ impl Func {
                 };
                 let lo = match lo {
                     None => None,
-                    Some(None) => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
-                    Some(Some(e)) => Some((**e).clone()),
+                    Some(inner) => match &**inner {
+                        None => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
+                        Some(e) => Some((*e).clone()),
+                    }
                 };
                 let hi = match hi {
                     None => None,
-                    Some(None) => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
-                    Some(Some(e)) => Some((**e).clone()),
+                    Some(inner) => match &**inner {
+                        None => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
+                        Some(e) => Some((*e).clone()),
+                    }
                 };
                 slice(x, lo, hi)
             }

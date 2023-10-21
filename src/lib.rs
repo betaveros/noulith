@@ -1978,19 +1978,16 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     }
 }
 
-pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) {
+pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> LocExpr {
     let mut frenv = FreezeEnv {
         bound: HashSet::new(),
         env: Rc::clone(&env),
         warn: true,
     };
     match freeze(&mut frenv, &expr) {
-        Ok(_) => {}
+        Ok(x) => x,
         Err(e) => {
-            eprintln!(
-                "\x1b[1;33mWARNING\x1b[0;33m: expr warn failed: {}\x1b[0m",
-                e
-            );
+            panic!("\x1b[1;31mERROR\x1b[0;33m: expr warn failed: {}\x1b[0m", e);
         }
     }
 }
