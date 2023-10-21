@@ -37,3 +37,6 @@ getrandom = { version = "0.2", features = ["js"] } # ???
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+debug = 1
