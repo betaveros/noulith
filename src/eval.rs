@@ -112,7 +112,7 @@ impl ChainEvaluator {
         lhs.extend(rhs);
         self.operands.push(vec![add_trace(
             op.run(env, lhs),
-            format!("chain {}", op),
+            || format!("chain {}", op),
             start,
             end,
         )?]);
@@ -506,7 +506,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Ident(s) => add_trace(
             Env::try_borrow_get_var(env, s),
-            format!("ident"),
+            || format!("ident"),
             expr.start,
             expr.end,
         ),
@@ -570,7 +570,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 let ir = eval_index_or_slice(env, i)?;
                 add_trace(
                     index_or_slice(xr, &ir),
-                    format!("index/slice"),
+                    || format!("index/slice"),
                     expr.start,
                     expr.end,
                 )
@@ -629,7 +629,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     let oprd = evaluate(env, opd)?;
                     add_trace(
                         b.run(env, vec![lhs, oprd]),
-                        format!("chain {}", oprr),
+                        || format!("chain {}", oprr),
                         oper.start,
                         oper.end,
                     )
@@ -693,7 +693,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Assign(every, pat, rhs) => {
             let p = add_trace(
                 eval_lvalue(env, pat),
-                format!("assign lvalue"),
+                || format!("assign lvalue"),
                 expr.start,
                 expr.end,
             )?;
@@ -710,7 +710,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             } else {
                 assign(&env, &p, None, res)
             };
-            add_trace(ret, format!("assign"), expr.start, expr.end)?;
+            add_trace(ret, || format!("assign"), expr.start, expr.end)?;
             Ok(Obj::Null)
         }
         Expr::Annotation(s, _) => evaluate(env, s),
@@ -749,7 +749,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     expr.end,
                 )),
             },
-            format!("pop"),
+            || "pop".to_string(),
             expr.start,
             expr.end,
         ),
@@ -804,7 +804,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 },
                 _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
             },
-            format!("remove"),
+            || format!("remove"),
             expr.start,
             expr.end,
         ),
@@ -831,7 +831,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         }?;
                         add_trace(
                             modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()])),
-                            format!("op({})-assign", ff),
+                            || format!("op({})-assign", ff),
                             expr.start,
                             expr.end,
                         )?;
@@ -860,14 +860,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         // consuming modifiers. Instead it's now enshrined into the semantics.
                         add_trace(
                             drop_lhs(&env, &p),
-                            format!("null-assign"),
+                            || format!("null-assign"),
                             expr.start,
                             expr.end,
                         )?;
                         let fres = ff.run(env, vec![pv, res])?;
                         add_trace(
                             assign(&env, &p, None, fres),
-                            format!("op({})-assign", ff),
+                            || format!("op({})-assign", ff),
                             expr.start,
                             expr.end,
                         )?;
@@ -894,8 +894,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             match (fr, acc) {
                 // no section
                 (Some(f), Ok(v)) => {
-                    let fs = format!("call to {}", f);
-                    add_trace(call_or_part_apply(env, f, v), fs, expr.start, expr.end)
+                    // FIXME hmm, eager format not great...
+                    let f_for_error = f.clone();
+                    add_trace(
+                        call_or_part_apply(env, f, v),
+                        || format!("call to {}", f_for_error),
+                        expr.start,
+                        expr.end,
+                    )
                 }
 
                 // some section
@@ -967,14 +973,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             for (i, x) in xs[..xs.len() - 1].iter().enumerate() {
                 add_trace(
                     evaluate(env, x),
-                    format!(";-sequence({}/{})", i + 1, xs.len()),
+                    || format!(";-sequence({}/{})", i + 1, xs.len()),
                     expr.start,
                     expr.end,
                 )?;
             }
             let ret = add_trace(
                 evaluate(env, xs.last().unwrap()),
-                format!(";-sequence({}/{})", xs.len(), xs.len()),
+                || format!(";-sequence({}/{})", xs.len(), xs.len()),
                 expr.start,
                 expr.end,
             )?;
@@ -987,14 +993,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::If(cond, if_body, else_body) => {
             let cr = add_trace(
                 evaluate(env, cond),
-                "if-cond".to_string(),
+                || "if-cond".to_string(),
                 expr.start,
                 expr.end,
             )?;
             if cr.truthy() {
                 add_trace(
                     evaluate(env, if_body),
-                    "if-branch".to_string(),
+                    || "if-branch".to_string(),
                     expr.start,
                     expr.end,
                 )
@@ -1002,7 +1008,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 match else_body {
                     Some(b) => add_trace(
                         evaluate(env, b),
-                        "else-branch".to_string(),
+                        || "else-branch".to_string(),
                         expr.start,
                         expr.end,
                     ),
@@ -1079,7 +1085,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         }
                     }
                 },
-                "for loop".to_string(),
+                || "for loop".to_string(),
                 expr.start,
                 expr.end,
             )
@@ -1090,7 +1096,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 let ee = Env::with_parent(env);
                 if !(add_trace(
                     evaluate(&ee, cond),
-                    "while-cond".to_string(),
+                    || "while-cond".to_string(),
                     expr.start,
                     expr.end,
                 )?
@@ -1100,7 +1106,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
                 match add_trace(
                     evaluate(&ee, body),
-                    "while-body".to_string(),
+                    || "while-body".to_string(),
                     expr.start,
                     expr.end,
                 ) {
@@ -1114,7 +1120,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Switch(scrutinee, arms) => {
             let s = add_trace(
                 evaluate(env, scrutinee),
-                "switchee".to_string(),
+                || "switchee".to_string(),
                 expr.start,
                 expr.end,
             )?;
@@ -1131,7 +1137,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         std::mem::drop(s);
                         return add_trace(
                             evaluate(&ee, body),
-                            "switch-case".to_string(),
+                            || "switch-case".to_string(),
                             expr.start,
                             expr.end,
                         );
@@ -1144,7 +1150,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     "no case matched switch scrutinee: {}",
                     s
                 ))),
-                "switch".to_string(),
+                || "switch".to_string(),
                 expr.start,
                 expr.end,
             )
@@ -1245,7 +1251,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     },
                     a => Err(NErr::type_error(format!("can't import: {}", a))),
                 },
-                "import".to_string(),
+                || "import".to_string(),
                 expr.start,
                 expr.end,
             )
@@ -1281,7 +1287,7 @@ impl Closure {
                 || Ok(args),
                 "Wrong number of arguments",
             ),
-            "argument receiving".to_string(),
+            || "argument receiving".to_string(),
             self.body.start,
             self.body.end,
         )?;
@@ -1289,7 +1295,7 @@ impl Closure {
             Err(NErr::Return(k)) => Ok(k),
             x => add_trace(
                 x,
-                "closure call".to_string(),
+                || "closure call".to_string(),
                 self.body.start,
                 self.body.end,
             ),
@@ -1997,7 +2003,7 @@ pub fn assign_respecting_type(
         } else {
             Ok(())
         }
-    }).ok_or(NErr::name_error(if ixs.is_empty() {
+    }).ok_or_else(|| NErr::name_error(if ixs.is_empty() {
          format!("Variable {:?} not found (use := to declare)", s)
     } else {
          format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)
@@ -2151,14 +2157,16 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
                 )?;
                 Ok(())
             })
-            .ok_or(NErr::name_error(if ixs.is_empty() {
-                format!("Variable {:?} not found (use := to declare)", s)
-            } else {
-                format!(
-                    "Variable {:?} not found, couldn't set into index {:?}",
-                    s, ixs
-                )
-            }))?,
+            .ok_or_else(|| {
+                NErr::name_error(if ixs.is_empty() {
+                    format!("Variable {:?} not found (use := to declare)", s)
+                } else {
+                    format!(
+                        "Variable {:?} not found, couldn't set into index {:?}",
+                        s, ixs
+                    )
+                })
+            })?,
         EvaluatedLvalue::CommaSeq(ss) => drop_lhs_all(env, ss),
         EvaluatedLvalue::Annotation(..) => Err(NErr::syntax_error(
             "can't drop LHS with annotations in it for op-assign??".to_string(),
@@ -2285,10 +2293,9 @@ pub fn modify_every(
                             )))
                         }
                     })
-                    .ok_or(NErr::name_error(format!(
-                        "Variable {:?} not found in modify every",
-                        s
-                    )))?
+                    .ok_or_else(|| {
+                        NErr::name_error(format!("Variable {:?} not found in modify every", s))
+                    })?
             } else {
                 modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
                     *x = rhs(std::mem::take(x))?;

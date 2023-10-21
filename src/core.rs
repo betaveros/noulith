@@ -4065,10 +4065,15 @@ pub fn default_precedence(name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub fn add_trace<T>(res: NRes<T>, thing: String, start: CodeLoc, end: CodeLoc) -> NRes<T> {
+pub fn add_trace<T>(
+    res: NRes<T>,
+    thing: impl FnOnce() -> String,
+    start: CodeLoc,
+    end: CodeLoc,
+) -> NRes<T> {
     match res {
         Err(NErr::Throw(e, mut trace)) => {
-            trace.push((thing, start, end, None));
+            trace.push((thing(), start, end, None));
             Err(NErr::Throw(e, trace))
         }
         e => e,
