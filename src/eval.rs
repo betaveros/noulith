@@ -620,6 +620,30 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     }
                 }
                 Ok(Obj::Func(Func::ChainSection(v1, acc), Precedence::zero()))
+            } else if ops.len() == 1 {
+                // micro-optimization, but this path is extremely common
+                let lhs = evaluate(env, op1)?;
+                let (oper, opd) = &ops[0];
+                let oprr = evaluate(env, oper)?;
+                if let Obj::Func(b, _prec) = &oprr {
+                    let oprd = evaluate(env, opd)?;
+                    add_trace(
+                        b.run(env, vec![lhs, oprd]),
+                        format!("chain {}", oprr),
+                        oper.start,
+                        oper.end,
+                    )
+                } else {
+                    Err(NErr::type_error_loc(
+                        format!(
+                            "Chain cannot use nonblock in operator position: {}",
+                            FmtObj::debug(&oprr)
+                        ),
+                        "op 1/1".to_string(),
+                        oper.start,
+                        oper.end,
+                    ))
+                }
             } else {
                 let mut ev = ChainEvaluator::new(evaluate(env, op1)?);
                 for (i, (oper, opd)) in ops.iter().enumerate() {
