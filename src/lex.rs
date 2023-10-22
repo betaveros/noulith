@@ -61,6 +61,7 @@ pub enum Token {
     Import,
     Literally,
     Underscore,
+    Dot,
 
     // strip me before parsing
     Comment(String),
@@ -548,6 +549,7 @@ impl<'a> Lexer<'a> {
                                 self.emit(Token::Ident(acc))
                             }
                             ("", '=') => self.emit(Token::Assign),
+                            ("", '.') => self.emit(Token::Dot),
                             (_, '=') => {
                                 self.emit_but_last(Token::Ident(acc), Token::Assign);
                             }
