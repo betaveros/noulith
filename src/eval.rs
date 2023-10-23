@@ -1267,6 +1267,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Continue => Err(NErr::Continue),
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
+
+        Expr::InternalPush(e) => {
+            let r = evaluate(env, e)?;
+            try_borrow_mut_nres(env, "internal", "push")?.internal_stack.push(r);
+            Ok(Obj::Null)
+        }
+        Expr::InternalPop => {
+            try_borrow_mut_nres(env, "internal", "pop")?.internal_stack.pop().ok_or_else(|| NErr::empty_error("internal pop".to_string()))
+        }
     }
 }
 

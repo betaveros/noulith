@@ -62,6 +62,9 @@ pub enum Token {
     Literally,
     Underscore,
 
+    InternalPush,
+    InternalPop,
+
     // strip me before parsing
     Comment(String),
     // Newline,
@@ -527,6 +530,8 @@ impl<'a> Lexer<'a> {
                                 "import" => Token::Import,
                                 "literally" => Token::Literally,
                                 "_" => Token::Underscore,
+                                "__internal_push" => Token::InternalPush,
+                                "__internal_pop" => Token::InternalPop,
                                 _ => Token::Ident(acc),
                             })
                         }

@@ -1819,6 +1819,10 @@ pub enum Expr {
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
     Splat(Box<LocExpr>),
+
+    // hic sunt dracones
+    InternalPush(Box<LocExpr>),
+    InternalPop,
 }
 
 impl Expr {
@@ -2610,6 +2614,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(env, e)?)),
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
+
+            Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
+            Expr::InternalPop => Ok(Expr::InternalPop),
         }?,
     })
 }
@@ -3346,6 +3353,23 @@ impl Parser {
                         Err(self.error_here(format!("bad struct name")))?
                     }
                 }
+                Token::InternalPush => {
+                    self.advance();
+                    let s = self.single("internal push")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::InternalPush(Box::new(s)),
+                    })
+                }
+                Token::InternalPop => {
+                    self.advance();
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::InternalPop,
+                    })
+                }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
             }
         } else {
@@ -4001,6 +4025,7 @@ impl Debug for TopEnv {
 pub struct Env {
     pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
+    pub internal_stack: Vec<Obj>,
 }
 // simple, linear-time, and at least finds when one is a subsequence of the other.
 pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
@@ -4116,6 +4141,7 @@ impl Env {
         Env {
             vars: HashMap::new(),
             parent: Err(Rc::new(RefCell::new(top))),
+            internal_stack: Vec::new(),
         }
     }
     // ???
@@ -4130,6 +4156,7 @@ impl Env {
         Rc::new(RefCell::new(Env {
             vars: HashMap::new(),
             parent: Ok(Rc::clone(&env)),
+            internal_stack: Vec::new(),
         }))
     }
     pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
