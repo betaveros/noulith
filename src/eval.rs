@@ -1270,11 +1270,31 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
 
         Expr::InternalPush(e) => {
             let r = evaluate(env, e)?;
-            try_borrow_mut_nres(env, "internal", "push")?.internal_stack.push(r);
+            try_borrow_mut_nres(env, "internal", "push")?
+                .internal_stack
+                .push(r);
             Ok(Obj::Null)
         }
-        Expr::InternalPop => {
-            try_borrow_mut_nres(env, "internal", "pop")?.internal_stack.pop().ok_or_else(|| NErr::empty_error("internal pop".to_string()))
+        Expr::InternalPop => try_borrow_mut_nres(env, "internal", "pop")?
+            .internal_stack
+            .pop()
+            .ok_or_else(|| NErr::empty_error("internal pop".to_string())),
+        Expr::InternalPeek(n) => {
+            let r = try_borrow_mut_nres(env, "internal", "pop")?;
+            let s = &r.internal_stack;
+            let x = s[s.len() - n - 1].clone();
+            std::mem::drop(r);
+            Ok(x)
+        }
+        Expr::InternalFor(iteratee, body) => {
+            let mut itr = evaluate(env, iteratee)?;
+            for x in mut_obj_into_iter(&mut itr, "internal for iteration")? {
+                try_borrow_mut_nres(env, "internal", "for push")?
+                    .internal_stack
+                    .push(x?);
+                evaluate(env, body)?;
+            }
+            Ok(Obj::Null)
         }
     }
 }

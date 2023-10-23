@@ -135,9 +135,7 @@ impl Builtin for Minus {
         match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s, "unary -"),
-            Few2::Two(a, b) => {
-                expect_nums_and_vectorize_2_nums(|a, b| a - b, a, b, "binary -")
-            }
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a - b, a, b, "binary -"),
             Few2::Many(a) => err_add_name(Err(NErr::argument_error_args(&a)), "-"),
         }
     }
@@ -1797,10 +1795,10 @@ fn expect_nums_and_vectorize_2_nums(
     match (a, b) {
         (Obj::Num(a), Obj::Num(b)) => Ok(Obj::Num(body(a, b))),
         (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => Ok(Obj::Seq(Seq::Vector(Rc::new(
-            RcVecIter::of(&mut b).map(|e| body(a.clone(), e)).collect()
+            RcVecIter::of(&mut b).map(|e| body(a.clone(), e)).collect(),
         )))),
         (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => Ok(Obj::Seq(Seq::Vector(Rc::new(
-            RcVecIter::of(&mut a).map(|e| body(e, b.clone())).collect()
+            RcVecIter::of(&mut a).map(|e| body(e, b.clone())).collect(),
         )))),
         (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
             if a.len() == b.len() {
@@ -1808,7 +1806,7 @@ fn expect_nums_and_vectorize_2_nums(
                     RcVecIter::of(&mut a)
                         .zip(RcVecIter::of(&mut b))
                         .map(|(a, b)| body(a, b))
-                        .collect()
+                        .collect(),
                 ))))
             } else {
                 Err(NErr::value_error(format!(
@@ -2812,9 +2810,7 @@ pub fn initialize(env: &mut Env) {
         body: |_env, args| match few2(args) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s, "unary ~"),
-            Few2::Two(a, b) => {
-                expect_nums_and_vectorize_2_nums(|a, b| a ^ b, a, b, "binary ~")
-            }
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a ^ b, a, b, "binary ~"),
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         },
     });

@@ -1823,6 +1823,9 @@ pub enum Expr {
     // hic sunt dracones
     InternalPush(Box<LocExpr>),
     InternalPop,
+    InternalPeek(usize),
+    // for each element, push it, then run the body. (do not pop, the body is responsible)
+    InternalFor(Box<LocExpr>, Box<LocExpr>),
 }
 
 impl Expr {
@@ -2617,6 +2620,11 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
 
             Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
             Expr::InternalPop => Ok(Expr::InternalPop),
+            Expr::InternalPeek(n) => Ok(Expr::InternalPeek(*n)),
+            Expr::InternalFor(iteratee, body) => Ok(Expr::InternalFor(
+                box_freeze(env, iteratee)?,
+                box_freeze(env, body)?,
+            )),
         }?,
     })
 }
@@ -3368,6 +3376,27 @@ impl Parser {
                         start,
                         end,
                         expr: Expr::InternalPop,
+                    })
+                }
+                Token::InternalPeek(n) => {
+                    let n = *n;
+                    self.advance();
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::InternalPeek(n),
+                    })
+                }
+                Token::InternalFor => {
+                    self.advance();
+                    self.require(Token::LeftParen, "internal for start".to_string())?;
+                    let iteratee = self.single("internal for iteratee")?;
+                    self.require(Token::RightParen, "internal for end".to_string())?;
+                    let body = self.single("internal for body")?;
+                    Ok(LocExpr {
+                        start,
+                        end: body.end,
+                        expr: Expr::InternalFor(Box::new(iteratee), Box::new(body)),
                     })
                 }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),

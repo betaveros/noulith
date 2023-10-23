@@ -64,6 +64,8 @@ pub enum Token {
 
     InternalPush,
     InternalPop,
+    InternalPeek(usize),
+    InternalFor,
 
     // strip me before parsing
     Comment(String),
@@ -532,6 +534,18 @@ impl<'a> Lexer<'a> {
                                 "_" => Token::Underscore,
                                 "__internal_push" => Token::InternalPush,
                                 "__internal_pop" => Token::InternalPop,
+                                "__internal_peek" => Token::InternalPeek(0),
+                                // FIXME...
+                                "__internal_peek_1" => Token::InternalPeek(1),
+                                "__internal_peek_2" => Token::InternalPeek(2),
+                                "__internal_peek_3" => Token::InternalPeek(3),
+                                "__internal_peek_4" => Token::InternalPeek(4),
+                                "__internal_peek_5" => Token::InternalPeek(5),
+                                "__internal_peek_6" => Token::InternalPeek(6),
+                                "__internal_peek_7" => Token::InternalPeek(7),
+                                "__internal_peek_8" => Token::InternalPeek(8),
+                                "__internal_peek_9" => Token::InternalPeek(9),
+                                "__internal_for" => Token::InternalFor,
                                 _ => Token::Ident(acc),
                             })
                         }
