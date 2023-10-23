@@ -75,20 +75,26 @@ impl Builtin for Plus {
     // copypasta
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few2(args) {
-            // partial application, spicy
-            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
-                Ok(clone_and_part_app_2(self, arg))
-            }
-            Few2::One(a) => Err(NErr::argument_error(format!(
-                "+ only accepts numbers (or vectors), got {}",
-                a
-            ))),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a + b, a, b, "+"),
+            Few2::One(a) => self.run1(_env, a),
+            Few2::Two(a, b) => self.run2(_env, a, b),
             f => Err(NErr::argument_error(format!(
                 "+ only accepts two numbers, got {}",
                 f.len()
             ))),
         }
+    }
+    fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
+        match arg {
+            // partial application, spicy
+            Obj::Num(_) | Obj::Seq(Seq::Vector(_)) => Ok(clone_and_part_app_2(self, arg)),
+            a => Err(NErr::argument_error(format!(
+                "+ only accepts numbers (or vectors), got {}",
+                a
+            ))),
+        }
+    }
+    fn run2(&self, _env: &REnv, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+        expect_nums_and_vectorize_2_nums(|a, b| a + b, arg1, arg2, "+")
     }
 
     fn builtin_name(&self) -> &str {

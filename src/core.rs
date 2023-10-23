@@ -1936,6 +1936,14 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
 pub trait Builtin: Debug {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
+    // hot paths
+    fn run1(&self, env: &REnv, arg: Obj) -> NRes<Obj> {
+        self.run(env, vec![arg])
+    }
+    fn run2(&self, env: &REnv, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+        self.run(env, vec![arg1, arg2])
+    }
+
     // Used for builtins to identify each other, since comparing pointers is bad (?)
     // https://rust-lang.github.io/rust-clippy/master/#vtable_address_comparisons
     fn builtin_name(&self) -> &str;

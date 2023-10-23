@@ -628,7 +628,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 if let Obj::Func(b, _prec) = &oprr {
                     let oprd = evaluate(env, opd)?;
                     add_trace(
-                        b.run(env, vec![lhs, oprd]),
+                        b.run2(env, lhs, oprd),
                         || format!("chain {}", oprr),
                         oper.start,
                         oper.end,
@@ -2499,6 +2499,18 @@ impl Func {
                 };
                 Ok(res)
             }
+        }
+    }
+    pub fn run1(&self, env: &REnv, arg: Obj) -> NRes<Obj> {
+        match self {
+            Func::Builtin(b) => b.run1(env, arg),
+            _ => self.run(env, vec![arg]),
+        }
+    }
+    pub fn run2(&self, env: &REnv, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+        match self {
+            Func::Builtin(b) => b.run2(env, arg1, arg2),
+            _ => self.run(env, vec![arg1, arg2]),
         }
     }
 
