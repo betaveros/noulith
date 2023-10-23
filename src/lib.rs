@@ -83,7 +83,7 @@ impl Builtin for Plus {
                 "+ only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), a, b, "+"),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a + b, a, b, "+"),
             f => Err(NErr::argument_error(format!(
                 "+ only accepts two numbers, got {}",
                 f.len()
@@ -130,7 +130,7 @@ impl Builtin for Minus {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(-x)), s, "unary -"),
             Few2::Two(a, b) => {
-                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a - b)), a, b, "binary -")
+                expect_nums_and_vectorize_2_nums(|a, b| a - b, a, b, "binary -")
             }
             Few2::Many(a) => err_add_name(Err(NErr::argument_error_args(&a)), "-"),
         }
@@ -171,7 +171,7 @@ impl Builtin for Times {
                 "* only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), a, b, "*"),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a * b, a, b, "*"),
             f => Err(NErr::argument_error(format!(
                 "* only accepts two numbers, got {}",
                 f.len()
@@ -223,7 +223,7 @@ impl Builtin for Divide {
                 "/ only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a / b)), a, b, "/"),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a / b, a, b, "/"),
             f => Err(NErr::argument_error(format!(
                 "/ only accepts two numbers, got {}",
                 f.len()
@@ -1760,6 +1760,76 @@ impl Builtin for NumsBuiltin {
     }
 }
 
+// converting in and out of nums is a bit of a hot path sometimes??
+#[derive(Debug, Clone)]
+pub struct TwoNumsToNumsBuiltin {
+    name: String,
+    body: fn(a: NNum, b: NNum) -> NNum,
+}
+
+fn expect_nums_and_vectorize_2_nums(
+    body: fn(NNum, NNum) -> NNum,
+    a: Obj,
+    b: Obj,
+    name: &str,
+) -> NRes<Obj> {
+    match (a, b) {
+        (Obj::Num(a), Obj::Num(b)) => Ok(Obj::Num(body(a, b))),
+        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+            RcVecIter::of(&mut b).map(|e| body(a.clone(), e)).collect()
+        )))),
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+            RcVecIter::of(&mut a).map(|e| body(e, b.clone())).collect()
+        )))),
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
+            if a.len() == b.len() {
+                Ok(Obj::Seq(Seq::Vector(Rc::new(
+                    RcVecIter::of(&mut a)
+                        .zip(RcVecIter::of(&mut b))
+                        .map(|(a, b)| body(a, b))
+                        .collect()
+                ))))
+            } else {
+                Err(NErr::value_error(format!(
+                    "{}: couldn't vectorize, different lengths: {}, {}",
+                    name,
+                    a.len(),
+                    b.len()
+                )))
+            }
+        }
+        (a, b) => Err(NErr::argument_error(format!(
+            "{} only accepts numbers (or vectors), got {}, {}",
+            name, a, b
+        ))),
+    }
+}
+
+impl Builtin for TwoNumsToNumsBuiltin {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            // partial application, spicy
+            Few2::One(arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_)))) => {
+                Ok(clone_and_part_app_2(self, arg))
+            }
+            Few2::One(a) => Err(NErr::argument_error(format!(
+                "{} only accepts numbers (or vectors), got {}",
+                self.name, a
+            ))),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(self.body, a, b, &self.name),
+            f => Err(NErr::argument_error(format!(
+                "{} only accepts two numbers, got {}",
+                self.name,
+                f.len()
+            ))),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TwoNumsBuiltin {
     name: String,
@@ -2708,34 +2778,34 @@ pub fn initialize(env: &mut Env) {
             Few2::Zero => Err(NErr::argument_error("received 0 args".to_string())),
             Few2::One(s) => expect_nums_and_vectorize_1(|x| Ok(Obj::Num(!x)), s, "unary ~"),
             Few2::Two(a, b) => {
-                expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a ^ b)), a, b, "binary ~")
+                expect_nums_and_vectorize_2_nums(|a, b| a ^ b, a, b, "binary ~")
             }
             Few2::Many(_) => Err(NErr::argument_error("received >2 args".to_string())),
         },
     });
     // for partial application
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "subtract".to_string(),
-        body: |a, b| Ok(Obj::Num(a - b)),
+        body: |a, b| a - b,
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "xor".to_string(),
-        body: |a, b| Ok(Obj::Num(a ^ b)),
+        body: |a, b| a ^ b,
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "⊕".to_string(),
-        body: |a, b| Ok(Obj::Num(a ^ b)),
+        body: |a, b| a ^ b,
     });
     env.insert_builtin(Times);
     env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "sum".to_string(),
         identity: Obj::zero(),
-        body: |s, f| expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a + b)), s, f, "inner +"),
+        body: |s, f| expect_nums_and_vectorize_2_nums(|a, b| a + b, s, f, "inner +"),
     });
     env.insert_builtin(SeqAndMappedFoldBuiltin {
         name: "product".to_string(),
         identity: Obj::one(),
-        body: |s, f| expect_nums_and_vectorize_2(|a, b| Ok(Obj::Num(a * b)), s, f, "inner *"),
+        body: |s, f| expect_nums_and_vectorize_2_nums(|a, b| a * b, s, f, "inner *"),
     });
     env.insert_builtin(ComparisonOperator::of("==", |a, b| Ok(a == b)));
     env.insert_builtin(ComparisonOperator::of("!=", |a, b| Ok(a != b)));
@@ -2758,9 +2828,9 @@ pub fn initialize(env: &mut Env) {
         "≥",
     );
     env.insert_builtin(Divide);
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "%".to_string(),
-        body: |a, b| Ok(Obj::Num(a % b)),
+        body: |a, b| a % b,
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
@@ -2800,21 +2870,21 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "gcd".to_string(),
-        body: |a, b| Ok(Obj::Num(a.gcd(&b))),
+        body: |a, b| a.gcd(&b),
     });
-    env.insert_rassoc_builtin(TwoNumsBuiltin {
+    env.insert_rassoc_builtin(TwoNumsToNumsBuiltin {
         name: "^".to_string(),
-        body: |a, b| Ok(Obj::Num(a.pow_num(&b))),
+        body: |a, b| a.pow_num(&b),
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "&".to_string(),
-        body: |a, b| Ok(Obj::Num(a & b)),
+        body: |a, b| a & b,
     });
-    env.insert_builtin(TwoNumsBuiltin {
+    env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "|".to_string(),
-        body: |a, b| Ok(Obj::Num(a | b)),
+        body: |a, b| a | b,
     });
     /*
     env.insert_builtin(TwoNumsBuiltin {
@@ -2823,16 +2893,16 @@ pub fn initialize(env: &mut Env) {
     });
     */
     env.insert_builtin_with_precedence(
-        TwoNumsBuiltin {
+        TwoNumsToNumsBuiltin {
             name: "<<".to_string(),
-            body: |a, b| Ok(Obj::Num(a << b)),
+            body: |a, b| a << b,
         },
         Precedence(EXPONENT_PRECEDENCE, Assoc::Left),
     );
     env.insert_builtin_with_precedence(
-        TwoNumsBuiltin {
+        TwoNumsToNumsBuiltin {
             name: ">>".to_string(),
-            body: |a, b| Ok(Obj::Num(a >> b)),
+            body: |a, b| a >> b,
         },
         Precedence(EXPONENT_PRECEDENCE, Assoc::Left),
     );
