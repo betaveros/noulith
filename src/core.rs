@@ -1827,6 +1827,7 @@ pub enum Expr {
     InternalPeek(usize),  // from rear
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
+    InternalLambda(Rc<LocExpr>),
 }
 
 impl Expr {
@@ -2632,6 +2633,11 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, iteratee)?,
                 box_freeze(env, body)?,
             )),
+            Expr::InternalLambda(body) => {
+                Ok(Expr::InternalLambda(
+                    Rc::new(freeze(env, body)?),
+                ))
+            }
         }?,
     })
 }
@@ -3424,6 +3430,15 @@ impl Parser {
                         expr: Expr::InternalFor(Box::new(iteratee), Box::new(body)),
                     })
                 }
+                Token::InternalLambda => {
+                    self.advance();
+                    let s = self.single("internal lambda")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::InternalLambda(Rc::new(s)),
+                    })
+                }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
             }
         } else {
@@ -4003,6 +4018,7 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
+    InternalLambda(Rc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4331,6 +4347,7 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
+            Func::InternalLambda(_) => write!(formatter, "InternalLambda"),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
             Func::PartialAppLast(f, x) => {

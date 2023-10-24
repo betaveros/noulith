@@ -1326,6 +1326,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::Null)
         }
+        Expr::InternalLambda(body) => Ok(Obj::Func(
+            Func::InternalLambda(Rc::clone(body)),
+            Precedence::zero(),
+        )),
     }
 }
 
@@ -2426,6 +2430,25 @@ impl Func {
         match self {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
+            Func::InternalLambda(body) => {
+                let s = {
+                    let mut ptr = try_borrow_mut_nres(env, "internal", "lambda call")?;
+                    let n = ptr.internal_stack.len();
+                    ptr.internal_stack.extend(args);
+                    n
+                };
+                let ret = match evaluate(env, body) {
+                    Err(NErr::Return(k)) => Ok(k),
+                    x => add_trace(
+                        x,
+                        || "closure call".to_string(),
+                        body.start,
+                        body.end,
+                    ),
+                };
+                try_borrow_mut_nres(env, "internal", "lambda call")?.internal_stack.truncate(s);
+                ret
+            }
             Func::PartialApp1(f, x) => match few(args) {
                 Few::One(arg) => f.run2(env, (**x).clone(), arg),
                 a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
@@ -2623,6 +2646,7 @@ impl Func {
             Func::Type(_) => None,
             Func::StructField(..) => None,
             Func::Memoized(..) => None,
+            Func::InternalLambda(_) => None,
         }
     }
 }
