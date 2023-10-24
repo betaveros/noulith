@@ -3,10 +3,10 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::rc::Rc;
 
-use num::bigint::{BigInt, Sign};
-use num::ToPrimitive;
+use num::bigint::Sign;
 
 use crate::core::*;
+use crate::nint::NInt;
 
 #[derive(Debug, Clone)]
 pub struct Repeat(pub Obj);
@@ -115,7 +115,7 @@ impl Stream for Cycle {
     }
 }
 #[derive(Debug, Clone)]
-pub struct Range(pub BigInt, pub Option<BigInt>, pub BigInt);
+pub struct Range(pub NInt, pub Option<NInt>, pub NInt);
 impl Range {
     fn empty(&self) -> bool {
         let Range(start, end, step) = self;
@@ -171,9 +171,11 @@ impl Stream for Range {
                 }
             }
             Sign::Minus => {
-                ((end - start - step + 1usize).max(BigInt::from(0)) / (-step)).to_usize()
+                ((end - start - step + NInt::Small(1)).max(NInt::Small(0)) / (-step)).to_usize()
             }
-            Sign::Plus => ((end - start + step - 1usize).max(BigInt::from(0)) / step).to_usize(),
+            Sign::Plus => {
+                ((end - start + step - NInt::Small(1)).max(NInt::Small(0)) / step).to_usize()
+            }
         }
     }
 }

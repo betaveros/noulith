@@ -2,6 +2,7 @@ use crate::core::*;
 use crate::few::*;
 use crate::iter::*;
 use crate::lex::*;
+use crate::nint::NInt;
 use crate::nnum::NNum;
 use num::complex::Complex64;
 use std::cell::RefCell;
@@ -488,6 +489,7 @@ fn splat_section_eval(
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.expr {
         Expr::Null => Ok(Obj::Null),
+        Expr::IntLit64(n) => Ok(Obj::from(NInt::Small(*n))),
         Expr::IntLit(n) => Ok(Obj::from(n.clone())),
         Expr::RatLit(n) => Ok(Obj::from(NNum::from(n.clone()))),
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
@@ -1293,9 +1295,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             .pop()
             .ok_or_else(|| NErr::empty_error("internal pop".to_string())),
         Expr::InternalFrame(e) => {
-            let n = try_borrow_mut_nres(env, "internal", "frame start")?.internal_stack.len();
+            let n = try_borrow_mut_nres(env, "internal", "frame start")?
+                .internal_stack
+                .len();
             let r = evaluate(env, e);
-            try_borrow_mut_nres(env, "internal", "frame end").expect("internal frame end: stack is out of sync, unrecoverable").internal_stack
+            try_borrow_mut_nres(env, "internal", "frame end")
+                .expect("internal frame end: stack is out of sync, unrecoverable")
+                .internal_stack
                 .truncate(n);
             r
         }
@@ -1312,13 +1318,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 };
                 let ret = evaluate(env, body);
                 {
-                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push").expect("internal for: stack is out of sync, unrecoverable");
+                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push")
+                        .expect("internal for: stack is out of sync, unrecoverable");
                     ptr.internal_stack.truncate(s);
                 }
                 match ret {
-                    Err(NErr::Break(k)) => {
-                        return Ok(k.unwrap_or(Obj::Null))
-                    }
+                    Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
                     Err(NErr::Continue) => (),
                     Err(r) => return Err(r),
                     Ok(_) => (),
@@ -1471,7 +1476,7 @@ pub fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 }
             }
             Seq::Vector(v) => Ok(Obj::Num(v[pythonic_index(v, &ii)?].clone())),
-            Seq::Bytes(v) => Ok(Obj::from(v[pythonic_index(v, &ii)?] as usize)),
+            Seq::Bytes(v) => Ok(Obj::u8(v[pythonic_index(v, &ii)?])),
             Seq::Stream(v) => match ii {
                 Obj::Num(ii) => match ii.to_isize() {
                     Some(n) => v.pythonic_index_isize(n),
@@ -1589,9 +1594,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 )))
             }
         }
-        EvaluatedLvalue::InternalPeek(i) => {
-            Env::try_borrow_peek(env, *i)
-        }
+        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_peek(env, *i),
     }
 }
 
@@ -2244,9 +2247,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 "Destructuring structure failed: not type".to_string(),
             )),
         },
-        EvaluatedLvalue::InternalPeek(i) => {
-            Env::try_borrow_set_peek(env, *i, rhs)
-        },
+        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, rhs),
     }
 }
 
@@ -2298,9 +2299,7 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
         EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
         EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
-        EvaluatedLvalue::InternalPeek(i) => {
-            Env::try_borrow_set_peek(env, *i, Obj::Null)
-        },
+        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, Obj::Null),
     }
 }
 
@@ -2380,9 +2379,7 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             "Can't assign-every to struct {:?}",
             lhs
         ))),
-        EvaluatedLvalue::InternalPeek(i) => {
-            Env::try_borrow_set_peek(env, *i, rhs)
-        }
+        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, rhs),
     }
 }
 

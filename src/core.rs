@@ -21,6 +21,7 @@ use crate::few::*;
 use crate::iter::*;
 use crate::lex::*;
 
+use crate::nint::NInt;
 use crate::nnum::NNum;
 
 // The fundamental unitype and all its types...
@@ -273,7 +274,7 @@ impl Iterator for ObjToCloningIter<'_> {
             ObjToCloningIter::Dict(it) => Some(Ok(key_to_obj(it.next()?.0.clone()))),
             ObjToCloningIter::String(it) => Some(Ok(Obj::from(it.next()?))),
             ObjToCloningIter::Vector(it) => Some(Ok(Obj::Num(it.next()?.clone()))),
-            ObjToCloningIter::Bytes(it) => Some(Ok(Obj::from(*it.next()? as usize))),
+            ObjToCloningIter::Bytes(it) => Some(Ok(Obj::u8(*it.next()?))),
             ObjToCloningIter::Stream(it) => it.next(),
         }
     }
@@ -344,7 +345,7 @@ impl Iterator for MutObjIntoIter<'_> {
             MutObjIntoIter::Dict(it) => Some(Ok(key_to_obj(it.next()?.0))),
             MutObjIntoIter::String(it) => Some(Ok(Obj::from(it.next()?))),
             MutObjIntoIter::Vector(it) => Some(Ok(Obj::Num(it.next()?.clone()))),
-            MutObjIntoIter::Bytes(it) => Some(Ok(Obj::from(it.next()? as usize))),
+            MutObjIntoIter::Bytes(it) => Some(Ok(Obj::u8(it.next()?))),
             MutObjIntoIter::Stream(it) => match Rc::get_mut(it) {
                 Some(it) => it.next(),
                 None => {
@@ -407,7 +408,7 @@ impl Iterator for MutObjIntoIterPairs<'_> {
                 let o = it.next()?;
                 let j = *i;
                 *i += 1;
-                Some(Ok((ObjKey::from(j), Obj::from(o as usize))))
+                Some(Ok((ObjKey::from(j), Obj::u8(o))))
             }
             MutObjIntoIterPairs::Stream(i, s) => {
                 let o = match Rc::get_mut(s) {
@@ -551,7 +552,11 @@ pub fn type_of(obj: &Obj) -> ObjType {
 pub fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
     match few(args) {
         Few::One(arg) => Ok(arg),
-        t => Err(NErr::type_error(format!("{} expected one argument, got {}", msg, t.len()))),
+        t => Err(NErr::type_error(format!(
+            "{} expected one argument, got {}",
+            msg,
+            t.len()
+        ))),
     }
 }
 
@@ -633,13 +638,8 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                 None,
             )),
         },
-        ObjType::Type => Ok(Obj::Func(
-            Func::Type(type_of(&arg)),
-            Precedence::zero(),
-        )),
-        ObjType::Struct(_) => {
-            call_type(ty, vec![arg])
-        }
+        ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
+        ObjType::Struct(_) => call_type(ty, vec![arg]),
         // TODO: complex
         _ => Err(NErr::type_error(
             "that type can't be called (maybe not implemented)".to_string(),
@@ -737,9 +737,10 @@ impl From<bool> for Obj {
         Obj::Num(NNum::iverson(n))
     }
 }
+// we need this one for the fake "higher-ranked" types using Bytes
 impl From<u8> for Obj {
     fn from(n: u8) -> Self {
-        Obj::Num(NNum::Int(BigInt::from(n)))
+        Obj::Num(NNum::u8(n))
     }
 }
 impl From<char> for Obj {
@@ -774,15 +775,16 @@ macro_rules! forward_from {
         }
     };
 }
+forward_from!(NInt);
 forward_from!(BigInt);
 // forward_from!(i32);
 forward_from!(f64);
-forward_from!(usize);
+// forward_from!(usize);
 forward_from!(Complex64);
 
 impl From<usize> for ObjKey {
     fn from(n: usize) -> Self {
-        ObjKey(Obj::from(n))
+        ObjKey(Obj::usize(n))
     }
 }
 impl From<String> for ObjKey {
@@ -814,6 +816,10 @@ pub fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
         Obj::Num(n) => clamp_to_usize_ok(n),
         _ => Err(NErr::type_error(format!("bad scalar {}", FmtObj::debug(n)))),
     }
+}
+pub fn into_nint_ok(n: NNum) -> NRes<NInt> {
+    n.into_nint()
+        .ok_or(NErr::value_error("bad number to int".to_string()))
 }
 pub fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
     n.into_bigint()
@@ -986,8 +992,14 @@ impl Obj {
         }
     }
 
-    pub fn i32(n: i32) -> Self {
-        Obj::Num(NNum::Int(BigInt::from(n)))
+    pub fn i64(n: i64) -> Self {
+        Obj::Num(NNum::Int(NInt::Small(n)))
+    }
+    pub fn usize(n: usize) -> Self {
+        Obj::Num(NNum::usize(n))
+    }
+    pub fn u8(n: u8) -> Self {
+        Obj::Num(NNum::u8(n))
     }
     pub fn list(n: Vec<Obj>) -> Self {
         Obj::Seq(Seq::List(Rc::new(n)))
@@ -997,13 +1009,13 @@ impl Obj {
     }
 
     pub fn zero() -> Self {
-        Obj::Num(NNum::Int(BigInt::from(0)))
+        Obj::i64(0)
     }
     pub fn one() -> Self {
-        Obj::Num(NNum::Int(BigInt::from(1)))
+        Obj::i64(1)
     }
     pub fn neg_one() -> Self {
-        Obj::Num(NNum::Int(BigInt::from(-1)))
+        Obj::i64(-1)
     }
 }
 
@@ -1766,6 +1778,7 @@ pub enum CallSyntax {
 #[derive(Debug)]
 pub enum Expr {
     Null,
+    IntLit64(i64),
     IntLit(BigInt),
     RatLit(BigRational),
     FloatLit(f64),
@@ -1824,7 +1837,7 @@ pub enum Expr {
     InternalFrame(Box<LocExpr>),
     InternalPush(Box<LocExpr>),
     InternalPop,
-    InternalPeek(usize),  // from rear
+    InternalPeek(usize), // from rear
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
@@ -1835,6 +1848,7 @@ impl Expr {
     fn constant_value(&self) -> Option<Obj> {
         match self {
             Expr::Null => Some(Obj::Null),
+            Expr::IntLit64(x) => Some(Obj::from(NInt::Small(*x))),
             Expr::IntLit(x) => Some(Obj::from(x.clone())),
             Expr::RatLit(x) => Some(Obj::from(NNum::from(x.clone()))),
             Expr::FloatLit(x) => Some(Obj::from(*x)),
@@ -2071,6 +2085,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?,
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
+        Expr::IntLit64(n) => Ok(Lvalue::Literal(Obj::from(NInt::Small(n)))),
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
@@ -2309,6 +2324,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
         end: expr.end,
         expr: match &expr.expr {
             Expr::Null => Ok(Expr::Null),
+            Expr::IntLit64(x) => Ok(Expr::IntLit64(*x)),
             Expr::IntLit(x) => Ok(Expr::IntLit(x.clone())),
             Expr::RatLit(x) => Ok(Expr::RatLit(x.clone())),
             Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
@@ -2635,11 +2651,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, body)?,
             )),
             Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
-            Expr::InternalLambda(body) => {
-                Ok(Expr::InternalLambda(
-                    Rc::new(freeze(env, body)?),
-                ))
-            }
+            Expr::InternalLambda(body) => Ok(Expr::InternalLambda(Rc::new(freeze(env, body)?))),
         }?,
     })
 }
@@ -2844,7 +2856,12 @@ impl Parser {
 
     // consuming an int that's not a usize is an error
     fn try_consume_usize(&mut self, message: &str) -> Result<Option<(CodeLoc, usize)>, ParseError> {
-        if let Some(LocToken { start: _, end, token: Token::IntLit(i) }) = self.peek_loc_token() {
+        if let Some(LocToken {
+            start: _,
+            end,
+            token: Token::IntLit(i),
+        }) = self.peek_loc_token()
+        {
             let us = i
                 .to_usize()
                 .ok_or(self.error_here(format!("{}: not usize: {}", message, i)))?;
@@ -2906,7 +2923,10 @@ impl Parser {
                     Ok(LocExpr {
                         start,
                         end,
-                        expr: Expr::IntLit(n),
+                        expr: match n.to_i64() {
+                            Some(n) => Expr::IntLit64(n),
+                            None => Expr::IntLit(n),
+                        },
                     })
                 }
                 Token::RatLit(n) => {
@@ -3180,73 +3200,77 @@ impl Parser {
                             end,
                             expr: Expr::Backref(us),
                         })
-                    } else { match self.peek_loc_token() {
-                        Some(LocToken {
-                            token: Token::Switch,
-                            start: switch_start,
-                            end: switch_end,
-                        }) => {
-                            // "magic" variable normally inexpressible
-                            let param = Lvalue::IndexedIdent("switch".to_string(), Vec::new());
-                            let scrutinee = LocExpr {
-                                expr: Expr::Ident("switch".to_string()),
-                                start: *switch_start,
-                                end: *switch_end,
-                            };
-                            self.advance();
+                    } else {
+                        match self.peek_loc_token() {
+                            Some(LocToken {
+                                token: Token::Switch,
+                                start: switch_start,
+                                end: switch_end,
+                            }) => {
+                                // "magic" variable normally inexpressible
+                                let param = Lvalue::IndexedIdent("switch".to_string(), Vec::new());
+                                let scrutinee = LocExpr {
+                                    expr: Expr::Ident("switch".to_string()),
+                                    start: *switch_start,
+                                    end: *switch_end,
+                                };
+                                self.advance();
 
-                            let mut v = Vec::new();
-                            // FIXME copypasta...
-                            while let Some(_) = self.try_consume(&Token::Case) {
-                                let pat =
-                                    to_lvalue(self.annotated_pattern(true, "lambda-switch pat")?)?;
-                                self.require(Token::RightArrow, "lambda-case mid: ->")?;
-                                let res = self.single("lambda-switch body")?;
-                                v.push((Box::new(pat), Box::new(res)));
-                            }
-                            match v.last() {
-                                Some((_, e)) => {
-                                    let end = e.end;
-                                    Ok(LocExpr {
-                                        start,
-                                        end: e.end,
-                                        expr: Expr::Lambda(
-                                            Rc::new(vec![Box::new(param)]),
-                                            Rc::new(LocExpr {
-                                                expr: Expr::Switch(Box::new(scrutinee), v),
-                                                start,
-                                                end,
-                                            }),
-                                        ),
-                                    })
+                                let mut v = Vec::new();
+                                // FIXME copypasta...
+                                while let Some(_) = self.try_consume(&Token::Case) {
+                                    let pat = to_lvalue(
+                                        self.annotated_pattern(true, "lambda-switch pat")?,
+                                    )?;
+                                    self.require(Token::RightArrow, "lambda-case mid: ->")?;
+                                    let res = self.single("lambda-switch body")?;
+                                    v.push((Box::new(pat), Box::new(res)));
                                 }
-                                None => Err(self.error_here(format!("lambda-switch: no cases")))?,
+                                match v.last() {
+                                    Some((_, e)) => {
+                                        let end = e.end;
+                                        Ok(LocExpr {
+                                            start,
+                                            end: e.end,
+                                            expr: Expr::Lambda(
+                                                Rc::new(vec![Box::new(param)]),
+                                                Rc::new(LocExpr {
+                                                    expr: Expr::Switch(Box::new(scrutinee), v),
+                                                    start,
+                                                    end,
+                                                }),
+                                            ),
+                                        })
+                                    }
+                                    None => {
+                                        Err(self.error_here(format!("lambda-switch: no cases")))?
+                                    }
+                                }
+                            }
+                            _ => {
+                                let params = if self.try_consume(&Token::RightArrow).is_some() {
+                                    Vec::new()
+                                } else {
+                                    // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
+                                    // assignment the second unpacks.
+                                    let params0 =
+                                        self.annotated_comma_separated(true, "lambda params")?;
+                                    let ps = params0
+                                        .0
+                                        .into_iter()
+                                        .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
+                                        .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
+                                    self.require(Token::RightArrow, "lambda start: ->")?;
+                                    ps
+                                };
+                                let body = self.single("body of lambda")?;
+                                Ok(LocExpr {
+                                    start,
+                                    end: body.end,
+                                    expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
+                                })
                             }
                         }
-                        _ => {
-                            let params = if self.try_consume(&Token::RightArrow).is_some() {
-                                Vec::new()
-                            } else {
-                                // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
-                                // assignment the second unpacks.
-                                let params0 =
-                                    self.annotated_comma_separated(true, "lambda params")?;
-                                let ps = params0
-                                    .0
-                                    .into_iter()
-                                    .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
-                                    .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
-                                self.require(Token::RightArrow, "lambda start: ->")?;
-                                ps
-                            };
-                            let body = self.single("body of lambda")?;
-                            Ok(LocExpr {
-                                start,
-                                end: body.end,
-                                expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
-                            })
-                        }
-                    }
                     }
                 }
                 Token::If => {
@@ -3435,7 +3459,7 @@ impl Parser {
                 Token::InternalCall => {
                     self.advance();
                     if let Some((end, n)) = self.try_consume_usize("internal call")? {
-                    let body = self.single("internal call body")?;
+                        let body = self.single("internal call body")?;
                         Ok(LocExpr {
                             start,
                             end,
@@ -3531,8 +3555,7 @@ impl Parser {
                             };
                         } else {
                             let c = self.single("slice end")?;
-                            let end =
-                                self.require(Token::RightBracket, "index expr")?;
+                            let end = self.require(Token::RightBracket, "index expr")?;
                             cur = LocExpr {
                                 expr: Expr::Index(
                                     Box::new(cur),
@@ -3556,8 +3579,7 @@ impl Parser {
                                 };
                             } else {
                                 let cc = self.single("slice end")?;
-                                let end =
-                                    self.require(Token::RightBracket, "index expr")?;
+                                let end = self.require(Token::RightBracket, "index expr")?;
                                 cur = LocExpr {
                                     expr: Expr::Index(
                                         Box::new(cur),
@@ -3568,8 +3590,7 @@ impl Parser {
                                 };
                             }
                         } else {
-                            let end =
-                                self.require(Token::RightBracket, "index expr")?;
+                            let end = self.require(Token::RightBracket, "index expr")?;
                             cur = LocExpr {
                                 expr: Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c))),
                                 start,

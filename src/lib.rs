@@ -15,8 +15,6 @@ use std::rc::Rc;
 use regex::Regex;
 
 use num::bigint::{BigInt, RandBigInt};
-use num::Signed;
-use num::ToPrimitive;
 
 use chrono::prelude::*;
 
@@ -56,6 +54,7 @@ pub mod few;
 mod gamma;
 mod iter;
 mod lex;
+mod nint;
 pub mod nnum;
 mod streams;
 use crate::few::*;
@@ -65,6 +64,7 @@ use crate::streams::*;
 pub use crate::core::*;
 pub use crate::eval::*;
 pub use crate::lex::Token;
+use crate::nint::NInt;
 use crate::nnum::NNum;
 
 // can "destructure"
@@ -599,7 +599,7 @@ impl Catamorphism for CataCounter {
         Ok(())
     }
     fn finish(&mut self) -> NRes<Obj> {
-        Ok(Obj::from(self.0))
+        Ok(Obj::usize(self.0))
     }
 }
 
@@ -618,7 +618,7 @@ impl Builtin for Count {
                         c += 1
                     }
                 }
-                Ok(Obj::from(c))
+                Ok(Obj::usize(c))
             }
             Few2::One(a) => Ok(clone_and_part_app_last(self, a)),
             Few2::Two(mut a, b) => {
@@ -640,7 +640,7 @@ impl Builtin for Count {
                         }
                     }
                 }
-                Ok(Obj::from(c))
+                Ok(Obj::usize(c))
             }
             Few2::Many(x) => err_add_name(Err(NErr::argument_error_args(&x)), "count"),
         }
@@ -706,7 +706,7 @@ impl Catamorphism for CataCountDistinct {
         Ok(())
     }
     fn finish(&mut self) -> NRes<Obj> {
-        Ok(Obj::from(self.0.len()))
+        Ok(Obj::usize(self.0.len()))
     }
 }
 
@@ -716,7 +716,7 @@ struct CountDistinct;
 impl Builtin for CountDistinct {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         match few(args) {
-            Few::One(Obj::Seq(mut s)) => Ok(Obj::from(
+            Few::One(Obj::Seq(mut s)) => Ok(Obj::usize(
                 mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
                     .map(|e| to_key(e?))
                     .collect::<NRes<HashSet<ObjKey>>>()?
@@ -747,12 +747,12 @@ impl Builtin for TilBuiltin {
         match few3(args) {
             Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
-                let n1 = into_bigint_ok(a)?;
-                let n2 = into_bigint_ok(b)?;
+                let n1 = into_nint_ok(a)?;
+                let n2 = into_nint_ok(b)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
                     n1,
                     Some(n2),
-                    BigInt::from(1),
+                    NInt::Small(1),
                 )))))
             }
             Few3::Two(Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
@@ -771,9 +771,9 @@ impl Builtin for TilBuiltin {
                 }
             }
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
-                let n1 = into_bigint_ok(a)?;
-                let n2 = into_bigint_ok(b)?;
-                let n3 = into_bigint_ok(c)?;
+                let n1 = into_nint_ok(a)?;
+                let n2 = into_nint_ok(b)?;
+                let n3 = into_nint_ok(c)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), n3)))))
             }
             c => err_add_name(Err(NErr::argument_error_few3(&c)), "til"),
@@ -804,15 +804,15 @@ impl Builtin for ToBuiltin {
             Few3::One(a) => Ok(clone_and_part_app_2(self, a)),
             Few3::Two(a, b) => self.run2(_env, a, b),
             Few3::Three(Obj::Num(a), Obj::Num(b), Obj::Num(c)) => {
-                let n1 = into_bigint_ok(a)?;
-                let n2 = into_bigint_ok(b)?;
-                let n3 = into_bigint_ok(c)?;
+                let n1 = into_nint_ok(a)?;
+                let n2 = into_nint_ok(b)?;
+                let n3 = into_nint_ok(c)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
                     n1,
                     Some(if n3.is_negative() {
-                        n2 - 1usize
+                        n2 - NInt::Small(1)
                     } else {
-                        n2 + 1usize
+                        n2 + NInt::Small(1)
                     }),
                     n3,
                 )))))
@@ -823,12 +823,12 @@ impl Builtin for ToBuiltin {
     fn run2(&self, _env: &REnv, a: Obj, b: Obj) -> NRes<Obj> {
         match (a, b) {
             (Obj::Num(a), Obj::Num(b)) => {
-                let n1 = into_bigint_ok(a)?;
-                let n2 = into_bigint_ok(b)?;
+                let n1 = into_nint_ok(a)?;
+                let n2 = into_nint_ok(b)?;
                 Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
                     n1,
-                    Some(n2 + 1usize),
-                    BigInt::from(1),
+                    Some(n2 + NInt::Small(1)),
+                    NInt::Small(1),
                 )))))
             }
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
@@ -1838,9 +1838,7 @@ impl Builtin for TwoNumsToNumsBuiltin {
     }
     fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
         match arg {
-            arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_))) => {
-                Ok(clone_and_part_app_2(self, arg))
-            }
+            arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_))) => Ok(clone_and_part_app_2(self, arg)),
             a => Err(NErr::argument_error(format!(
                 "{} only accepts numbers (or vectors), got {}",
                 self.name, a
@@ -1913,9 +1911,7 @@ impl Builtin for TwoNumsBuiltin {
     }
     fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
         match arg {
-            arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_))) => {
-                Ok(clone_and_part_app_2(self, arg))
-            }
+            arg @ (Obj::Num(_) | Obj::Seq(Seq::Vector(_))) => Ok(clone_and_part_app_2(self, arg)),
             a => Err(NErr::argument_error(format!(
                 "{} only accepts numbers (or vectors), got {}",
                 self.name, a
@@ -1957,7 +1953,7 @@ fn linear_index_isize(xr: Seq, i: isize) -> NRes<Obj> {
     match xr {
         Seq::List(xx) => Ok(xx[pythonic_index_isize(&xx, i)?].clone()),
         Seq::Vector(x) => Ok(Obj::Num(x[pythonic_index_isize(&x, i)?].clone())),
-        Seq::Bytes(x) => Ok(Obj::from(x[pythonic_index_isize(&x, i)?] as usize)),
+        Seq::Bytes(x) => Ok(Obj::u8(x[pythonic_index_isize(&x, i)?])),
         Seq::String(s) => {
             let bs = s.as_bytes();
             let i = pythonic_index_isize(bs, i)?;
@@ -1985,7 +1981,7 @@ fn obj_cyclic_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 FmtObj::debug(&ii)
             ))),
             Seq::Vector(xx) => Ok(Obj::Num(xx[cyclic_index(xx, &ii)?].clone())),
-            Seq::Bytes(xx) => Ok(Obj::from(xx[cyclic_index(xx, &ii)?] as usize)),
+            Seq::Bytes(xx) => Ok(Obj::u8(xx[cyclic_index(xx, &ii)?])),
             Seq::Stream(v) => Err(NErr::type_error(format!(
                 "Can't cyclically index stream {:?}[{}]",
                 v,
@@ -2048,7 +2044,7 @@ fn safe_index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 None => Ok(Obj::Null),
             },
             Seq::Bytes(v) => match safe_index_inner(v, ii) {
-                Some(i) => Ok(Obj::from(v[i] as usize)),
+                Some(i) => Ok(Obj::u8(v[i])),
                 None => Ok(Obj::Null),
             },
             Seq::Stream(v) => Err(NErr::type_error(format!(
@@ -2503,7 +2499,7 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
                 Ok(None)
             } else {
                 let head = Rc::make_mut(&mut s).remove(0);
-                Ok(Some((Obj::from(head), Seq::Bytes(s))))
+                Ok(Some((Obj::u8(head), Seq::Bytes(s))))
             }
         }
         Seq::Stream(s) => {
@@ -2532,7 +2528,7 @@ fn unsnoc(s: Seq) -> NRes<Option<(Seq, Obj)>> {
         },
         Seq::Bytes(mut s) => match Rc::make_mut(&mut s).pop() {
             None => Ok(None),
-            Some(e) => Ok(Some((Seq::Bytes(s), Obj::from(e)))),
+            Some(e) => Ok(Some((Seq::Bytes(s), Obj::u8(e)))),
         },
         Seq::Stream(s) => unsnoc(Seq::List(Rc::new(s.force()?))),
     }
@@ -2610,10 +2606,7 @@ fn multi_group_by_eq(v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, grouped_by(v, |a, b| Ok(a == b)))
 }
 fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(
-        v,
-        grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy()))
-    )
+    multimulti!(v, grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy())))
 }
 fn multi_group_all_with(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, grouped_all_with(v, |x| f.run1(env, x)))
@@ -3073,11 +3066,7 @@ pub fn initialize(env: &mut Env) {
 
     env.insert_builtin(OneNumBuiltin {
         name: "is_prime".to_string(),
-        body: |a| {
-            Ok(Obj::Num(NNum::iverson(nnum::lazy_is_prime(
-                &into_bigint_ok(a)?,
-            ))))
-        },
+        body: |a| Ok(Obj::Num(NNum::iverson(into_nint_ok(a)?.lazy_is_prime()))),
     });
     env.insert_builtin(OneNumBuiltin {
         name: "factorize".to_string(),
@@ -3085,7 +3074,7 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::list(
                 nnum::lazy_factorize(into_bigint_ok(a)?)
                     .into_iter()
-                    .map(|(a, e)| Obj::list(vec![Obj::from(a), Obj::from(e)]))
+                    .map(|(a, e)| Obj::list(vec![Obj::from(a), Obj::usize(e)]))
                     .collect(),
             ))
         },
@@ -3098,7 +3087,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Seq(Seq::String(s)) => {
                 let mut c = s.chars();
                 match (c.next(), c.next()) {
-                    (Some(ch), None) => Ok(Obj::from(ch as usize)),
+                    (Some(ch), None) => Ok(Obj::usize(ch as usize)),
                     (None, _) => Err(NErr::value_error("ord of empty string".to_string())),
                     (_, Some(_)) => {
                         Err(NErr::value_error("ord of string with len > 1".to_string()))
@@ -3123,7 +3112,7 @@ pub fn initialize(env: &mut Env) {
         name: "len".to_string(),
         body: |arg| match arg {
             Obj::Seq(s) => match s.len() {
-                Some(n) => Ok(Obj::from(n)),
+                Some(n) => Ok(Obj::usize(n)),
                 None => Ok(Obj::from(f64::INFINITY)),
             },
             e => Err(NErr::type_error(format!(
@@ -3263,7 +3252,7 @@ pub fn initialize(env: &mut Env) {
             Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
                 x,
                 None,
-                BigInt::from(1),
+                NInt::Small(1),
             ))))),
             e => Err(NErr::argument_error_1(&e)),
         },
@@ -3343,8 +3332,7 @@ pub fn initialize(env: &mut Env) {
                 let it = mut_obj_into_iter(&mut a, "map")?;
                 match b {
                     Obj::Func(b, _) => Ok(Obj::list(
-                        it.map(|e| b.run1(env, e?))
-                            .collect::<NRes<Vec<Obj>>>()?,
+                        it.map(|e| b.run1(env, e?)).collect::<NRes<Vec<Obj>>>()?,
                     )),
                     _ => Err(NErr::type_error("not callable".to_string())),
                 }
@@ -3595,7 +3583,7 @@ pub fn initialize(env: &mut Env) {
                 *c.entry(to_key(e?)?).or_insert(0) += 1;
             }
             Ok(Obj::Seq(Seq::Dict(
-                Rc::new(c.into_iter().map(|(k, v)| (k, Obj::from(v))).collect()),
+                Rc::new(c.into_iter().map(|(k, v)| (k, Obj::usize(v))).collect()),
                 Some(Box::new(Obj::zero())),
             )))
         },
@@ -4254,7 +4242,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run1(env, x?.clone())?.truthy() {
-                        return Ok(Obj::from(i));
+                        return Ok(Obj::usize(i));
                     }
                 }
                 Err(NErr::value_error("didn't find".to_string()))
@@ -4262,7 +4250,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
                 match a.find(&*b) {
                     // this is the byte index! shrug
-                    Some(i) => Ok(Obj::from(i)),
+                    Some(i) => Ok(Obj::usize(i)),
                     None => Err(NErr::value_error("didn't find".to_string())),
                 }
             }
@@ -4270,7 +4258,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_obj_into_iter(&mut a, "locate")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x? == b {
-                        return Ok(Obj::from(i));
+                        return Ok(Obj::usize(i));
                     }
                 }
                 Err(NErr::value_error("didn't find".to_string()))
@@ -4284,7 +4272,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if f.run1(env, x?.clone())?.truthy() {
-                        return Ok(Obj::from(i));
+                        return Ok(Obj::usize(i));
                     }
                 }
                 Ok(Obj::Null)
@@ -4292,7 +4280,7 @@ pub fn initialize(env: &mut Env) {
             (Obj::Seq(Seq::String(a)), Obj::Seq(Seq::String(b))) => {
                 match a.find(&*b) {
                     // this is the byte index! shrug
-                    Some(i) => Ok(Obj::from(i)),
+                    Some(i) => Ok(Obj::usize(i)),
                     None => Ok(Obj::Null),
                 }
             }
@@ -4300,7 +4288,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_obj_into_iter(&mut a, "locate?")?.enumerate();
                 while let Some((i, x)) = it.next() {
                     if x? == b {
-                        return Ok(Obj::from(i));
+                        return Ok(Obj::usize(i));
                     }
                 }
                 Ok(Obj::Null)
@@ -4432,7 +4420,7 @@ pub fn initialize(env: &mut Env) {
             Ok(Obj::list(
                 mut_obj_into_iter(&mut a, "enumerate conversion")?
                     .enumerate()
-                    .map(|(k, v)| Ok(Obj::list(vec![Obj::from(k), v?])))
+                    .map(|(k, v)| Ok(Obj::list(vec![Obj::usize(k), v?])))
                     .collect::<NRes<Vec<Obj>>>()?,
             ))
         },
@@ -4616,11 +4604,8 @@ pub fn initialize(env: &mut Env) {
                         let mut ret = Vec::new();
                         while (&a).is_positive() {
                             ret.push(
-                                char::from_digit(
-                                    ((&a) % base).to_u32().expect("str_radix bad"),
-                                    base,
-                                )
-                                .expect("str_radix bad"),
+                                char::from_digit((&a % &r).to_u32().expect("str_radix bad"), base)
+                                    .expect("str_radix bad"),
                             );
                             a /= base;
                         }
@@ -4643,7 +4628,7 @@ pub fn initialize(env: &mut Env) {
         name: "int_radix".to_string(),
         body: |a, r| {
             if let Obj::Num(n) = r {
-                if let Some(base) = n.to_bigint().and_then(BigInt::to_u32) {
+                if let Some(base) = n.to_nint().and_then(NInt::to_u32) {
                     if 2 <= base && base <= 36 {
                         let mut x = BigInt::from(0);
                         match a {
@@ -5134,9 +5119,9 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(TwoArgBuiltin {
         name: "random_range".to_string(),
         body: |a, b| match (a, b) {
-            (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => {
-                Ok(Obj::from(rand::thread_rng().gen_bigint_range(&a, &b)))
-            }
+            (Obj::Num(NNum::Int(a)), Obj::Num(NNum::Int(b))) => Ok(Obj::from(
+                rand::thread_rng().gen_bigint_range(&a.to_bigint(), &b.to_bigint()),
+            )),
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
     });
@@ -5316,6 +5301,14 @@ pub fn initialize(env: &mut Env) {
                 ),
                 None,
             )))
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "is_big".to_string(),
+        body: |a| match a {
+            Obj::Num(NNum::Int(NInt::Big(_))) => Ok(Obj::one()),
+            _ => Ok(Obj::zero()),
         },
     });
 }

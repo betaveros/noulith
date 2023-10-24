@@ -2,9 +2,10 @@ extern crate noulith;
 // use std::rc::Rc;
 use noulith::simple_eval;
 use noulith::Obj;
+use num::bigint::BigInt;
 
-fn i(n: i32) -> Obj {
-    Obj::i32(n)
+fn i(n: i64) -> Obj {
+    Obj::i64(n)
 }
 
 #[test]
@@ -25,6 +26,23 @@ fn quick_operators() {
     assert_eq!(simple_eval("+(2, 3)"), i(5));
     assert_eq!(simple_eval("plus := +; 2 plus 3"), i(5));
     assert_eq!(simple_eval("plus := \\x, y -> x + y; 2 plus 3"), i(5));
+}
+
+#[test]
+fn big_operators() {
+    let a = BigInt::from(314).pow(159);
+    let b = BigInt::from(271).pow(828);
+    assert_eq!(simple_eval("314^159"), Obj::from(a.clone()));
+    assert_eq!(simple_eval("271^828"), Obj::from(b.clone()));
+    assert_eq!(simple_eval("314^159 + 271^828"), Obj::from(&a + &b));
+    assert_eq!(simple_eval("314^159 - 271^828"), Obj::from(&a - &b));
+    assert_eq!(simple_eval("314^159 * 271^828"), Obj::from(&a * &b));
+    assert_eq!(simple_eval("314^159 // 271^828"), Obj::from(&a / &b));
+    assert_eq!(simple_eval("314^159 % 271^828"), Obj::from(&a % &b));
+    assert_eq!(simple_eval("314^159 & 271^828"), Obj::from(&a & &b));
+    assert_eq!(simple_eval("314^159 | 271^828"), Obj::from(&a | &b));
+    assert_eq!(simple_eval("314^159 ~ 271^828"), Obj::from(&a ^ &b));
+    assert_eq!(simple_eval("314 ^ 159 // 314 ^ 158 == 314"), i(1));
 }
 
 #[test]

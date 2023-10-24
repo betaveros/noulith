@@ -5,7 +5,7 @@ use num::bigint::ToBigInt;
 use num::bigint::{BigInt, Sign};
 use num::complex::Complex64;
 use num::pow::Pow;
-use num::{BigRational, Integer};
+use num::BigRational;
 use num::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::fmt;
@@ -16,11 +16,12 @@ use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Rem, Shl, Shr, Su
 use std::ops::{AddAssign, SubAssign};
 
 use crate::gamma;
+use crate::nint::NInt;
 
 // wow, BigRationals are huge
 #[derive(Debug, Clone)]
 pub enum NNum {
-    Int(BigInt),
+    Int(NInt),
     Rational(Box<BigRational>),
     Float(f64),
     Complex(Complex64),
@@ -54,9 +55,14 @@ forward_display!(Octal, Octal, Display);
 forward_display!(LowerExp, Display, LowerExp);
 forward_display!(UpperExp, Display, UpperExp);
 
+impl From<NInt> for NNum {
+    fn from(x: NInt) -> Self {
+        NNum::Int(x)
+    }
+}
 impl From<BigInt> for NNum {
     fn from(x: BigInt) -> Self {
-        NNum::Int(x)
+        NNum::Int(NInt::from(x))
     }
 }
 impl From<BigRational> for NNum {
@@ -64,19 +70,14 @@ impl From<BigRational> for NNum {
         NNum::Rational(Box::new(x))
     }
 }
-/*
-impl From<i32> for NNum {
-    fn from(x: i32) -> Self { NNum::Int(BigInt::from(x)) }
-}
-*/
 impl From<f64> for NNum {
     fn from(x: f64) -> Self {
         NNum::Float(x)
     }
 }
-impl From<usize> for NNum {
-    fn from(x: usize) -> Self {
-        NNum::Int(BigInt::from(x))
+impl From<i64> for NNum {
+    fn from(x: i64) -> Self {
+        NNum::Int(NInt::Small(x))
     }
 }
 impl From<Complex64> for NNum {
@@ -84,14 +85,22 @@ impl From<Complex64> for NNum {
         NNum::Complex(z)
     }
 }
+impl NNum {
+    pub fn usize(x: usize) -> Self {
+        NNum::Int(NInt::usize(x))
+    }
+    pub fn u8(x: u8) -> Self {
+        NNum::Int(NInt::Small(x as i64))
+    }
+}
 
 trait PowIF: Sized {
     fn powi(self, n: i32) -> Self;
     fn powf(self, f: f64) -> Self;
-    fn powif(self, b: &BigInt) -> Self {
+    fn powif(self, b: &NInt) -> Self {
         match b.to_i32() {
             Some(ib) => self.powi(ib),
-            None => self.powf(bigint_to_f64_or_inf(b)),
+            None => self.powf(nint_to_f64_or_inf(b)),
         }
     }
 }
@@ -123,7 +132,7 @@ fn powf_pdnum(a: f64, b: f64) -> NNum {
     NNum::from(fx)
 }
 
-fn powif_pdnum(a: f64, b: &BigInt) -> NNum {
+fn powif_pdnum(a: f64, b: &NInt) -> NNum {
     let fx = a.powif(b);
     if fx.is_nan() {
         let zx = Complex64::from(a).powif(b);
@@ -134,25 +143,14 @@ fn powif_pdnum(a: f64, b: &BigInt) -> NNum {
     NNum::from(fx)
 }
 
-fn pow_big_ints(a: &BigInt, b: &BigInt) -> NNum {
-    match b.sign() {
-        num::bigint::Sign::NoSign => NNum::from(1),
-        num::bigint::Sign::Plus => NNum::from(Pow::pow(a, b.magnitude())),
-        num::bigint::Sign::Minus => {
-            NNum::from(BigRational::from(Pow::pow(a, b.magnitude())).recip())
-        }
+fn pow_big_ints(a: &NInt, b: &NInt) -> NNum {
+    match a.pow_maybe_recip(b) {
+        (false, r) => NNum::Int(r),
+        (true, r) => NNum::from(BigRational::from(r.into_bigint()).recip()),
     }
 }
 
-fn factorial_big_int(a: &BigInt) -> BigInt {
-    let mut ret = BigInt::one();
-    for i in num::range_inclusive(BigInt::one(), BigInt::clone(a)) {
-        ret *= i;
-    }
-    ret
-}
-
-fn bigint_to_f64_or_inf(i: &BigInt) -> f64 {
+fn nint_to_f64_or_inf(i: &NInt) -> f64 {
     i.to_f64().unwrap_or_else(|| {
         if i.is_positive() {
             f64::INFINITY
@@ -177,8 +175,8 @@ macro_rules! forward_int_coercion {
         pub fn $method(&self) -> Option<NNum> {
             match self {
                 NNum::Int(_) => Some(self.clone()),
-                NNum::Rational(r) => Some(NNum::Int(r.$method().to_integer())),
-                NNum::Float(f) => Some(f.$method().to_bigint().map_or(self.clone(), NNum::Int)),
+                NNum::Rational(r) => Some(NNum::from(r.$method().to_integer())),
+                NNum::Float(f) => Some(f.$method().to_bigint().map_or(self.clone(), NNum::from)),
                 NNum::Complex(_) => None,
             }
         }
@@ -225,7 +223,7 @@ impl NNum {
     pub fn signum(&self) -> NNum {
         match self {
             NNum::Int(k) => NNum::Int(k.signum()),
-            NNum::Rational(k) => NNum::Int(k.signum().to_integer()),
+            NNum::Rational(k) => NNum::from(k.signum().to_integer()),
             NNum::Float(f) => {
                 // This is NOT Rust's f64's signum. We want +/-0 to give 0 (for consistency with
                 // integers)
@@ -260,7 +258,7 @@ impl NNum {
 
     pub fn to_rational(&self) -> Option<BigRational> {
         match self {
-            NNum::Int(i) => Some(BigRational::from(i.clone())),
+            NNum::Int(i) => Some(BigRational::from(i.to_bigint().into_owned())),
             NNum::Rational(r) => Some(*r.clone()),
             NNum::Float(_) => None,
             NNum::Complex(_) => None,
@@ -278,7 +276,7 @@ impl NNum {
 
     pub fn to_f64_or_inf_or_complex(&self) -> Result<f64, Complex64> {
         match self {
-            NNum::Int(i) => Ok(bigint_to_f64_or_inf(i)),
+            NNum::Int(i) => Ok(nint_to_f64_or_inf(i)),
             NNum::Rational(r) => Ok(rational_to_f64_or_inf(r)),
             NNum::Float(f) => Ok(*f),
             NNum::Complex(z) => Err(*z),
@@ -326,7 +324,7 @@ impl NNum {
 
     pub fn imaginary_part(&self) -> NNum {
         match self {
-            NNum::Int(_) => NNum::Int(BigInt::from(0)),
+            NNum::Int(_) => NNum::Int(NInt::Small(0)),
             NNum::Rational(_) => NNum::Rational(Box::new(BigRational::from(BigInt::from(0)))),
             NNum::Float(_) => NNum::Float(0.0),
             NNum::Complex(z) => NNum::Float(z.im),
@@ -350,11 +348,11 @@ impl NNum {
         match (self, other) {
             (NNum::Int(a), NNum::Int(b)) => pow_big_ints(a, b),
             (NNum::Int(a), NNum::Rational(b)) => {
-                powf_pdnum(bigint_to_f64_or_inf(a), rational_to_f64_or_inf(b))
+                powf_pdnum(nint_to_f64_or_inf(a), rational_to_f64_or_inf(b))
             }
-            (NNum::Int(a), NNum::Float(b)) => powf_pdnum(bigint_to_f64_or_inf(a), *b),
+            (NNum::Int(a), NNum::Float(b)) => powf_pdnum(nint_to_f64_or_inf(a), *b),
 
-            (NNum::Rational(a), NNum::Int(b)) => NNum::from(Pow::pow(&**a, b)),
+            (NNum::Rational(a), NNum::Int(b)) => NNum::from(Pow::pow(&**a, &*b.to_bigint())),
             (NNum::Rational(a), NNum::Rational(b)) => {
                 powf_pdnum(rational_to_f64_or_inf(a), rational_to_f64_or_inf(b))
             }
@@ -375,7 +373,7 @@ impl NNum {
 
     pub fn factorial(&self) -> NNum {
         match self {
-            NNum::Int(a) => NNum::Int(factorial_big_int(a)),
+            NNum::Int(a) => NNum::Int(a.factorial()),
             NNum::Rational(r) => NNum::Float(gamma::gamma(rational_to_f64_or_inf(r) + 1.0)),
             NNum::Float(f) => NNum::Float(gamma::gamma(f + 1.0)),
             NNum::Complex(_) => {
@@ -392,7 +390,14 @@ impl NNum {
         }
     }
 
-    pub fn to_bigint(&self) -> Option<&BigInt> {
+    pub fn to_nint(&self) -> Option<&NInt> {
+        match self {
+            NNum::Int(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    pub fn into_nint(self) -> Option<NInt> {
         match self {
             NNum::Int(n) => Some(n),
             _ => None,
@@ -401,7 +406,7 @@ impl NNum {
 
     pub fn into_bigint(self) -> Option<BigInt> {
         match self {
-            NNum::Int(n) => Some(n),
+            NNum::Int(n) => Some(n.into_bigint()),
             _ => None,
         }
     }
@@ -444,8 +449,8 @@ impl NNum {
 }
 
 // this seems... nontrivial??
-fn cmp_bigint_f64(a: &BigInt, b: &f64) -> Option<Ordering> {
-    if let Some(bi) = to_bigint_if_int(*b) {
+fn cmp_nint_f64(a: &NInt, b: &f64) -> Option<Ordering> {
+    if let Some(bi) = to_nint_if_int(*b) {
         Some(a.cmp(&bi))
     } else if b.is_infinite() {
         if b.is_sign_positive() {
@@ -454,7 +459,7 @@ fn cmp_bigint_f64(a: &BigInt, b: &f64) -> Option<Ordering> {
             Some(Ordering::Greater)
         }
     } else {
-        b.floor().to_bigint().map(|bi| match a.cmp(&bi) {
+        b.floor().to_bigint().map(|bi| match a.cmp(&NInt::Big(bi)) {
             Ordering::Less => Ordering::Less,
             Ordering::Equal => Ordering::Less,
             Ordering::Greater => Ordering::Greater,
@@ -464,13 +469,13 @@ fn cmp_bigint_f64(a: &BigInt, b: &f64) -> Option<Ordering> {
 
 // useful to project down to this for ease of doing stuff
 enum NNumReal<'a> {
-    Int(&'a BigInt),
+    Int(&'a NInt),
     Float(f64),
 }
 
-fn to_bigint_if_int(f: f64) -> Option<BigInt> {
+fn to_nint_if_int(f: f64) -> Option<NInt> {
     if f == f.trunc() {
-        f.to_bigint()
+        f.to_bigint().map(NInt::Big)
     } else {
         None
     }
@@ -481,10 +486,10 @@ impl<'a> PartialEq for NNumReal<'a> {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => a == b,
             (NNumReal::Int(a), NNumReal::Float(b)) => {
-                to_bigint_if_int(*b).map_or(false, |x| &x == *a)
+                to_nint_if_int(*b).map_or(false, |x| &x == *a)
             }
             (NNumReal::Float(a), NNumReal::Int(b)) => {
-                to_bigint_if_int(*a).map_or(false, |x| &x == *b)
+                to_nint_if_int(*a).map_or(false, |x| &x == *b)
             }
             (NNumReal::Float(a), NNumReal::Float(b)) => a == b,
         }
@@ -495,8 +500,8 @@ impl<'a> PartialOrd for NNumReal<'a> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => Some(a.cmp(b)),
-            (NNumReal::Int(a), NNumReal::Float(b)) => cmp_bigint_f64(a, b),
-            (NNumReal::Float(a), NNumReal::Int(b)) => cmp_bigint_f64(b, a).map(|ord| ord.reverse()),
+            (NNumReal::Int(a), NNumReal::Float(b)) => cmp_nint_f64(a, b),
+            (NNumReal::Float(a), NNumReal::Int(b)) => cmp_nint_f64(b, a).map(|ord| ord.reverse()),
             (NNumReal::Float(a), NNumReal::Float(b)) => a.partial_cmp(b),
         }
     }
@@ -507,10 +512,10 @@ impl<'a> NNumReal<'a> {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => a.cmp(b),
             (NNumReal::Int(a), NNumReal::Float(b)) => {
-                cmp_bigint_f64(a, b).unwrap_or(Ordering::Greater)
+                cmp_nint_f64(a, b).unwrap_or(Ordering::Greater)
             }
             (NNumReal::Float(a), NNumReal::Int(b)) => {
-                cmp_bigint_f64(b, a).map_or(Ordering::Less, |ord| ord.reverse())
+                cmp_nint_f64(b, a).map_or(Ordering::Less, |ord| ord.reverse())
             }
             (NNumReal::Float(a), NNumReal::Float(b)) => {
                 a.partial_cmp(b).unwrap_or(b.is_nan().cmp(&a.is_nan()))
@@ -521,11 +526,9 @@ impl<'a> NNumReal<'a> {
     fn total_cmp_big_nan(&self, other: &Self) -> Ordering {
         match (self, other) {
             (NNumReal::Int(a), NNumReal::Int(b)) => a.cmp(b),
-            (NNumReal::Int(a), NNumReal::Float(b)) => {
-                cmp_bigint_f64(a, b).unwrap_or(Ordering::Less)
-            }
+            (NNumReal::Int(a), NNumReal::Float(b)) => cmp_nint_f64(a, b).unwrap_or(Ordering::Less),
             (NNumReal::Float(a), NNumReal::Int(b)) => {
-                cmp_bigint_f64(b, a).map_or(Ordering::Greater, |ord| ord.reverse())
+                cmp_nint_f64(b, a).map_or(Ordering::Greater, |ord| ord.reverse())
             }
             (NNumReal::Float(a), NNumReal::Float(b)) => {
                 a.partial_cmp(b).unwrap_or(a.is_nan().cmp(&b.is_nan()))
@@ -582,8 +585,8 @@ impl NNum {
 }
 
 fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
-    match to_bigint_if_int(f) {
-        Some(s) => BigInt::hash(&s, state),
+    match to_nint_if_int(f) {
+        Some(s) => NInt::hash(&s, state),
         None => {
             if f.is_nan() {
                 // some nan from wikipedia (not that this matters)
@@ -600,7 +603,7 @@ fn consistent_hash_f64<H: Hasher>(f: f64, state: &mut H) {
 impl NNum {
     pub fn total_hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            NNum::Int(a) => BigInt::hash(&a, state),
+            NNum::Int(a) => NInt::hash(&a, state),
             NNum::Rational(r) => {
                 // TODO: should we make rationals consistent with floats?
                 BigInt::hash(r.numer(), state);
@@ -709,8 +712,8 @@ macro_rules! binary_match {
             (a, NNum::Float(fb)) => NNum::Float($floatmethod(a.to_f64_or_inf_or_complex().expect("complex not elim"), fb.soft_deref())),
 
             (NNum::Rational(ra), NNum::Rational(rb)) => NNum::Rational(Box::new($ratmethod(ra.soft_deref(), rb.soft_deref()))),
-            (NNum::Rational(ra), NNum::Int(b)) => NNum::Rational(Box::new($ratmethod(ra.soft_deref(), &BigRational::from(b.clone())))),
-            (NNum::Int(a), NNum::Rational(rb)) => NNum::Rational(Box::new($ratmethod(&BigRational::from(a.clone()), rb.soft_deref()))),
+            (NNum::Rational(ra), NNum::Int(b)) => NNum::Rational(Box::new($ratmethod(ra.soft_deref(), &BigRational::from(b.to_bigint().into_owned())))),
+            (NNum::Int(a), NNum::Rational(rb)) => NNum::Rational(Box::new($ratmethod(&BigRational::from(a.to_bigint().into_owned()), rb.soft_deref()))),
 
             (NNum::Int  (a), NNum::Int  (b)) => NNum::Int($intmethod(a, b)),
         }
@@ -808,7 +811,7 @@ impl NNum {
         binary_match!(
             self,
             other,
-            Integer::div_floor,
+            NInt::div_floor,
             dumb_rational_div_floor,
             f64::div_euclid,
             dumb_complex_div_floor
@@ -818,7 +821,7 @@ impl NNum {
         binary_match!(
             self,
             other,
-            Integer::mod_floor,
+            NInt::mod_floor,
             Rem::rem,
             f64::rem_euclid,
             Rem::rem
@@ -890,7 +893,7 @@ impl Not for &NNum {
     type Output = NNum;
 
     fn not(self) -> NNum {
-        match self.to_bigint() {
+        match self.to_nint() {
             Some(n) => NNum::Int(!n),
             None => NNum::Float(f64::NAN),
         }
@@ -925,7 +928,7 @@ impl Product for NNum {
 
 macro_rules! force_bi_binary_match {
     ($a:expr, $b:expr, $method:ident, $intmethod:expr) => {
-        match ($a.to_bigint(), $b.to_bigint()) {
+        match ($a.to_nint(), $b.to_nint()) {
             (Some(ia), Some(ib)) => NNum::Int($intmethod(ia, ib)),
             _ => NNum::Float(f64::NAN),
         }
@@ -971,37 +974,6 @@ impl Shr<NNum> for NNum {
         match (self, other.to_usize()) {
             (NNum::Int(a), Some(s)) => NNum::Int(a >> s),
             _ => NNum::Float(f64::NAN),
-        }
-    }
-}
-
-pub fn lazy_is_prime(n: &BigInt) -> bool {
-    if n <= &BigInt::from(1) {
-        false
-    } else if n <= &BigInt::from(3) {
-        true
-    } else if (n % BigInt::from(2)).is_zero() || (n % BigInt::from(3)).is_zero() {
-        false
-    } else {
-        let s = n.sqrt(); // truncates
-        let mut f = BigInt::from(5);
-        loop {
-            if f > s {
-                return true;
-            }
-            if (n % &f).is_zero() {
-                return false;
-            }
-
-            let g = &f + BigInt::from(2);
-            if g > s {
-                return true;
-            }
-            if (n % &g).is_zero() {
-                return false;
-            }
-
-            f += 6;
         }
     }
 }
@@ -1056,27 +1028,27 @@ pub fn lazy_factorize(mut a: BigInt) -> Vec<(BigInt, usize)> {
 
 impl NNum {
     pub fn gcd(&self, other: &NNum) -> NNum {
-        force_bi_binary_match!(self, other, gcd, Integer::gcd)
+        force_bi_binary_match!(self, other, gcd, NInt::gcd)
     }
 
     pub fn is_prime(&self) -> bool {
         match self {
-            NNum::Int(a) => lazy_is_prime(a),
+            NNum::Int(a) => a.lazy_is_prime(),
             NNum::Rational(a) => {
                 if a.is_integer() {
-                    lazy_is_prime(&a.to_integer())
+                    NInt::Big(a.to_integer()).lazy_is_prime()
                 } else {
                     false
                 }
             }
-            NNum::Float(a) => match to_bigint_if_int(*a) {
-                Some(n) => lazy_is_prime(&n),
+            NNum::Float(a) => match to_nint_if_int(*a) {
+                Some(n) => n.lazy_is_prime(),
                 None => false,
             },
             NNum::Complex(a) => {
                 a.im == 0.0
-                    && match to_bigint_if_int(a.re) {
-                        Some(n) => lazy_is_prime(&n),
+                    && match to_nint_if_int(a.re) {
+                        Some(n) => n.lazy_is_prime(),
                         None => false,
                     }
             }
