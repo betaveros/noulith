@@ -1281,28 +1281,48 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
 
-        Expr::InternalPush(xs, e) => {
-            let v = xs.iter().map(|x| evaluate(env, x)).collect::<NRes<Vec<Obj>>>()?;
-            let vn = v.len();
-
-            // careful to keep stack correct even if things error!
+        Expr::InternalPush(e) => {
+            let r = evaluate(env, e)?;
             try_borrow_mut_nres(env, "internal", "push")?
-                .internal_stack.extend(v);
+                .internal_stack
+                .push(r);
+            Ok(Obj::Null)
+        }
+        Expr::InternalPop => try_borrow_mut_nres(env, "internal", "pop")?
+            .internal_stack
+            .pop()
+            .ok_or_else(|| NErr::empty_error("internal pop".to_string())),
+        Expr::InternalFrame(e) => {
+            let n = try_borrow_mut_nres(env, "internal", "frame start")?.internal_stack.len();
             let r = evaluate(env, e);
-            {
-                let mut ptr = try_borrow_mut_nres(env, "internal", "pop").expect("internal push: stack is out of sync, unrecoverable");
-                let s = &mut ptr.internal_stack;
-                s.truncate(s.len() - vn);
-            }
+            try_borrow_mut_nres(env, "internal", "frame end").expect("internal frame end: stack is out of sync, unrecoverable").internal_stack
+                .truncate(n);
             r
         }
         Expr::InternalPeek(i) => Env::try_borrow_peek(env, *i),
-        Expr::InternalFor(index, iteratee, body) => {
+        Expr::InternalFor(iteratee, body) => {
             let mut itr = evaluate(env, iteratee)?;
             for x in mut_obj_into_iter(&mut itr, "internal for iteration")? {
                 let x = x?;
-                Env::try_borrow_set_peek(env, *index, x)?;
-                evaluate(env, body)?;
+                let s = {
+                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push")?;
+                    let s = ptr.internal_stack.len();
+                    ptr.internal_stack.push(x);
+                    s
+                };
+                let ret = evaluate(env, body);
+                {
+                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push").expect("internal for: stack is out of sync, unrecoverable");
+                    ptr.internal_stack.truncate(s);
+                }
+                match ret {
+                    Err(NErr::Break(k)) => {
+                        return Ok(k.unwrap_or(Obj::Null))
+                    }
+                    Err(NErr::Continue) => (),
+                    Err(r) => return Err(r),
+                    Ok(_) => (),
+                }
             }
             Ok(Obj::Null)
         }

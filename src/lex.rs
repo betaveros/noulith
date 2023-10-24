@@ -62,7 +62,9 @@ pub enum Token {
     Literally,
     Underscore,
 
+    InternalFrame,
     InternalPush,
+    InternalPop,
     InternalPeek,
     InternalFor,
 
@@ -531,7 +533,9 @@ impl<'a> Lexer<'a> {
                                 "import" => Token::Import,
                                 "literally" => Token::Literally,
                                 "_" => Token::Underscore,
+                                "__internal_frame" => Token::InternalFrame,
                                 "__internal_push" => Token::InternalPush,
+                                "__internal_pop" => Token::InternalPop,
                                 "__internal_peek" => Token::InternalPeek,
                                 "__internal_for" => Token::InternalFor,
                                 _ => Token::Ident(acc),

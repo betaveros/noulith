@@ -1821,10 +1821,12 @@ pub enum Expr {
     Splat(Box<LocExpr>),
 
     // hic sunt dracones
-    InternalPush(Vec<Box<LocExpr>>, Box<LocExpr>),
+    InternalFrame(Box<LocExpr>),
+    InternalPush(Box<LocExpr>),
+    InternalPop,
     InternalPeek(usize),  // from rear
-    // for each element, put it at a Peek index then run the body
-    InternalFor(usize, Box<LocExpr>, Box<LocExpr>),
+    // for each element, push it, run the body, then restore stack length
+    InternalFor(Box<LocExpr>, Box<LocExpr>),
 }
 
 impl Expr {
@@ -2622,10 +2624,11 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
 
-            Expr::InternalPush(a, b) => Ok(Expr::InternalPush(vec_box_freeze(env, a)?, box_freeze(env, b)?)),
+            Expr::InternalFrame(e) => Ok(Expr::InternalFrame(box_freeze(env, e)?)),
+            Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
+            Expr::InternalPop => Ok(Expr::InternalPop),
             Expr::InternalPeek(n) => Ok(Expr::InternalPeek(*n)),
-            Expr::InternalFor(ix, iteratee, body) => Ok(Expr::InternalFor(
-                *ix,
+            Expr::InternalFor(iteratee, body) => Ok(Expr::InternalFor(
                 box_freeze(env, iteratee)?,
                 box_freeze(env, body)?,
             )),
@@ -3371,23 +3374,30 @@ impl Parser {
                         Err(self.error_here(format!("bad struct name")))?
                     }
                 }
-                Token::InternalPush => {
+                Token::InternalFrame => {
                     self.advance();
-                    let args = if let Some((end, n)) = self.try_consume_usize("internal push")? {
-                        let mut v = Vec::with_capacity(n);
-                        v.resize_with(n, || Box::new(LocExpr { start: end, end, expr: Expr::Null }));
-                        v
-                    } else {
-                        self.require(Token::LeftParen, "internal push start")?;
-                        let v = self.annotated_comma_separated(false, "internal push args")?.0;
-                        self.require(Token::RightParen, "internal push end")?;
-                        v
-                    };
-                    let s = self.single("internal push body")?;
+                    let s = self.single("internal frame")?;
                     Ok(LocExpr {
                         start,
                         end: s.end,
-                        expr: Expr::InternalPush(args, Box::new(s)),
+                        expr: Expr::InternalFrame(Box::new(s)),
+                    })
+                }
+                Token::InternalPush => {
+                    self.advance();
+                    let s = self.single("internal push")?;
+                    Ok(LocExpr {
+                        start,
+                        end: s.end,
+                        expr: Expr::InternalPush(Box::new(s)),
+                    })
+                }
+                Token::InternalPop => {
+                    self.advance();
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::InternalPop,
                     })
                 }
                 Token::InternalPeek => {
@@ -3405,27 +3415,13 @@ impl Parser {
                 Token::InternalFor => {
                     self.advance();
                     self.require(Token::LeftParen, "internal for start")?;
-                    let i = if let Some(LocToken { start: _, end: _, token: Token::IntLit(i) }) = self.peek_loc_token() {
-                        match i.to_usize() {
-                            Some(i) => {
-                                self.advance();
-                                i
-                            }
-                            None => {
-                                return Err(self.error_here(format!("internal for: int too large")));
-                            }
-                        }
-                    } else {
-                        return Err(self.error_here(format!("internal for: need int")));
-                    };
-                    self.require(Token::LeftArrow, "internal for left arrow")?;
                     let iteratee = self.single("internal for iteratee")?;
                     self.require(Token::RightParen, "internal for end")?;
                     let body = self.single("internal for body")?;
                     Ok(LocExpr {
                         start,
                         end: body.end,
-                        expr: Expr::InternalFor(i, Box::new(iteratee), Box::new(body)),
+                        expr: Expr::InternalFor(Box::new(iteratee), Box::new(body)),
                     })
                 }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
