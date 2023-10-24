@@ -1326,6 +1326,34 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::Null)
         }
+        Expr::InternalCall(1, e) => {
+            let val = evaluate(env, e)?;
+            let arg = {
+                let mut ptr = try_borrow_mut_nres(env, "internal", "call")?;
+                ptr.internal_stack.pop().expect("internal call 1")
+            };
+            call1(env, val, arg)
+        }
+        Expr::InternalCall(2, e) => {
+            let val = evaluate(env, e)?;
+            let (arg2, arg1) = {
+                let mut ptr = try_borrow_mut_nres(env, "internal", "call")?;
+                (
+                    ptr.internal_stack.pop().expect("internal call 2"),
+                    ptr.internal_stack.pop().expect("internal call 1"),
+                )
+            };
+            call2(env, val, arg1, arg2)
+        }
+        Expr::InternalCall(argc, e) => {
+            let val = evaluate(env, e)?;
+            let args = {
+                let mut ptr = try_borrow_mut_nres(env, "internal", "call")?;
+                let n = ptr.internal_stack.len();
+                ptr.internal_stack.split_off(n - argc)
+            };
+            call(env, val, args)
+        }
         Expr::InternalLambda(body) => Ok(Obj::Func(
             Func::InternalLambda(Rc::clone(body)),
             Precedence::zero(),
@@ -1570,6 +1598,16 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
 pub fn call1(env: &REnv, f: Obj, arg: Obj) -> NRes<Obj> {
     match f {
         Obj::Func(ff, _) => ff.run1(env, arg),
+        _ => Err(NErr::type_error(format!(
+            "Can't call non-function {}",
+            FmtObj::debug(&f)
+        ))),
+    }
+}
+
+pub fn call2(env: &REnv, f: Obj, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+    match f {
+        Obj::Func(ff, _) => ff.run2(env, arg1, arg2),
         _ => Err(NErr::type_error(format!(
             "Can't call non-function {}",
             FmtObj::debug(&f)

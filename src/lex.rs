@@ -67,6 +67,7 @@ pub enum Token {
     InternalPop,
     InternalPeek,
     InternalFor,
+    InternalCall,
     InternalLambda,
 
     // strip me before parsing
@@ -539,6 +540,7 @@ impl<'a> Lexer<'a> {
                                 "__internal_pop" => Token::InternalPop,
                                 "__internal_peek" => Token::InternalPeek,
                                 "__internal_for" => Token::InternalFor,
+                                "__internal_call" => Token::InternalCall,
                                 "__internal_lambda" => Token::InternalLambda,
                                 _ => Token::Ident(acc),
                             })

@@ -1827,6 +1827,7 @@ pub enum Expr {
     InternalPeek(usize),  // from rear
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
+    InternalCall(usize, Box<LocExpr>),
     InternalLambda(Rc<LocExpr>),
 }
 
@@ -2633,6 +2634,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, iteratee)?,
                 box_freeze(env, body)?,
             )),
+            Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
             Expr::InternalLambda(body) => {
                 Ok(Expr::InternalLambda(
                     Rc::new(freeze(env, body)?),
@@ -3429,6 +3431,19 @@ impl Parser {
                         end: body.end,
                         expr: Expr::InternalFor(Box::new(iteratee), Box::new(body)),
                     })
+                }
+                Token::InternalCall => {
+                    self.advance();
+                    if let Some((end, n)) = self.try_consume_usize("internal call")? {
+                    let body = self.single("internal call body")?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::InternalCall(n, Box::new(body)),
+                        })
+                    } else {
+                        Err(self.error_here(format!("internal call no n")))?
+                    }
                 }
                 Token::InternalLambda => {
                     self.advance();
