@@ -1821,11 +1821,10 @@ pub enum Expr {
     Splat(Box<LocExpr>),
 
     // hic sunt dracones
-    InternalPush(Box<LocExpr>),
-    InternalPop,
-    InternalPeek(usize),
-    // for each element, push it, then run the body. (do not pop, the body is responsible)
-    InternalFor(Box<LocExpr>, Box<LocExpr>),
+    InternalPush(Vec<Box<LocExpr>>, Box<LocExpr>),
+    InternalPeek(usize),  // from rear
+    // for each element, put it at a Peek index then run the body
+    InternalFor(usize, Box<LocExpr>, Box<LocExpr>),
 }
 
 impl Expr {
@@ -1856,6 +1855,7 @@ pub enum Lvalue {
     Destructure(Box<LocExpr>, Vec<Box<Lvalue>>),
     ChainDestructure(Box<Lvalue>, Vec<(Box<LocExpr>, Box<Lvalue>)>),
     Literally(Box<LocExpr>),
+    InternalPeek(usize),
 }
 
 impl Lvalue {
@@ -1873,6 +1873,7 @@ impl Lvalue {
                 lv.any_literals() || vs.iter().any(|e| e.1.any_literals())
             }
             Lvalue::Literally(_) => true,
+            Lvalue::InternalPeek(_) => false,
         }
     }
 
@@ -1911,6 +1912,7 @@ impl Lvalue {
                 s
             }
             Lvalue::Literally(_) => HashSet::new(),
+            Lvalue::InternalPeek(_) => HashSet::new(),
         }
     }
 }
@@ -2085,6 +2087,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
         Expr::Literally(e) => Ok(Lvalue::Literally(e)),
+        Expr::InternalPeek(i) => Ok(Lvalue::InternalPeek(i)),
         _ => Err(ParseError::expr(
             format!("can't to_lvalue"),
             expr.start,
@@ -2269,6 +2272,7 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
                 .collect::<NRes<Vec<(Box<LocExpr>, Box<Lvalue>)>>>()?,
         )),
         Lvalue::Literally(e) => Ok(Lvalue::Literally(box_freeze(env, e)?)),
+        Lvalue::InternalPeek(e) => Ok(Lvalue::InternalPeek(*e)),
     }
 }
 
@@ -2618,10 +2622,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
             Expr::Continue => Ok(Expr::Continue),
 
-            Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
-            Expr::InternalPop => Ok(Expr::InternalPop),
+            Expr::InternalPush(a, b) => Ok(Expr::InternalPush(vec_box_freeze(env, a)?, box_freeze(env, b)?)),
             Expr::InternalPeek(n) => Ok(Expr::InternalPeek(*n)),
-            Expr::InternalFor(iteratee, body) => Ok(Expr::InternalFor(
+            Expr::InternalFor(ix, iteratee, body) => Ok(Expr::InternalFor(
+                *ix,
                 box_freeze(env, iteratee)?,
                 box_freeze(env, body)?,
             )),
@@ -2827,6 +2831,20 @@ impl Parser {
         }
     }
 
+    // consuming an int that's not a usize is an error
+    fn try_consume_usize(&mut self, message: &str) -> Result<Option<(CodeLoc, usize)>, ParseError> {
+        if let Some(LocToken { start: _, end, token: Token::IntLit(i) }) = self.peek_loc_token() {
+            let us = i
+                .to_usize()
+                .ok_or(self.error_here(format!("{}: not usize: {}", message, i)))?;
+            let end = *end;
+            self.advance();
+            Ok(Some((end, us)))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn peek_loc(&self) -> CodeLoc {
         match self.peek_loc_token() {
             Some(t) => t.start,
@@ -2848,7 +2866,7 @@ impl Parser {
         }
     }
 
-    fn require(&mut self, expected: Token, message: String) -> Result<CodeLoc, ParseError> {
+    fn require(&mut self, expected: Token, message: &str) -> Result<CodeLoc, ParseError> {
         if let Some(end) = self.try_consume(&expected) {
             // wat
             Ok(end)
@@ -3068,7 +3086,7 @@ impl Parser {
                 Token::LeftParen => {
                     self.advance();
                     let e = self.expression()?;
-                    self.require(Token::RightParen, "normal parenthesized expr".to_string())?;
+                    self.require(Token::RightParen, "normal parenthesized expr")?;
                     Ok(e)
                 }
                 Token::VLeftParen => {
@@ -3082,7 +3100,7 @@ impl Parser {
                     } else {
                         let (exs, _) =
                             self.annotated_comma_separated(false, "vector lit contents")?;
-                        let end = self.require(Token::RightParen, "vector expr".to_string())?;
+                        let end = self.require(Token::RightParen, "vector expr")?;
                         Ok(LocExpr {
                             start,
                             end,
@@ -3101,7 +3119,7 @@ impl Parser {
                     } else {
                         let (exs, _) =
                             self.annotated_comma_separated(false, "list lit contents")?;
-                        let end = self.require(Token::RightBracket, "list expr".to_string())?;
+                        let end = self.require(Token::RightBracket, "list expr")?;
                         Ok(LocExpr {
                             start,
                             end,
@@ -3117,7 +3135,7 @@ impl Parser {
                     if let Some(_) = self.try_consume(&Token::Colon) {
                         def = Some(Box::new(self.single("default of dict literal")?));
                         if !self.peek_csc_stopper() {
-                            self.require(Token::Comma, "dict expr".to_string())?;
+                            self.require(Token::Comma, "dict expr")?;
                         }
                     }
 
@@ -3131,10 +3149,10 @@ impl Parser {
                         xs.push((c1, c2));
 
                         if !self.peek_csc_stopper() {
-                            self.require(Token::Comma, "dict expr".to_string())?;
+                            self.require(Token::Comma, "dict expr")?;
                         }
                     }
-                    let end = self.require(Token::RightBrace, "dict expr end".to_string())?;
+                    let end = self.require(Token::RightBrace, "dict expr end")?;
                     Ok(LocExpr {
                         start,
                         end,
@@ -3144,23 +3162,14 @@ impl Parser {
                 Token::RightParen => Err(self.error_here(format!("atom: unexpected"))),
                 Token::Lambda => {
                     self.advance();
-                    match self.peek_loc_token() {
-                        Some(LocToken {
-                            token: Token::IntLit(x),
-                            start: _,
+                    if let Some((end, us)) = self.try_consume_usize("backref")? {
+                        self.advance();
+                        Ok(LocExpr {
+                            start,
                             end,
-                        }) => {
-                            let us = x
-                                .to_usize()
-                                .ok_or(self.error_here(format!("backref: not usize: {}", x)))?;
-                            let end = *end;
-                            self.advance();
-                            Ok(LocExpr {
-                                start,
-                                end,
-                                expr: Expr::Backref(us),
-                            })
-                        }
+                            expr: Expr::Backref(us),
+                        })
+                    } else { match self.peek_loc_token() {
                         Some(LocToken {
                             token: Token::Switch,
                             start: switch_start,
@@ -3180,7 +3189,7 @@ impl Parser {
                             while let Some(_) = self.try_consume(&Token::Case) {
                                 let pat =
                                     to_lvalue(self.annotated_pattern(true, "lambda-switch pat")?)?;
-                                self.require(Token::RightArrow, "lambda-case mid: ->".to_string())?;
+                                self.require(Token::RightArrow, "lambda-case mid: ->")?;
                                 let res = self.single("lambda-switch body")?;
                                 v.push((Box::new(pat), Box::new(res)));
                             }
@@ -3216,7 +3225,7 @@ impl Parser {
                                     .into_iter()
                                     .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
                                     .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
-                                self.require(Token::RightArrow, "lambda start: ->".to_string())?;
+                                self.require(Token::RightArrow, "lambda start: ->")?;
                                 ps
                             };
                             let body = self.single("body of lambda")?;
@@ -3227,12 +3236,13 @@ impl Parser {
                             })
                         }
                     }
+                    }
                 }
                 Token::If => {
                     self.advance();
-                    self.require(Token::LeftParen, "if start".to_string())?;
+                    self.require(Token::LeftParen, "if start")?;
                     let cond = self.expression()?;
-                    self.require(Token::RightParen, "if cond end".to_string())?;
+                    self.require(Token::RightParen, "if cond end")?;
                     let body = self.assignment()?;
                     let (end, else_body) = if let Some(end) = self.try_consume(&Token::Else) {
                         (end, Some(Box::new(self.assignment()?)))
@@ -3247,7 +3257,7 @@ impl Parser {
                 }
                 Token::For => {
                     self.advance();
-                    self.require(Token::LeftParen, "for start".to_string())?;
+                    self.require(Token::LeftParen, "for start")?;
                     let mut its = Vec::new();
                     loop {
                         its.push(self.for_iteration()?);
@@ -3287,9 +3297,9 @@ impl Parser {
                 }
                 Token::While => {
                     self.advance();
-                    self.require(Token::LeftParen, "while start".to_string())?;
+                    self.require(Token::LeftParen, "while start")?;
                     let cond = self.expression()?;
-                    self.require(Token::RightParen, "while end".to_string())?;
+                    self.require(Token::RightParen, "while end")?;
                     let body = self.assignment()?;
                     Ok(LocExpr {
                         start,
@@ -3299,13 +3309,13 @@ impl Parser {
                 }
                 Token::Switch => {
                     self.advance();
-                    self.require(Token::LeftParen, "switch start".to_string())?;
+                    self.require(Token::LeftParen, "switch start")?;
                     let scrutinee = self.expression()?;
-                    self.require(Token::RightParen, "switch end".to_string())?;
+                    self.require(Token::RightParen, "switch end")?;
                     let mut v = Vec::new();
                     while let Some(_) = self.try_consume(&Token::Case) {
                         let pat = to_lvalue(self.annotated_pattern(true, "switch pat")?)?;
-                        self.require(Token::RightArrow, "case mid: ->".to_string())?;
+                        self.require(Token::RightArrow, "case mid: ->")?;
                         let res = self.single("switch body")?;
                         v.push((Box::new(pat), Box::new(res)));
                     }
@@ -3321,9 +3331,9 @@ impl Parser {
                 Token::Try => {
                     self.advance();
                     let body = self.expression()?;
-                    self.require(Token::Catch, "try end".to_string())?;
+                    self.require(Token::Catch, "try end")?;
                     let pat = to_lvalue(self.annotated_pattern(true, "catch pattern")?)?;
-                    self.require(Token::RightArrow, "catch mid: ->".to_string())?;
+                    self.require(Token::RightArrow, "catch mid: ->")?;
                     let catcher = self.single("catch body")?;
                     Ok(LocExpr {
                         start,
@@ -3336,7 +3346,7 @@ impl Parser {
                     if let Some(Token::Ident(name)) = self.peek() {
                         let name = Rc::new(name.clone());
                         self.advance();
-                        self.require(Token::LeftParen, "struct begin".to_string())?;
+                        self.require(Token::LeftParen, "struct begin")?;
                         let mut fields = Vec::new();
                         if let Some(Token::Ident(field1)) = self.peek() {
                             fields.push(Rc::new(field1.clone()));
@@ -3350,7 +3360,7 @@ impl Parser {
                                 }
                             }
                         }
-                        let end = self.require(Token::RightParen, "struct end".to_string())?;
+                        let end = self.require(Token::RightParen, "struct end")?;
 
                         Ok(LocExpr {
                             expr: Expr::Struct(name, fields),
@@ -3363,40 +3373,59 @@ impl Parser {
                 }
                 Token::InternalPush => {
                     self.advance();
-                    let s = self.single("internal push")?;
+                    let args = if let Some((end, n)) = self.try_consume_usize("internal push")? {
+                        let mut v = Vec::with_capacity(n);
+                        v.resize_with(n, || Box::new(LocExpr { start: end, end, expr: Expr::Null }));
+                        v
+                    } else {
+                        self.require(Token::LeftParen, "internal push start")?;
+                        let v = self.annotated_comma_separated(false, "internal push args")?.0;
+                        self.require(Token::RightParen, "internal push end")?;
+                        v
+                    };
+                    let s = self.single("internal push body")?;
                     Ok(LocExpr {
                         start,
                         end: s.end,
-                        expr: Expr::InternalPush(Box::new(s)),
+                        expr: Expr::InternalPush(args, Box::new(s)),
                     })
                 }
-                Token::InternalPop => {
+                Token::InternalPeek => {
                     self.advance();
-                    Ok(LocExpr {
-                        start,
-                        end,
-                        expr: Expr::InternalPop,
-                    })
-                }
-                Token::InternalPeek(n) => {
-                    let n = *n;
-                    self.advance();
-                    Ok(LocExpr {
-                        start,
-                        end,
-                        expr: Expr::InternalPeek(n),
-                    })
+                    if let Some((end, n)) = self.try_consume_usize("internal peek")? {
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::InternalPeek(n),
+                        })
+                    } else {
+                        Err(self.error_here(format!("internal peek no n")))?
+                    }
                 }
                 Token::InternalFor => {
                     self.advance();
-                    self.require(Token::LeftParen, "internal for start".to_string())?;
+                    self.require(Token::LeftParen, "internal for start")?;
+                    let i = if let Some(LocToken { start: _, end: _, token: Token::IntLit(i) }) = self.peek_loc_token() {
+                        match i.to_usize() {
+                            Some(i) => {
+                                self.advance();
+                                i
+                            }
+                            None => {
+                                return Err(self.error_here(format!("internal for: int too large")));
+                            }
+                        }
+                    } else {
+                        return Err(self.error_here(format!("internal for: need int")));
+                    };
+                    self.require(Token::LeftArrow, "internal for left arrow")?;
                     let iteratee = self.single("internal for iteratee")?;
-                    self.require(Token::RightParen, "internal for end".to_string())?;
+                    self.require(Token::RightParen, "internal for end")?;
                     let body = self.single("internal for body")?;
                     Ok(LocExpr {
                         start,
                         end: body.end,
-                        expr: Expr::InternalFor(Box::new(iteratee), Box::new(body)),
+                        expr: Expr::InternalFor(i, Box::new(iteratee), Box::new(body)),
                     })
                 }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
@@ -3457,7 +3486,7 @@ impl Parser {
                         };
                     } else {
                         let (cs, _) = self.annotated_comma_separated(false, "call arg list")?;
-                        let end = self.require(Token::RightParen, "call expr".to_string())?;
+                        let end = self.require(Token::RightParen, "call expr")?;
                         cur = LocExpr {
                             expr: Expr::Call(Box::new(cur), cs, CallSyntax::Parentheses),
                             start,
@@ -3477,7 +3506,7 @@ impl Parser {
                         } else {
                             let c = self.single("slice end")?;
                             let end =
-                                self.require(Token::RightBracket, "index expr".to_string())?;
+                                self.require(Token::RightBracket, "index expr")?;
                             cur = LocExpr {
                                 expr: Expr::Index(
                                     Box::new(cur),
@@ -3502,7 +3531,7 @@ impl Parser {
                             } else {
                                 let cc = self.single("slice end")?;
                                 let end =
-                                    self.require(Token::RightBracket, "index expr".to_string())?;
+                                    self.require(Token::RightBracket, "index expr")?;
                                 cur = LocExpr {
                                     expr: Expr::Index(
                                         Box::new(cur),
@@ -3514,7 +3543,7 @@ impl Parser {
                             }
                         } else {
                             let end =
-                                self.require(Token::RightBracket, "index expr".to_string())?;
+                                self.require(Token::RightBracket, "index expr")?;
                             cur = LocExpr {
                                 expr: Expr::Index(Box::new(cur), IndexOrSlice::Index(Box::new(c))),
                                 start,
@@ -3842,7 +3871,7 @@ impl Parser {
             let a = to_lvalue_no_literals(self.single("swap target 1")?)?;
             self.require(
                 Token::Comma,
-                format!("swap between lvalues at {}", ag_start_err),
+                &format!("swap between lvalues at {}", ag_start_err),
             )?;
             let bs = self.single("swap target 2")?;
             let end = bs.end;
@@ -4222,6 +4251,22 @@ impl Env {
         }
     }
 
+    pub fn try_borrow_peek(env: &Rc<RefCell<Env>>, i: usize) -> NRes<Obj> {
+        let r = try_borrow_nres(env, "internal", "peek")?;
+        let s = &r.internal_stack;
+        let x = s[s.len() - i - 1].clone();
+        std::mem::drop(r);
+        Ok(x)
+    }
+
+    pub fn try_borrow_set_peek(env: &Rc<RefCell<Env>>, i: usize, x: Obj) -> NRes<()> {
+        let mut r = try_borrow_mut_nres(env, "internal", "peek set")?;
+        let s = &mut r.internal_stack;
+        let n = s.len();
+        s[n - i - 1] = x;
+        Ok(())
+    }
+
     pub fn modify_existing_var<T>(
         &self,
         key: &str,
@@ -4235,6 +4280,7 @@ impl Env {
             },
         }
     }
+
     pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
         match self.vars.entry(key) {
             std::collections::hash_map::Entry::Occupied(e) => {

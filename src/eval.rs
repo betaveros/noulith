@@ -28,6 +28,7 @@ pub enum EvaluatedLvalue {
     Literal(Obj),
     Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
     DestructureStruct(Struct, Vec<Box<EvaluatedLvalue>>),
+    InternalPeek(usize),
 }
 
 impl Display for EvaluatedLvalue {
@@ -77,6 +78,9 @@ impl Display for EvaluatedLvalue {
                     write!(formatter, "{},", v)?;
                 }
                 write!(formatter, ")")
+            }
+            EvaluatedLvalue::InternalPeek(i) => {
+                write!(formatter, "__internal_peek({})", i)
             }
         }
     }
@@ -354,6 +358,7 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
             ce.finish()
         }
         Lvalue::Literally(e) => Ok(EvaluatedLvalue::Literal(evaluate(env, e)?)),
+        Lvalue::InternalPeek(e) => Ok(EvaluatedLvalue::InternalPeek(*e)),
     }
 }
 
@@ -715,7 +720,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Annotation(s, _) => evaluate(env, s),
         Expr::Consume(pat) => match eval_lvalue(env, pat)? {
-            EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
+            EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for consume", &s)?
                 .modify_existing_var(&s, |(_type, vv)| {
                     modify_existing_index(
                         &mut *try_borrow_mut_nres(vv, "var for consume", &s)?,
@@ -724,6 +729,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     )
                 })
                 .ok_or(NErr::type_error("failed to consume??".to_string()))?,
+            EvaluatedLvalue::InternalPeek(i) => {
+                let mut ptr = try_borrow_mut_nres(env, "env for consume", "peek")?;
+                let s = &mut ptr.internal_stack;
+                let n = s.len();
+                let r = std::mem::take(&mut s[n - 1 - i]);
+                std::mem::drop(ptr);
+                Ok(r)
+            }
             _ => Err(NErr::type_error("can't consume, weird pattern".to_string())),
         },
         Expr::Pop(pat) => add_trace(
@@ -1268,30 +1281,27 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
 
-        Expr::InternalPush(e) => {
-            let r = evaluate(env, e)?;
+        Expr::InternalPush(xs, e) => {
+            let v = xs.iter().map(|x| evaluate(env, x)).collect::<NRes<Vec<Obj>>>()?;
+            let vn = v.len();
+
+            // careful to keep stack correct even if things error!
             try_borrow_mut_nres(env, "internal", "push")?
-                .internal_stack
-                .push(r);
-            Ok(Obj::Null)
+                .internal_stack.extend(v);
+            let r = evaluate(env, e);
+            {
+                let mut ptr = try_borrow_mut_nres(env, "internal", "pop").expect("internal push: stack is out of sync, unrecoverable");
+                let s = &mut ptr.internal_stack;
+                s.truncate(s.len() - vn);
+            }
+            r
         }
-        Expr::InternalPop => try_borrow_mut_nres(env, "internal", "pop")?
-            .internal_stack
-            .pop()
-            .ok_or_else(|| NErr::empty_error("internal pop".to_string())),
-        Expr::InternalPeek(n) => {
-            let r = try_borrow_mut_nres(env, "internal", "pop")?;
-            let s = &r.internal_stack;
-            let x = s[s.len() - n - 1].clone();
-            std::mem::drop(r);
-            Ok(x)
-        }
-        Expr::InternalFor(iteratee, body) => {
+        Expr::InternalPeek(i) => Env::try_borrow_peek(env, *i),
+        Expr::InternalFor(index, iteratee, body) => {
             let mut itr = evaluate(env, iteratee)?;
             for x in mut_obj_into_iter(&mut itr, "internal for iteration")? {
-                try_borrow_mut_nres(env, "internal", "for push")?
-                    .internal_stack
-                    .push(x?);
+                let x = x?;
+                Env::try_borrow_set_peek(env, *index, x)?;
                 evaluate(env, body)?;
             }
             Ok(Obj::Null)
@@ -1526,6 +1536,9 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                     s.size
                 )))
             }
+        }
+        EvaluatedLvalue::InternalPeek(i) => {
+            Env::try_borrow_peek(env, *i)
         }
     }
 }
@@ -2169,6 +2182,9 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 "Destructuring structure failed: not type".to_string(),
             )),
         },
+        EvaluatedLvalue::InternalPeek(i) => {
+            Env::try_borrow_set_peek(env, *i, rhs)
+        },
     }
 }
 
@@ -2220,6 +2236,9 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
         EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
         EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
+        EvaluatedLvalue::InternalPeek(i) => {
+            Env::try_borrow_set_peek(env, *i, Obj::Null)
+        },
     }
 }
 
@@ -2299,6 +2318,9 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             "Can't assign-every to struct {:?}",
             lhs
         ))),
+        EvaluatedLvalue::InternalPeek(i) => {
+            Env::try_borrow_set_peek(env, *i, rhs)
+        }
     }
 }
 
@@ -2370,6 +2392,12 @@ pub fn modify_every(
             "Can't modify destructure struct {:?}",
             lhs
         ))),
+        EvaluatedLvalue::InternalPeek(i) => {
+            let old = Env::try_borrow_peek(env, *i)?;
+            let new = rhs(old)?;
+            Env::try_borrow_set_peek(env, *i, new)?;
+            Ok(())
+        }
     }
 }
 
