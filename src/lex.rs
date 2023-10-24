@@ -437,8 +437,12 @@ impl<'a> Lexer<'a> {
                                 _ => self.emit(Token::IntLit(acc.parse::<BigInt>().unwrap())),
                             }
                         }
-                    } else if c.is_alphabetic() || c == '_' {
-                        let mut acc = c.to_string();
+                    } else if c.is_alphabetic() || c == '_' || c == '🐉' {
+                        let mut acc = if c == '🐉' {
+                            "__internal_".to_string()
+                        } else {
+                            c.to_string()
+                        };
 
                         while let Some(cc) = self.peek().filter(|c| {
                             c.is_alphanumeric() || **c == '_' || **c == '\'' || **c == '?'
