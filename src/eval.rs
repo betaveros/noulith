@@ -830,7 +830,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             _ => evaluate(env, rhs),
                         }?;
                         add_trace(
-                            modify_every(env, &p, &mut |x| ff.run(env, vec![x, res.clone()])),
+                            modify_every(env, &p, &mut |x| ff.run2(env, x, res.clone())),
                             || format!("op({})-assign", ff),
                             expr.start,
                             expr.end,
@@ -864,7 +864,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             expr.start,
                             expr.end,
                         )?;
-                        let fres = ff.run(env, vec![pv, res])?;
+                        let fres = ff.run2(env, pv, res)?;
                         add_trace(
                             assign(&env, &p, None, fres),
                             || format!("op({})-assign", ff),
@@ -1498,6 +1498,16 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 )))
             }
         }
+    }
+}
+
+pub fn call1(env: &REnv, f: Obj, arg: Obj) -> NRes<Obj> {
+    match f {
+        Obj::Func(ff, _) => ff.run1(env, arg),
+        _ => Err(NErr::type_error(format!(
+            "Can't call non-function {}",
+            FmtObj::debug(&f)
+        ))),
     }
 }
 
@@ -2340,22 +2350,22 @@ impl Func {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
             Func::PartialApp1(f, x) => match few(args) {
-                Few::One(arg) => f.run(env, vec![(**x).clone(), arg]),
+                Few::One(arg) => f.run2(env, (**x).clone(), arg),
                 a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
             }
             Func::PartialApp2(f, x) => match few(args) {
-                Few::One(arg) => f.run(env, vec![arg, (**x).clone()]),
+                Few::One(arg) => f.run2(env, arg, (**x).clone()),
                 a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
             }
             Func::PartialAppLast(f, x) => {
                 args.push(*x.clone());
                 f.run(env, args)
             }
-            Func::Composition(f, g) => f.run(env, vec![g.run(env, args)?]),
+            Func::Composition(f, g) => f.run1(env, g.run(env, args)?),
             Func::OnComposition(f, g) => {
                 let mut mapped_args = Vec::new();
                 for e in args {
-                    mapped_args.push(g.run(env, vec![e])?);
+                    mapped_args.push(g.run1(env, e)?);
                 }
                 f.run(env, mapped_args)
             }
@@ -2366,7 +2376,7 @@ impl Func {
                         match seq.len() {
                             Some(n) if n == fs.len() => {
                                 for (f, a) in fs.iter().zip(mut_seq_into_iter(&mut seq)) {
-                                    res.push(f.run(env, vec![a?])?);
+                                    res.push(f.run1(env, a?)?);
                                 }
                             }
                             Some(n) => return Err(NErr::type_error(format!("Parallel argument seq has wrong length {}: {:?}", n, seq))),
@@ -2381,7 +2391,7 @@ impl Func {
                     }
                     Few::Many(args) => {
                         for (f, a) in fs.iter().zip(args) {
-                            res.push(f.run(env, vec![a])?);
+                            res.push(f.run1(env, a)?);
                         }
                     }
                 }
@@ -2397,7 +2407,7 @@ impl Func {
             Func::Flip(f) => match few2(args) {
                 // weird lol
                 Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
-                Few2::Two(a, b) => f.run(env, vec![b, a]),
+                Few2::Two(a, b) => f.run2(env, b, a),
                 _ => Err(NErr::argument_error("Flipped function can only be called on two arguments".to_string()))
             }
             Func::ListSection(x) => {
@@ -2504,6 +2514,8 @@ impl Func {
     pub fn run1(&self, env: &REnv, arg: Obj) -> NRes<Obj> {
         match self {
             Func::Builtin(b) => b.run1(env, arg),
+            Func::PartialApp1(f, x) => f.run2(env, (**x).clone(), arg),
+            Func::PartialApp2(f, x) => f.run2(env, arg, (**x).clone()),
             _ => self.run(env, vec![arg]),
         }
     }
@@ -2555,7 +2567,7 @@ pub fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
         (ObjType::Struct(s1), Obj::Instance(s2, _)) => s1.id == s2.id,
-        (ObjType::Satisfying(renv, func), x) => match func.run(renv, vec![x.clone()]) {
+        (ObjType::Satisfying(renv, func), x) => match func.run1(renv, x.clone()) {
             Ok(res) => res.truthy(),
             Err(e) => {
                 eprintln!("INTERNAL ERROR: running the predicate for a 'satisfying'-type-check failed with; {}! trudging on...", e);

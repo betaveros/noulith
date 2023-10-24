@@ -516,7 +516,7 @@ impl Iterator for Iterate {
             Ok((obj, func, renv)) => {
                 let ret = obj.clone();
                 let cur = std::mem::take(obj);
-                match func.run(&renv, vec![cur]) {
+                match func.run1(&renv, cur) {
                     Ok(nxt) => {
                         *obj = nxt;
                     }
@@ -588,7 +588,7 @@ impl Iterator for MappedStream {
                 self.0 = Err(e.clone());
                 Some(Err(e))
             }
-            Some(Ok(cur)) => match func.run(&renv, vec![cur]) {
+            Some(Ok(cur)) => match func.run1(&renv, cur) {
                 Ok(nxt) => Some(Ok(nxt)),
                 Err(e) => {
                     self.0 = Err(e.clone());
@@ -614,7 +614,7 @@ impl Stream for MappedStream {
     fn peek(&self) -> Option<NRes<Obj>> {
         let (inner, func, renv) = self.0.as_ref().ok()?;
         match inner.peek()? {
-            Ok(inxt) => match func.run(&renv, vec![inxt]) {
+            Ok(inxt) => match func.run1(&renv, inxt) {
                 Ok(nxt) => Some(Ok(nxt)),
                 Err(e) => Some(Err(e.clone())),
             },

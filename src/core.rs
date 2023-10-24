@@ -551,13 +551,13 @@ pub fn type_of(obj: &Obj) -> ObjType {
 pub fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
     match few(args) {
         Few::One(arg) => Ok(arg),
-        _ => Err(NErr::type_error(format!("{} expected one argument", msg))),
+        t => Err(NErr::type_error(format!("{} expected one argument, got {}", msg, t.len()))),
     }
 }
 
-pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
+pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     match ty {
-        ObjType::Int => match expect_one(arg, "int")? {
+        ObjType::Int => match arg {
             Obj::Num(n) => Ok(Obj::Num(
                 n.trunc()
                     .ok_or(NErr::value_error("can't coerce to int".to_string()))?,
@@ -570,7 +570,7 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                 "int: expected number or string".to_string(),
             )),
         },
-        ObjType::Float => match expect_one(arg, "float")? {
+        ObjType::Float => match arg {
             Obj::Num(n) => Ok(Obj::from(to_f64_ok(&n)?)),
             Obj::Seq(Seq::String(s)) => match s.parse::<f64>() {
                 Ok(x) => Ok(Obj::from(x)),
@@ -580,7 +580,7 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                 "float: expected number or string".to_string(),
             )),
         },
-        ObjType::Number => match expect_one(arg, "number")? {
+        ObjType::Number => match arg {
             Obj::Num(n) => Ok(Obj::Num(n)),
             Obj::Seq(Seq::String(s)) => match s.parse::<BigInt>() {
                 Ok(x) => Ok(Obj::from(x)),
@@ -593,14 +593,14 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                 "number: expected number or string".to_string(),
             )),
         },
-        ObjType::List => match expect_one(arg, "list")? {
+        ObjType::List => match arg {
             Obj::Seq(Seq::List(xs)) => Ok(Obj::Seq(Seq::List(xs))),
             mut arg => Ok(Obj::list(
                 mut_obj_into_iter(&mut arg, "list conversion")?.collect::<NRes<Vec<Obj>>>()?,
             )),
         },
-        ObjType::String => Ok(Obj::from(format!("{}", expect_one(arg, "str")?))),
-        ObjType::Bytes => match expect_one(arg, "bytes")? {
+        ObjType::String => Ok(Obj::from(format!("{}", arg))),
+        ObjType::Bytes => match arg {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
             Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
             mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
@@ -609,11 +609,11 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
                     .collect::<NRes<Vec<u8>>>()?,
             )))),
         },
-        ObjType::Vector => match expect_one(arg, "vector")? {
+        ObjType::Vector => match arg {
             Obj::Seq(Seq::Vector(s)) => Ok(Obj::Seq(Seq::Vector(s))),
             mut arg => to_obj_vector(mut_obj_into_iter(&mut arg, "vector conversion")?),
         },
-        ObjType::Dict => match expect_one(arg, "dict")? {
+        ObjType::Dict => match arg {
             Obj::Seq(Seq::Dict(x, d)) => Ok(Obj::Seq(Seq::Dict(x, d))),
             // nonsensical but maybe this is something some day
             /*
@@ -634,26 +634,35 @@ pub fn call_type(ty: &ObjType, arg: Vec<Obj>) -> NRes<Obj> {
             )),
         },
         ObjType::Type => Ok(Obj::Func(
-            Func::Type(type_of(&expect_one(arg, "type")?)),
+            Func::Type(type_of(&arg)),
             Precedence::zero(),
         )),
-        ObjType::Struct(s) => {
-            if arg.len() == 0 {
-                Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
-            } else if arg.len() == s.size {
-                Ok(Obj::Instance(s.clone(), arg))
-            } else {
-                Err(NErr::argument_error(format!(
-                    "struct construction: wrong number of arguments: {}, wanted {}",
-                    arg.len(),
-                    s.size
-                )))
-            }
+        ObjType::Struct(_) => {
+            call_type(ty, vec![arg])
         }
         // TODO: complex
         _ => Err(NErr::type_error(
             "that type can't be called (maybe not implemented)".to_string(),
         )),
+    }
+}
+
+pub fn call_type(ty: &ObjType, args: Vec<Obj>) -> NRes<Obj> {
+    match ty {
+        ObjType::Struct(s) => {
+            if args.len() == 0 {
+                Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
+            } else if args.len() == s.size {
+                Ok(Obj::Instance(s.clone(), args))
+            } else {
+                Err(NErr::argument_error(format!(
+                    "struct construction: wrong number of arguments: {}, wanted {}",
+                    args.len(),
+                    s.size
+                )))
+            }
+        }
+        _ => call_type1(ty, expect_one(args, &ty.name())?),
     }
 }
 
@@ -1936,7 +1945,9 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
 pub trait Builtin: Debug {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
-    // hot paths
+    // there are a LOT of builtins who specialize based on how many arguments they get, and a LOT
+    // of paths where we know how many arguments we're passing, so allow the two to be "manually
+    // fused"
     fn run1(&self, env: &REnv, arg: Obj) -> NRes<Obj> {
         self.run(env, vec![arg])
     }
