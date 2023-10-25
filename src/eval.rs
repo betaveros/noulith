@@ -88,45 +88,47 @@ impl Display for EvaluatedLvalue {
 }
 
 pub struct ChainEvaluator {
-    // represents all pending operators and operands that we can't yet be certain have high enough
-    // precedence to evaluate. in steady state, the operators are interspersed between the operands
-    // in order, so operands.len() == 1 + operators.len(). but elements of operands can be multiple
-    // Objs long when we're chaining operators. e.g. after seeing 1 < 2 <= 3, operands should be
-    // [1, 2], [3] and operators should just have one element that's a (<, <=) merger
-    operands: Vec<Vec<Obj>>,
-    operators: Vec<(Func, Precedence, CodeLoc, CodeLoc)>,
+    // represents all pending operands and operators, left to right, that we can't yet be certain
+    // have high enough precedence to evaluate. usually the operands vec will just have length 1,
+    // but will be multiple Objs long when we're chaining operators. e.g. after seeing 1 < 2 <= 3,
+    // pending will have a [1, 2] and (<, <=) merger, and rightmost will be 3
+    pending: Vec<(Vec<Obj>, Func, Precedence, CodeLoc, CodeLoc)>,
+    rightmost: Obj,
 }
 
 impl ChainEvaluator {
     pub fn new(operand: Obj) -> ChainEvaluator {
         ChainEvaluator {
-            operands: vec![vec![operand]],
-            operators: Vec::new(),
+            pending: Vec::new(),
+            rightmost: operand,
         }
     }
 
     pub fn run_top_popped(
         &mut self,
         env: &REnv,
+        mut operands: Vec<Obj>,
         op: Func,
         start: CodeLoc,
         end: CodeLoc,
     ) -> NRes<()> {
-        let rhs = self.operands.pop().expect("sync");
-        let mut lhs = self.operands.pop().expect("sync");
-        lhs.extend(rhs);
-        self.operands.push(vec![add_trace(
-            op.run(env, lhs),
+        // run an operator and its LHS that were popped from pending (note that that means they
+        // were "popped" from the left of self.rightmost) with self.rightmost; put the result back
+        // into self.rightmost
+        operands.push(std::mem::take(&mut self.rightmost));
+        self.rightmost = add_trace(
+            op.run(env, operands),
             || format!("chain {}", op),
             start,
             end,
-        )?]);
+        )?;
         Ok(())
     }
 
     pub fn run_top(&mut self, env: &REnv) -> NRes<()> {
-        let (op, _, start, end) = self.operators.pop().expect("sync");
-        self.run_top_popped(env, op, start, end)
+        let (operands, op, _, start, end) = self.pending.pop().expect("sync");
+        self.run_top_popped(env, operands, op, start, end)?;
+        Ok(())
     }
 
     pub fn give(
@@ -138,70 +140,72 @@ impl ChainEvaluator {
         start: CodeLoc,
         end: CodeLoc,
     ) -> NRes<()> {
+        // add an operator and operand. note to help follow the logic: operand must end up in
+        // self.rightmost at the end since the next operator could always be higher precedence
+
         // is the top operator on the stack higher precedence than the new operator?
         while self
-            .operators
+            .pending
             .last()
-            .map_or(false, |t| t.1.tighter_than_when_before(&precedence))
+            .map_or(false, |t| t.2.tighter_than_when_before(&precedence))
         {
             // if so, run it, and repeat.
-            let (top, prec, start, end) = self.operators.pop().expect("sync");
+            let (mut operands, top, prec, start, end) = self.pending.pop().expect("sync");
             match top.try_chain(&operator) {
                 Some(new_op) => {
                     // except that if it chains with the new operator, that takes precedence; merge
-                    // the operators and the last two operands.
-                    self.operators.push((new_op, prec, start, end));
-
-                    let last = self.operands.pop().expect("sync");
-                    self.operands.last_mut().expect("sync").extend(last);
-                    self.operands.push(vec![operand]);
-
+                    // the operators and operands.
+                    operands.push(std::mem::replace(&mut self.rightmost, operand));
+                    self.pending.push((operands, new_op, prec, start, end));
                     return Ok(());
                 }
                 None => {
-                    self.run_top_popped(env, top, start, end)?;
+                    self.run_top_popped(env, operands, top, start, end)?;
                 }
             }
         }
 
-        self.operators.push((operator, precedence, start, end));
-        self.operands.push(vec![operand]);
+        self.pending.push((
+            vec![std::mem::replace(&mut self.rightmost, operand)],
+            operator,
+            precedence,
+            start,
+            end,
+        ));
         Ok(())
     }
 
-    pub fn finish(&mut self, env: &REnv) -> NRes<Obj> {
-        while !self.operators.is_empty() {
+    pub fn finish(mut self, env: &REnv) -> NRes<Obj> {
+        while !self.pending.is_empty() {
             self.run_top(env)?;
         }
-        if self.operands.len() == 1 {
-            Ok(self.operands.remove(0).remove(0))
-        } else {
-            panic!("chain eval out of sync")
-        }
+        Ok(self.rightmost)
     }
 }
 
 struct LvalueChainEvaluator {
-    operands: Vec<Vec<Box<EvaluatedLvalue>>>,
-    operators: Vec<(Func, Precedence)>,
+    pending: Vec<(Vec<Box<EvaluatedLvalue>>, Func, Precedence)>,
+    rightmost: Box<EvaluatedLvalue>,
 }
 
 impl LvalueChainEvaluator {
     fn new(operand: EvaluatedLvalue) -> LvalueChainEvaluator {
         LvalueChainEvaluator {
-            operands: vec![vec![Box::new(operand)]],
-            operators: Vec::new(),
+            pending: Vec::new(),
+            rightmost: Box::new(operand),
         }
     }
 
-    fn run_top_popped(&mut self, op: Func) -> NRes<()> {
-        let rhs = self.operands.pop().expect("sync");
-        let mut lhs = self.operands.pop().expect("sync");
+    fn run_top_popped(&mut self, mut operands: Vec<Box<EvaluatedLvalue>>, op: Func) -> NRes<()> {
+        // let rhs = self.operands.pop().expect("sync");
+        // let mut lhs = self.operands.pop().expect("sync");
         match op {
             Func::Builtin(b) => {
-                lhs.extend(rhs);
-                self.operands
-                    .push(vec![Box::new(EvaluatedLvalue::Destructure(b, lhs))]);
+                operands.push(std::mem::replace(
+                    &mut self.rightmost,
+                    Box::new(EvaluatedLvalue::Underscore),
+                ));
+                self.rightmost = Box::new(EvaluatedLvalue::Destructure(b, operands));
                 Ok(())
             }
             nop => Err(NErr::type_error(format!(
@@ -212,8 +216,8 @@ impl LvalueChainEvaluator {
     }
 
     fn run_top(&mut self) -> NRes<()> {
-        let (op, _) = self.operators.pop().expect("sync");
-        self.run_top_popped(op)
+        let (operands, op, _) = self.pending.pop().expect("sync");
+        self.run_top_popped(operands, op)
     }
 
     fn give(
@@ -223,41 +227,36 @@ impl LvalueChainEvaluator {
         operand: EvaluatedLvalue,
     ) -> NRes<()> {
         while self
-            .operators
+            .pending
             .last()
-            .map_or(false, |t| t.1.tighter_than_when_before(&precedence))
+            .map_or(false, |t| t.2.tighter_than_when_before(&precedence))
         {
-            let (top, prec) = self.operators.pop().expect("sync");
+            let (mut operands, top, prec) = self.pending.pop().expect("sync");
             match top.try_chain(&operator) {
                 Some(new_op) => {
-                    self.operators.push((new_op, prec));
-
-                    let last = self.operands.pop().expect("sync");
-                    self.operands.last_mut().expect("sync").extend(last);
-                    self.operands.push(vec![Box::new(operand)]);
-
+                    operands.push(std::mem::replace(&mut self.rightmost, Box::new(operand)));
+                    self.pending.push((operands, new_op, prec));
                     return Ok(());
                 }
                 None => {
-                    self.run_top_popped(top)?;
+                    self.run_top_popped(operands, top)?;
                 }
             }
         }
 
-        self.operators.push((operator, precedence));
-        self.operands.push(vec![Box::new(operand)]);
+        self.pending.push((
+            vec![std::mem::replace(&mut self.rightmost, Box::new(operand))],
+            operator,
+            precedence,
+        ));
         Ok(())
     }
 
-    fn finish(&mut self) -> NRes<EvaluatedLvalue> {
-        while !self.operators.is_empty() {
+    fn finish(mut self) -> NRes<EvaluatedLvalue> {
+        while !self.pending.is_empty() {
             self.run_top()?;
         }
-        if self.operands.len() == 1 {
-            Ok(*self.operands.remove(0).remove(0))
-        } else {
-            panic!("chain eval out of sync")
-        }
+        Ok(*self.rightmost)
     }
 }
 
