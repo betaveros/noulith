@@ -1306,27 +1306,52 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::InternalPeek(i) => Env::try_borrow_peek(env, *i),
         Expr::InternalFor(iteratee, body) => {
-            let mut itr = evaluate(env, iteratee)?;
-            for x in mut_obj_into_iter(&mut itr, "internal for iteration")? {
-                let x = x?;
-                let s = {
-                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push")?;
-                    let s = ptr.internal_stack.len();
-                    ptr.internal_stack.push(x);
-                    s
-                };
-                let ret = evaluate(env, body);
-                {
-                    let mut ptr = try_borrow_mut_nres(env, "internal", "for push")
-                        .expect("internal for: stack is out of sync, unrecoverable");
-                    ptr.internal_stack.truncate(s);
+            match evaluate(env, iteratee)? {
+                Obj::Seq(mut s) => {
+                    for x in mut_seq_into_iter(&mut s) {
+                        let x = x?;
+                        let s = {
+                            let mut ptr = try_borrow_mut_nres(env, "internal", "for push")?;
+                            let s = ptr.internal_stack.len();
+                            ptr.internal_stack.push(x);
+                            s
+                        };
+                        let ret = evaluate(env, body);
+                        {
+                            let mut ptr = try_borrow_mut_nres(env, "internal", "for push")
+                                .expect("internal for: stack is out of sync, unrecoverable");
+                            ptr.internal_stack.truncate(s);
+                        }
+                        match ret {
+                            Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
+                            Err(NErr::Continue) => (),
+                            Err(r) => return Err(r),
+                            Ok(_) => (),
+                        }
+                    }
                 }
-                match ret {
-                    Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
-                    Err(NErr::Continue) => (),
-                    Err(r) => return Err(r),
-                    Ok(_) => (),
+                Obj::Num(NNum::Int(n)) => {
+                    let mut i = NInt::Small(0);
+                    while i < n {
+                        let s = try_borrow_nres(env, "internal", "for check")?.internal_stack.len();
+                        let ret = evaluate(env, body);
+                        try_borrow_mut_nres(env, "internal", "for end")
+                                .expect("internal for: stack is out of sync, unrecoverable")
+                                .internal_stack.
+                                truncate(s);
+                        match ret {
+                            Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
+                            Err(NErr::Continue) => (),
+                            Err(r) => return Err(r),
+                            Ok(_) => (),
+                        }
+                        i += 1;
+                    }
                 }
+                e => return Err(NErr::type_error(format!(
+                    "{}: internal for: not int and not iterable",
+                    FmtObj::debug(&e)
+                ))),
             }
             Ok(Obj::Null)
         }
