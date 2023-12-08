@@ -1031,6 +1031,10 @@ impl NNum {
         force_bi_binary_match!(self, other, gcd, NInt::gcd)
     }
 
+    pub fn lcm(&self, other: &NNum) -> NNum {
+        force_bi_binary_match!(self, other, gcd, NInt::lcm)
+    }
+
     pub fn is_prime(&self) -> bool {
         match self {
             NNum::Int(a) => a.lazy_is_prime(),
