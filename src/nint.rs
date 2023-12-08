@@ -361,6 +361,9 @@ impl NInt {
     pub fn gcd(&self, other: &Self) -> NInt {
         NInt::Big(Integer::gcd(&*self.to_bigint(), &*other.to_bigint()))
     }
+    pub fn lcm(&self, other: &Self) -> NInt {
+        NInt::Big(Integer::lcm(&*self.to_bigint(), &*other.to_bigint()))
+    }
     pub fn sqrt(&self) -> NInt {
         NInt::Big(self.to_bigint().sqrt())
     }

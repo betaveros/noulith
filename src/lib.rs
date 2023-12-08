@@ -2899,6 +2899,10 @@ pub fn initialize(env: &mut Env) {
         name: "gcd".to_string(),
         body: |a, b| a.gcd(&b),
     });
+    env.insert_builtin(TwoNumsToNumsBuiltin {
+        name: "lcm".to_string(),
+        body: |a, b| a.lcm(&b),
+    });
     env.insert_rassoc_builtin(TwoNumsToNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| a.pow_num(&b),
