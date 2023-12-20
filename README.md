@@ -1,5 +1,7 @@
 An attempt to give myself a new Pareto-optimal choice for quick-and-dirty scripts, particularly when I'm not on a dev computer, and to practice writing a more realistic programming language instead of the [overengineered stack-based nonsense](https://github.com/betaveros/paradoc) I spend too much time on. ([Crafting Interpreters](https://craftinginterpreters.com/) is such a good book, I have no excuses.)
 
+You can [try Noulith online](https://betaveros.github.io/noulith/) (via wasm)!
+
 ## Elevator pitches (and anti-pitches)
 
 - Immutable data structures (but not variables) means you can write `matrix = [[0] ** 10] ** 10; matrix[1][2] = 3` and not worry about it, instead of the `[[0] * 10 for _ in range(10)]` you always have to do in Python. You can also freely use things as keys in dictionaries. But, thanks to mutate-or-copy-on-write shenanigans behind the scenes (powered by Rust's overpowered reference-counting pointers), you don't have to sacrifice the performance you'd get from mutating lists. (There are almost certainly space leaks from cavalier use of `Rc` but shhhhh.)
