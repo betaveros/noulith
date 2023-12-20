@@ -3194,7 +3194,6 @@ impl Parser {
                 Token::Lambda => {
                     self.advance();
                     if let Some((end, us)) = self.try_consume_usize("backref")? {
-                        self.advance();
                         Ok(LocExpr {
                             start,
                             end,

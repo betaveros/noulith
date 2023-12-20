@@ -57,6 +57,7 @@ mod lex;
 mod nint;
 pub mod nnum;
 mod streams;
+// mod optim;
 use crate::few::*;
 use crate::iter::*;
 use crate::streams::*;
@@ -3697,6 +3698,27 @@ pub fn initialize(env: &mut Env) {
                         started = true;
                         write!(t.output, "{}", FmtObj::debug(arg))?;
                     }
+                    writeln!(t.output, "")?;
+                    Ok(())
+                })
+                .map_err(|e| NErr::io_error(format!("writing {}", e)))?;
+            Ok(Obj::Null)
+        },
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "__internal_debug".to_string(),
+        body: |env, args| {
+            try_borrow_nres(env, "debug", &format!("{}", args.len()))?
+                .mut_top_env(|t| -> io::Result<()> {
+                    let mut started = false;
+                    for arg in args.iter() {
+                        if started {
+                            write!(t.output, " ")?;
+                        }
+                        started = true;
+                        write!(t.output, "{:?}", arg)?;
+                    }
+                    writeln!(t.output, "")?;
                     Ok(())
                 })
                 .map_err(|e| NErr::io_error(format!("writing {}", e)))?;

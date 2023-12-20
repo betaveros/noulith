@@ -1,7 +1,10 @@
 extern crate noulith;
-// use std::rc::Rc;
+use std::rc::Rc;
+use std::cell::RefCell;
 use noulith::simple_eval;
 use noulith::Obj;
+use noulith::Env;
+use noulith::{evaluate, parse};
 use num::bigint::BigInt;
 
 fn i(n: i64) -> Obj {
@@ -530,4 +533,11 @@ fn switch() {
     assert_eq!(simple_eval("switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"), i(4));
     assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(0, _) -> 0 case Foo(a, b) -> a + b"), i(7));
     assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(3, b) -> b case Foo(a, b) -> a + b"), i(4));
+}
+
+#[test]
+fn backrefs() {
+    let env = Env::empty();
+    env.mut_top_env(|v| v.backrefs.push(i(1337)));
+    assert_eq!(evaluate(&Rc::new(RefCell::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(), i(1337));
 }
