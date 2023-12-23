@@ -1,9 +1,9 @@
 use noulith::{evaluate, initialize, parse, warn, Env, Expr, LocExpr, Obj, ObjType, TopEnv};
-use std::cell::RefCell;
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 #[cfg(feature = "cli")]
 mod cli;
@@ -31,7 +31,7 @@ fn repl() {
         output: Box::new(io::stdout()),
     });
     initialize(&mut env);
-    let e = Rc::new(RefCell::new(env));
+    let e = Arc::new(RwLock::new(env));
 
     let mut input = String::new();
     while prompt(&mut input) {
@@ -39,7 +39,7 @@ fn repl() {
             Ok(Some(expr)) => match evaluate(&e, &expr) {
                 Ok(Obj::Null) => {}
                 Ok(x) => {
-                    let refs_len = e.borrow_mut().mut_top_env(|v| {
+                    let refs_len = e.write().unwrap().mut_top_env(|v| {
                         v.backrefs.push(x.clone());
                         v.backrefs.len()
                     });
@@ -80,7 +80,7 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
         Ok(()) => (),
         Err(e) => panic!("inserting __file__ failed: {}", e),
     }
-    let e = Rc::new(RefCell::new(env));
+    let e = Arc::new(RwLock::new(env));
 
     match parse(&code) {
         Ok(Some(expr)) => {

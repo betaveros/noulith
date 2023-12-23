@@ -1,6 +1,6 @@
 extern crate noulith;
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::Arc;
+use std::sync::RwLock;
 use noulith::simple_eval;
 use noulith::Obj;
 use noulith::Env;
@@ -539,5 +539,5 @@ fn switch() {
 fn backrefs() {
     let env = Env::empty();
     env.mut_top_env(|v| v.backrefs.push(i(1337)));
-    assert_eq!(evaluate(&Rc::new(RefCell::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(), i(1337));
+    assert_eq!(evaluate(&Arc::new(RwLock::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(), i(1337));
 }

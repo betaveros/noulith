@@ -1,7 +1,7 @@
-use std::cell::RefCell;
 use std::io;
 use std::io::BufReader;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use noulith::{evaluate, initialize, lex, parse, type_of, Env, Obj, Token, TopEnv};
 
@@ -10,7 +10,7 @@ use rustyline::Editor;
 use rustyline_derive::{Helper, Hinter, Validator};
 
 #[derive(Helper, Hinter, Validator)]
-struct NoulithHelper(Rc<RefCell<Env>>);
+struct NoulithHelper(Arc<RwLock<Env>>);
 
 const APP_INFO: app_dirs2::AppInfo = app_dirs2::AppInfo {
     name: "noulith-cli",
@@ -33,7 +33,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
             let color = match token.token {
                 Token::Invalid(_) => Some("\x1b[31m"),
                 Token::Ident(s) => {
-                    if self.0.borrow().vars.contains_key(&s) {
+                    if self.0.read().unwrap().vars.contains_key(&s) {
                         Some("\x1b[36m")
                     } else {
                         None
@@ -140,7 +140,8 @@ impl rustyline::completion::Completer for NoulithHelper {
                     Token::Ident(x) => {
                         let v = self
                             .0
-                            .borrow()
+                            .read()
+                            .unwrap()
                             .vars
                             .keys()
                             .filter(|s| s.starts_with(&x))
@@ -166,7 +167,7 @@ pub fn repl() {
         output: Box::new(io::stdout()),
     });
     initialize(&mut env);
-    let e = Rc::new(RefCell::new(env));
+    let e = Arc::new(RwLock::new(env));
 
     let mut rl = Editor::<NoulithHelper>::new().expect("readline failed");
     match app_dir_root() {
@@ -190,7 +191,7 @@ pub fn repl() {
             eprintln!("\x1b[33mCan't load history\x1b[0m: {}", e);
         }
     };
-    rl.set_helper(Some(NoulithHelper(Rc::clone(&e))));
+    rl.set_helper(Some(NoulithHelper(Arc::clone(&e))));
     loop {
         let readline = rl.readline("\x1b[38;5;67mnoulith>\x1b[0m ");
         match readline {
@@ -200,7 +201,7 @@ pub fn repl() {
                     Ok(Some(expr)) => match evaluate(&e, &expr) {
                         Ok(Obj::Null) => {}
                         Ok(x) => {
-                            let refs_len = e.borrow_mut().mut_top_env(|v| {
+                            let refs_len = e.write().unwrap().mut_top_env(|v| {
                                 v.backrefs.push(x.clone());
                                 v.backrefs.len()
                             });

@@ -6,11 +6,11 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, Read, Write};
 
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use regex::Regex;
 
@@ -44,6 +44,8 @@ use blake3;
 use md5::{Digest, Md5};
 #[cfg(feature = "crypto")]
 use sha2::Sha256;
+
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -316,14 +318,14 @@ fn ncmp(aa: &Obj, bb: &Obj) -> NRes<Ordering> {
 
 fn clone_and_part_app_2(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj {
     Obj::Func(
-        Func::PartialApp2(Box::new(Func::Builtin(Rc::new(f.clone()))), Box::new(arg)),
+        Func::PartialApp2(Box::new(Func::Builtin(Arc::new(f.clone()))), Box::new(arg)),
         Precedence::zero(),
     )
 }
 
 fn clone_and_part_app_last(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Obj {
     Obj::Func(
-        Func::PartialAppLast(Box::new(Func::Builtin(Rc::new(f.clone()))), Box::new(arg)),
+        Func::PartialAppLast(Box::new(Func::Builtin(Arc::new(f.clone()))), Box::new(arg)),
         Precedence::zero(),
     )
 }
@@ -375,7 +377,7 @@ impl Builtin for ComparisonOperator {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
                 other_name @ ("==" | "!=" | "<" | ">" | "<=" | ">=") => {
-                    Some(Func::Builtin(Rc::new(ComparisonOperator {
+                    Some(Func::Builtin(Arc::new(ComparisonOperator {
                         name: format!("{},{}", self.name, other_name),
                         chained: {
                             let mut k = self.chained.clone();
@@ -433,7 +435,7 @@ impl Builtin for ComparisonOperator {
         // FIXME because we only chain with comparison operators we should be able to do stuff but
         // it's hard/annoying
         if self
-            .run(&Rc::new(RefCell::new(Env::empty())), ret.clone())?
+            .run(&Arc::new(RwLock::new(Env::empty())), ret.clone())?
             .truthy()
         {
             Ok(ret)
@@ -750,7 +752,7 @@ impl Builtin for TilBuiltin {
             Few3::Two(Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_nint_ok(a)?;
                 let n2 = into_nint_ok(b)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                Ok(Obj::Seq(Seq::Stream(Arc::new(Range(
                     n1,
                     Some(n2),
                     NInt::Small(1),
@@ -775,7 +777,7 @@ impl Builtin for TilBuiltin {
                 let n1 = into_nint_ok(a)?;
                 let n2 = into_nint_ok(b)?;
                 let n3 = into_nint_ok(c)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(n1, Some(n2), n3)))))
+                Ok(Obj::Seq(Seq::Stream(Arc::new(Range(n1, Some(n2), n3)))))
             }
             c => err_add_name(Err(NErr::argument_error_few3(&c)), "til"),
         }
@@ -788,7 +790,7 @@ impl Builtin for TilBuiltin {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "by" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -808,7 +810,7 @@ impl Builtin for ToBuiltin {
                 let n1 = into_nint_ok(a)?;
                 let n2 = into_nint_ok(b)?;
                 let n3 = into_nint_ok(c)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                Ok(Obj::Seq(Seq::Stream(Arc::new(Range(
                     n1,
                     Some(if n3.is_negative() {
                         n2 - NInt::Small(1)
@@ -826,7 +828,7 @@ impl Builtin for ToBuiltin {
             (Obj::Num(a), Obj::Num(b)) => {
                 let n1 = into_nint_ok(a)?;
                 let n2 = into_nint_ok(b)?;
-                Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+                Ok(Obj::Seq(Seq::Stream(Arc::new(Range(
                     n1,
                     Some(n2 + NInt::Small(1)),
                     NInt::Small(1),
@@ -863,7 +865,7 @@ impl Builtin for ToBuiltin {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "by" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "by" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -940,7 +942,7 @@ impl Builtin for Zip {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "zip" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "zip" | "with" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1013,7 +1015,7 @@ impl Builtin for ZipLongest {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "ziplongest" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "ziplongest" | "with" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1104,7 +1106,7 @@ impl Builtin for CartesianProduct {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "**" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "**" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1162,7 +1164,7 @@ impl Builtin for Fold {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "from" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "from" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1222,7 +1224,7 @@ impl Builtin for Scan {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "from" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "from" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1241,7 +1243,7 @@ impl Builtin for Merge {
             Few::One(a) => Ok(clone_and_part_app_last(self, a)),
             Few::Many(args) => {
                 let mut func = None;
-                let mut dicts: Vec<Rc<HashMap<ObjKey, Obj>>> = Vec::new();
+                let mut dicts: Vec<Arc<HashMap<ObjKey, Obj>>> = Vec::new();
                 let mut first_def = None;
                 for arg in args {
                     match (arg, &mut func) {
@@ -1282,7 +1284,7 @@ impl Builtin for Merge {
                         }
                     }
                 }
-                Ok(Obj::Seq(Seq::Dict(Rc::new(ret), first_def.flatten())))
+                Ok(Obj::Seq(Seq::Dict(Arc::new(ret), first_def.flatten())))
             }
         }
     }
@@ -1294,7 +1296,7 @@ impl Builtin for Merge {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "merge" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "merge" | "with" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1328,7 +1330,7 @@ impl Builtin for Replace {
             Few3::Two(a @ Obj::Seq(Seq::String(_)), b @ Obj::Seq(Seq::String(_))) => Ok(Obj::Func(
                 Func::PartialAppLast(
                     Box::new(Func::PartialAppLast(
-                        Box::new(Func::Builtin(Rc::new(self.clone()))),
+                        Box::new(Func::Builtin(Arc::new(self.clone()))),
                         Box::new(b),
                     )),
                     Box::new(a),
@@ -1384,7 +1386,7 @@ impl Builtin for Replace {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "with" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1415,7 +1417,7 @@ impl Builtin for Parallel {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "***" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "***" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1446,7 +1448,7 @@ impl Builtin for Fanout {
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
             Func::Builtin(b) => match b.builtin_name() {
-                "&&&" => Some(Func::Builtin(Rc::new(self.clone()))),
+                "&&&" => Some(Func::Builtin(Arc::new(self.clone()))),
                 _ => None,
             },
             _ => None,
@@ -1795,15 +1797,15 @@ fn expect_nums_and_vectorize_2_nums(
 ) -> NRes<Obj> {
     match (a, b) {
         (Obj::Num(a), Obj::Num(b)) => Ok(Obj::Num(body(a, b))),
-        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+        (Obj::Num(a), Obj::Seq(Seq::Vector(mut b))) => Ok(Obj::Seq(Seq::Vector(Arc::new(
             RcVecIter::of(&mut b).map(|e| body(a.clone(), e)).collect(),
         )))),
-        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Num(b)) => Ok(Obj::Seq(Seq::Vector(Arc::new(
             RcVecIter::of(&mut a).map(|e| body(e, b.clone())).collect(),
         )))),
         (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
             if a.len() == b.len() {
-                Ok(Obj::Seq(Seq::Vector(Rc::new(
+                Ok(Obj::Seq(Seq::Vector(Arc::new(
                     RcVecIter::of(&mut a)
                         .zip(RcVecIter::of(&mut b))
                         .map(|(a, b)| body(a, b))
@@ -2078,10 +2080,10 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     }
 }
 
-pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> LocExpr {
+pub fn warn(env: &Arc<RwLock<Env>>, expr: &LocExpr) -> LocExpr {
     let mut frenv = FreezeEnv {
         bound: HashSet::new(),
-        env: Rc::clone(&env),
+        env: Arc::clone(&env),
         warn: true,
     };
     match freeze(&mut frenv, &expr) {
@@ -2096,7 +2098,7 @@ pub fn simple_eval(code: &str) -> Obj {
     let mut env = Env::empty();
     initialize(&mut env);
 
-    let e = Rc::new(RefCell::new(env));
+    let e = Arc::new(RwLock::new(env));
     evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
 }
 
@@ -2114,11 +2116,11 @@ fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
     Ok(acc)
 }
 
-fn to_rc_vec_obj(a: Obj) -> NRes<Rc<Vec<Obj>>> {
+fn to_rc_vec_obj(a: Obj) -> NRes<Arc<Vec<Obj>>> {
     match a {
         Obj::Seq(Seq::List(v)) => Ok(v),
         mut a => {
-            let ret = Ok(Rc::new(
+            let ret = Ok(Arc::new(
                 mut_obj_into_iter(&mut a, "to_rc_vec")?.collect::<NRes<Vec<Obj>>>()?,
             ));
             ret
@@ -2140,7 +2142,7 @@ fn datetime_to_obj<Tz: TimeZone>(dt: DateTime<Tz>) -> Obj {
     .map(|(s, t)| (ObjKey::from(s), t))
     .collect::<HashMap<ObjKey, Obj>>();
 
-    Obj::Seq(Seq::Dict(Rc::new(m), None))
+    Obj::Seq(Seq::Dict(Arc::new(m), None))
 }
 
 // TODO some of these unwrap_or_clone's should be smarter, you can unwrap or iter
@@ -2149,30 +2151,32 @@ macro_rules! multi {
         match $name {
             Seq::List($name) => {
                 let $name = unwrap_or_clone($name);
-                Ok(Seq::List(Rc::new($expr?)))
+                Ok(Seq::List(Arc::new($expr?)))
             }
             Seq::String($name) => {
                 let $name = unwrap_or_clone($name).drain(..).collect::<Vec<char>>();
-                Ok(Seq::String(Rc::new($expr?.into_iter().collect::<String>())))
+                Ok(Seq::String(Arc::new(
+                    $expr?.into_iter().collect::<String>(),
+                )))
             }
             Seq::Dict($name, _def) => {
                 let $name = unwrap_or_clone($name)
                     .into_keys()
                     .map(|k| key_to_obj(k))
                     .collect();
-                Ok(Seq::List(Rc::new($expr?)))
+                Ok(Seq::List(Arc::new($expr?)))
             }
             Seq::Vector($name) => {
                 let $name = unwrap_or_clone($name);
-                Ok(Seq::Vector(Rc::new($expr?)))
+                Ok(Seq::Vector(Arc::new($expr?)))
             }
             Seq::Bytes($name) => {
                 let $name = unwrap_or_clone($name);
-                Ok(Seq::Bytes(Rc::new($expr?)))
+                Ok(Seq::Bytes(Arc::new($expr?)))
             }
             Seq::Stream($name) => {
                 let $name = $name.force()?;
-                Ok(Seq::List(Rc::new($expr?)))
+                Ok(Seq::List(Arc::new($expr?)))
             }
         }
     };
@@ -2379,12 +2383,12 @@ fn take_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
             env,
             f,
         )?)),
-        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(take_while_inner(
+        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Arc::new(take_while_inner(
             RcVecIter::of(&mut s),
             env,
             f,
         )?)))),
-        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(take_while_inner(
+        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Arc::new(take_while_inner(
             RcVecIter::of(&mut s),
             env,
             f,
@@ -2437,10 +2441,10 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
             )?
             .collect(),
         )),
-        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Rc::new(
+        Seq::Vector(mut s) => Ok(Obj::Seq(Seq::Vector(Arc::new(
             drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
         )))),
-        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+        Seq::Bytes(mut s) => Ok(Obj::Seq(Seq::Bytes(Arc::new(
             drop_while_inner(RcVecIter::of(&mut s), env, f)?.collect(),
         )))),
         Seq::Stream(s) => {
@@ -2451,7 +2455,7 @@ fn drop_while(s: Seq, f: Func, env: &REnv) -> NRes<Obj> {
                     t.next();
                 }
             }
-            Ok(Obj::Seq(Seq::Stream(Rc::from(t))))
+            Ok(Obj::Seq(Seq::Stream(Arc::from(t))))
         }
     }
 }
@@ -2464,7 +2468,7 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
             if s.is_empty() {
                 Ok(None)
             } else {
-                let head = Rc::make_mut(&mut s).remove(0);
+                let head = Arc::make_mut(&mut s).remove(0);
                 Ok(Some((head, Seq::List(s))))
             }
         }
@@ -2473,12 +2477,12 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
             if s.is_empty() {
                 Ok(None)
             } else {
-                let head = Rc::make_mut(&mut s).remove(0);
+                let head = Arc::make_mut(&mut s).remove(0);
                 Ok(Some((Obj::from(head), Seq::String(s))))
             }
         }
         Seq::Dict(mut s, def) => match s.keys().next().cloned() {
-            Some(k) => match Rc::make_mut(&mut s).remove_entry(&k) {
+            Some(k) => match Arc::make_mut(&mut s).remove_entry(&k) {
                 Some((kk, v)) => Ok(Some((
                     Obj::list(vec![key_to_obj(kk), v]),
                     Seq::Dict(s, def),
@@ -2491,7 +2495,7 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
             if s.is_empty() {
                 Ok(None)
             } else {
-                let head = Rc::make_mut(&mut s).remove(0);
+                let head = Arc::make_mut(&mut s).remove(0);
                 Ok(Some((Obj::from(head), Seq::Vector(s))))
             }
         }
@@ -2499,7 +2503,7 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
             if s.is_empty() {
                 Ok(None)
             } else {
-                let head = Rc::make_mut(&mut s).remove(0);
+                let head = Arc::make_mut(&mut s).remove(0);
                 Ok(Some((Obj::u8(head), Seq::Bytes(s))))
             }
         }
@@ -2507,31 +2511,31 @@ fn uncons(s: Seq) -> NRes<Option<(Obj, Seq)>> {
             let mut t = s.clone_box();
             match t.next() {
                 None => Ok(None),
-                Some(e) => Ok(Some((e?, Seq::Stream(Rc::from(t))))),
+                Some(e) => Ok(Some((e?, Seq::Stream(Arc::from(t))))),
             }
         }
     }
 }
 fn unsnoc(s: Seq) -> NRes<Option<(Seq, Obj)>> {
     match s {
-        Seq::List(mut s) => match Rc::make_mut(&mut s).pop() {
+        Seq::List(mut s) => match Arc::make_mut(&mut s).pop() {
             None => Ok(None),
             Some(e) => Ok(Some((Seq::List(s), e))),
         },
-        Seq::String(mut s) => match Rc::make_mut(&mut s).pop() {
+        Seq::String(mut s) => match Arc::make_mut(&mut s).pop() {
             None => Ok(None),
             Some(e) => Ok(Some((Seq::String(s), Obj::from(e)))),
         },
         dd @ Seq::Dict(..) => Ok(uncons(dd)?.map(|(e, s)| (s, e))),
-        Seq::Vector(mut s) => match Rc::make_mut(&mut s).pop() {
+        Seq::Vector(mut s) => match Arc::make_mut(&mut s).pop() {
             None => Ok(None),
             Some(e) => Ok(Some((Seq::Vector(s), Obj::from(e)))),
         },
-        Seq::Bytes(mut s) => match Rc::make_mut(&mut s).pop() {
+        Seq::Bytes(mut s) => match Arc::make_mut(&mut s).pop() {
             None => Ok(None),
             Some(e) => Ok(Some((Seq::Bytes(s), Obj::u8(e)))),
         },
-        Seq::Stream(s) => unsnoc(Seq::List(Rc::new(s.force()?))),
+        Seq::Stream(s) => unsnoc(Seq::List(Arc::new(s.force()?))),
     }
 }
 
@@ -2582,14 +2586,14 @@ macro_rules! multimulti {
                 let $name = unwrap_or_clone($name).into_iter().map(Ok);
                 Ok($expr?
                     .into_iter()
-                    .map(|x| Obj::Seq(Seq::Vector(Rc::new(x))))
+                    .map(|x| Obj::Seq(Seq::Vector(Arc::new(x))))
                     .collect())
             }
             Seq::Bytes($name) => {
                 let $name = unwrap_or_clone($name).into_iter().map(Ok);
                 Ok($expr?
                     .into_iter()
-                    .map(|x| Obj::Seq(Seq::Bytes(Rc::new(x))))
+                    .map(|x| Obj::Seq(Seq::Bytes(Arc::new(x))))
                     .collect())
             }
             Seq::Stream($name) => {
@@ -2671,7 +2675,7 @@ fn json_decode(v: serde_json::Value) -> Obj {
             Obj::list(a.into_iter().map(json_decode).collect::<Vec<Obj>>())
         }
         serde_json::Value::Object(d) => Obj::Seq(Seq::Dict(
-            Rc::new(
+            Arc::new(
                 d.into_iter()
                     .map(|(k, v)| (ObjKey::from(k), json_decode(v)))
                     .collect::<HashMap<ObjKey, Obj>>(),
@@ -2760,7 +2764,7 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
     }
 }
 
-fn read_input(env: &Rc<RefCell<Env>>) -> NRes<Obj> {
+fn read_input(env: &Arc<RwLock<Env>>) -> NRes<Obj> {
     let mut input = String::new();
     match try_borrow_nres(env, "input", "")?.mut_top_env(|t| t.input.read_line(&mut input)) {
         Ok(_) => Ok(Obj::from(input)),
@@ -3014,11 +3018,11 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneNumBuiltin {
         name: "complex_parts".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
-            Ok(f) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![
+            Ok(f) => Ok(Obj::Seq(Seq::Vector(Arc::new(vec![
                 NNum::from(f),
                 NNum::from(0.0),
             ])))),
-            Err(c) => Ok(Obj::Seq(Seq::Vector(Rc::new(vec![
+            Err(c) => Ok(Obj::Seq(Seq::Vector(Arc::new(vec![
                 NNum::from(c.re),
                 NNum::from(c.im),
             ])))),
@@ -3241,16 +3245,16 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(OneArgBuiltin {
         name: "repeat".to_string(),
-        body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Repeat(a))))),
+        body: |a| Ok(Obj::Seq(Seq::Stream(Arc::new(Repeat(a))))),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "cycle".to_string(),
-        body: |a| Ok(Obj::Seq(Seq::Stream(Rc::new(Cycle(to_rc_vec_obj(a)?, 0))))),
+        body: |a| Ok(Obj::Seq(Seq::Stream(Arc::new(Cycle(to_rc_vec_obj(a)?, 0))))),
     });
     env.insert_builtin(OneArgBuiltin {
         name: "iota".to_string(),
         body: |a| match a {
-            Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Rc::new(Range(
+            Obj::Num(NNum::Int(x)) => Ok(Obj::Seq(Seq::Stream(Arc::new(Range(
                 x,
                 None,
                 NInt::Small(1),
@@ -3262,8 +3266,8 @@ pub fn initialize(env: &mut Env) {
         name: "permutations".to_string(),
         body: |a| {
             let v = to_rc_vec_obj(a)?;
-            let iv = Rc::new((0..v.len()).collect());
-            Ok(Obj::Seq(Seq::Stream(Rc::new(Permutations(v, Some(iv))))))
+            let iv = Arc::new((0..v.len()).collect());
+            Ok(Obj::Seq(Seq::Stream(Arc::new(Permutations(v, Some(iv))))))
         },
     });
     env.insert_builtin(TwoArgBuiltin {
@@ -3275,8 +3279,8 @@ pub fn initialize(env: &mut Env) {
                     let u = n
                         .to_usize()
                         .ok_or(NErr::value_error("bad combo".to_string()))?;
-                    let iv = Rc::new((0..u).collect());
-                    Ok(Obj::Seq(Seq::Stream(Rc::new(Combinations(v, Some(iv))))))
+                    let iv = Arc::new((0..u).collect());
+                    Ok(Obj::Seq(Seq::Stream(Arc::new(Combinations(v, Some(iv))))))
                 }
                 b => Err(NErr::argument_error_second(&b)),
             }
@@ -3286,14 +3290,14 @@ pub fn initialize(env: &mut Env) {
         name: "subsequences".to_string(),
         body: |a| {
             let v = to_rc_vec_obj(a)?;
-            let iv = Rc::new(vec![false; v.len()]);
-            Ok(Obj::Seq(Seq::Stream(Rc::new(Subsequences(v, Some(iv))))))
+            let iv = Arc::new(vec![false; v.len()]);
+            Ok(Obj::Seq(Seq::Stream(Arc::new(Subsequences(v, Some(iv))))))
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "iterate".to_string(),
         body: |env, a, f| match f {
-            Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Rc::new(Iterate(Ok((
+            Obj::Func(f, _) => Ok(Obj::Seq(Seq::Stream(Arc::new(Iterate(Ok((
                 a,
                 f,
                 env.clone(),
@@ -3305,8 +3309,8 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "lazy_map".to_string(),
         body: |env, a, b| match (a, b) {
-            (Obj::Seq(Seq::Stream(s)), Obj::Func(b, _)) => Ok(Obj::Seq(Seq::Stream(Rc::new(
-                MappedStream(Ok((s.clone_box(), b, Rc::clone(env)))),
+            (Obj::Seq(Seq::Stream(s)), Obj::Func(b, _)) => Ok(Obj::Seq(Seq::Stream(Arc::new(
+                MappedStream(Ok((s.clone_box(), b, Arc::clone(env)))),
             )))),
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
         },
@@ -3320,6 +3324,24 @@ pub fn initialize(env: &mut Env) {
                     for e in it {
                         b.run1(env, e?)?;
                     }
+                    Ok(Obj::Null)
+                }
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "par_each".to_string(),
+        body: |env, mut a, b| {
+            let it = mut_obj_into_iter(&mut a, "par_each")?;
+            match b {
+                Obj::Func(b, _) => {
+                    it.par_bridge()
+                        .map(|e| {
+                            b.run1(env, e?)?;
+                            Ok(())
+                        })
+                        .collect::<NRes<_>>()?;
                     Ok(Obj::Null)
                 }
                 _ => Err(NErr::type_error("not callable".to_string())),
@@ -3342,10 +3364,27 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
+        name: "par_map".to_string(),
+        body: |env, mut a, b| {
+            let ret = {
+                let it = mut_obj_into_iter(&mut a, "par_map")?;
+                match b {
+                    Obj::Func(b, _) => Ok(Obj::list(
+                        it.par_bridge()
+                            .map(|e| b.run1(env, e?))
+                            .collect::<NRes<Vec<Obj>>>()?,
+                    )),
+                    _ => Err(NErr::type_error("not callable".to_string())),
+                }
+            };
+            ret
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "map_keys".to_string(),
         body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
-                Rc::make_mut(&mut d)
+                Arc::make_mut(&mut d)
                     .drain()
                     .map(|(k, v)| Ok((to_key(b.run1(env, key_to_obj(k))?)?, v)))
                     .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
@@ -3358,7 +3397,7 @@ pub fn initialize(env: &mut Env) {
         name: "map_values".to_string(),
         body: |env, a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut d, def)), Obj::Func(b, _)) => Ok(Obj::dict(
-                Rc::make_mut(&mut d)
+                Arc::make_mut(&mut d)
                     .drain()
                     .map(|(k, v)| Ok((k, b.run1(env, v)?)))
                     .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
@@ -3453,7 +3492,7 @@ pub fn initialize(env: &mut Env) {
         name: "transpose".to_string(),
         body: |_env, a| {
             let mut v = to_rc_vec_obj(a)?;
-            let v = Rc::make_mut(&mut v);
+            let v = Arc::make_mut(&mut v);
             let mut iterators: Vec<MutObjIntoIter<'_>> = Vec::new();
             for arg in v.iter_mut() {
                 iterators.push(mut_obj_into_iter(arg, "zip")?)
@@ -3584,7 +3623,7 @@ pub fn initialize(env: &mut Env) {
                 *c.entry(to_key(e?)?).or_insert(0) += 1;
             }
             Ok(Obj::Seq(Seq::Dict(
-                Rc::new(c.into_iter().map(|(k, v)| (k, Obj::usize(v))).collect()),
+                Arc::new(c.into_iter().map(|(k, v)| (k, Obj::usize(v))).collect()),
                 Some(Box::new(Obj::zero())),
             )))
         },
@@ -3836,7 +3875,7 @@ pub fn initialize(env: &mut Env) {
                             .iter(),
                     );
                 }
-                Ok(Obj::Seq(Seq::Bytes(Rc::new(acc))))
+                Ok(Obj::Seq(Seq::Bytes(Arc::new(acc))))
             }
             _ => Ok(Obj::from(simple_join(a, format!("{}", b).as_str())?)),
         },
@@ -4026,15 +4065,15 @@ pub fn initialize(env: &mut Env) {
             name: "++".to_string(),
             body: |a, b| match (a, b) {
                 (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Arc::make_mut(&mut a).append(Arc::make_mut(&mut b));
                     Ok(Obj::Seq(Seq::List(a)))
                 }
                 (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Arc::make_mut(&mut a).append(Arc::make_mut(&mut b));
                     Ok(Obj::Seq(Seq::Vector(a)))
                 }
                 (Obj::Seq(Seq::Bytes(mut a)), Obj::Seq(Seq::Bytes(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+                    Arc::make_mut(&mut a).append(Arc::make_mut(&mut b));
                     Ok(Obj::Seq(Seq::Bytes(a)))
                 }
                 (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4046,15 +4085,15 @@ pub fn initialize(env: &mut Env) {
         name: ".+".to_string(),
         body: |a, b| match b {
             Obj::Seq(Seq::List(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, a);
+                Arc::make_mut(&mut b).insert(0, a);
                 Ok(Obj::Seq(Seq::List(b)))
             }
             Obj::Seq(Seq::Vector(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, to_nnum(a, "prepend to vector")?);
+                Arc::make_mut(&mut b).insert(0, to_nnum(a, "prepend to vector")?);
                 Ok(Obj::Seq(Seq::Vector(b)))
             }
             Obj::Seq(Seq::Bytes(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, to_byte(a, "prepend to bytes")?);
+                Arc::make_mut(&mut b).insert(0, to_byte(a, "prepend to bytes")?);
                 Ok(Obj::Seq(Seq::Bytes(b)))
             }
             b => Err(NErr::argument_error_2(&a, &b)),
@@ -4065,15 +4104,15 @@ pub fn initialize(env: &mut Env) {
             name: "append".to_string(),
             body: |a, b| match a {
                 Obj::Seq(Seq::List(mut a)) => {
-                    Rc::make_mut(&mut a).push(b);
+                    Arc::make_mut(&mut a).push(b);
                     Ok(Obj::Seq(Seq::List(a)))
                 }
                 Obj::Seq(Seq::Vector(mut a)) => {
-                    Rc::make_mut(&mut a).push(to_nnum(b, "append to vector")?);
+                    Arc::make_mut(&mut a).push(to_nnum(b, "append to vector")?);
                     Ok(Obj::Seq(Seq::Vector(a)))
                 }
                 Obj::Seq(Seq::Bytes(mut a)) => {
-                    Rc::make_mut(&mut a).push(to_byte(b, "append to bytes")?);
+                    Arc::make_mut(&mut a).push(to_byte(b, "append to bytes")?);
                     Ok(Obj::Seq(Seq::Bytes(a)))
                 }
                 a => Err(NErr::argument_error_2(&a, &b)),
@@ -4107,9 +4146,9 @@ pub fn initialize(env: &mut Env) {
                     let u = n
                         .to_usize()
                         .ok_or(NErr::value_error("bad lazy pow".to_string()))?;
-                    Ok(Obj::Seq(Seq::Stream(Rc::new(CartesianPower(
+                    Ok(Obj::Seq(Seq::Stream(Arc::new(CartesianPower(
                         v,
-                        Some(Rc::new(vec![0; u])),
+                        Some(Arc::new(vec![0; u])),
                     )))))
                 }
                 b => Err(NErr::argument_error_second(&b)),
@@ -4331,7 +4370,7 @@ pub fn initialize(env: &mut Env) {
         name: "||".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(mut b, _))) => {
-                Rc::make_mut(&mut a).extend(Rc::make_mut(&mut b).drain());
+                Arc::make_mut(&mut a).extend(Arc::make_mut(&mut b).drain());
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4341,7 +4380,7 @@ pub fn initialize(env: &mut Env) {
         name: "|.".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
-                Rc::make_mut(&mut a).insert(to_key(b)?, Obj::Null);
+                Arc::make_mut(&mut a).insert(to_key(b)?, Obj::Null);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4351,7 +4390,7 @@ pub fn initialize(env: &mut Env) {
         name: "discard".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
-                Rc::make_mut(&mut a).remove(&to_key(b)?);
+                Arc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4361,7 +4400,7 @@ pub fn initialize(env: &mut Env) {
         name: "-.".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), b) => {
-                Rc::make_mut(&mut a).remove(&to_key(b)?);
+                Arc::make_mut(&mut a).remove(&to_key(b)?);
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4375,7 +4414,7 @@ pub fn initialize(env: &mut Env) {
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(v), None) => {
                         // TODO maybe fail if key exists? have |.. = "upsert"?
-                        Rc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
+                        Arc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
                         Ok(Obj::Seq(Seq::Dict(a, d)))
                     }
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
@@ -4391,7 +4430,7 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_seq_into_iter(&mut s);
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(v), None) => {
-                        Rc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
+                        Arc::make_mut(&mut a).insert(to_key(k?.clone())?, v?.clone());
                         Ok(Obj::Seq(Seq::Dict(a, d)))
                     }
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),
@@ -4404,7 +4443,7 @@ pub fn initialize(env: &mut Env) {
         name: "&&".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
-                Rc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
+                Arc::make_mut(&mut a).retain(|k, _| b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4414,7 +4453,7 @@ pub fn initialize(env: &mut Env) {
         name: "--".to_string(),
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
-                Rc::make_mut(&mut a).retain(|k, _| !b.contains_key(k));
+                Arc::make_mut(&mut a).retain(|k, _| !b.contains_key(k));
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),
@@ -4458,7 +4497,7 @@ pub fn initialize(env: &mut Env) {
             } {
                 Ok(x) => Ok(x),
                 Err(mut e) => {
-                    e.supply_source(Rc::new("<eval>".to_string()), r);
+                    e.supply_source(Arc::new("<eval>".to_string()), r);
                     Err(e)
                 }
             },
@@ -4511,7 +4550,7 @@ pub fn initialize(env: &mut Env) {
                 match try_borrow_nres(env, "read_bytes", "")?
                     .mut_top_env(|t| t.input.read_to_end(&mut input))
                 {
-                    Ok(_) => Ok(Obj::Seq(Seq::Bytes(Rc::new(input)))),
+                    Ok(_) => Ok(Obj::Seq(Seq::Bytes(Arc::new(input)))),
                     Err(msg) => Err(NErr::value_error(format!("input failed: {}", msg))),
                 }
             } else {
@@ -4698,7 +4737,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(OneArgBuiltin {
         name: "utf8_encode".to_string(),
         body: |arg| match arg {
-            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Arc::new(s.as_bytes().to_vec())))),
             _ => Err(NErr::type_error("must utf8encode string".to_string())),
         },
     });
@@ -4735,7 +4774,7 @@ pub fn initialize(env: &mut Env) {
             match arg {
                 Obj::Seq(Seq::String(s)) => {
                     if s.len() % 2 == 0 {
-                        Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                        Ok(Obj::Seq(Seq::Bytes(Arc::new(
                             s.as_bytes()
                                 .chunks(2)
                                 .map(|ch| Ok(val(ch[0])? << 4 | val(ch[1])?))
@@ -4749,7 +4788,7 @@ pub fn initialize(env: &mut Env) {
                 }
                 Obj::Seq(Seq::Bytes(s)) => {
                     if s.len() % 2 == 0 {
-                        Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                        Ok(Obj::Seq(Seq::Bytes(Arc::new(
                             s.chunks(2)
                                 .map(|ch| Ok(val(ch[0])? << 4 | val(ch[1])?))
                                 .collect::<NRes<Vec<u8>>>()?,
@@ -4777,14 +4816,14 @@ pub fn initialize(env: &mut Env) {
         name: "base64_decode".to_string(),
         body: |arg| match arg {
             Obj::Seq(Seq::String(s)) => match base64::decode(&*s) {
-                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
+                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Arc::new(b)))),
                 Err(e) => Err(NErr::value_error(format!(
                     "failed to base64decode: {:?}",
                     e
                 ))),
             },
             Obj::Seq(Seq::Bytes(s)) => match base64::decode(&*s) {
-                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b)))),
+                Ok(b) => Ok(Obj::Seq(Seq::Bytes(Arc::new(b)))),
                 Err(e) => Err(NErr::value_error(format!(
                     "failed to base64decode: {:?}",
                     e
@@ -4818,7 +4857,7 @@ pub fn initialize(env: &mut Env) {
                 let mut gz = GzEncoder::new(&b[..], Compression::fast());
                 let mut s = Vec::new();
                 gz.read_to_end(&mut s).expect("what");
-                Ok(Obj::Seq(Seq::Bytes(Rc::new(s))))
+                Ok(Obj::Seq(Seq::Bytes(Arc::new(s))))
             }
             a => Err(NErr::argument_error_1(&a)),
         },
@@ -4830,7 +4869,7 @@ pub fn initialize(env: &mut Env) {
                 let mut gz = GzDecoder::new(&b[..]);
                 let mut s = Vec::new();
                 gz.read_to_end(&mut s).expect("what");
-                Ok(Obj::Seq(Seq::Bytes(Rc::new(s))))
+                Ok(Obj::Seq(Seq::Bytes(Arc::new(s))))
             }
             a => Err(NErr::argument_error_1(&a)),
         },
@@ -4873,7 +4912,7 @@ pub fn initialize(env: &mut Env) {
         name: "read_file_bytes".to_string(),
         body: |a| match a {
             Obj::Seq(Seq::String(s)) => match fs::read(&*s) {
-                Ok(c) => Ok(Obj::Seq(Seq::Bytes(Rc::new(c)))),
+                Ok(c) => Ok(Obj::Seq(Seq::Bytes(Arc::new(c)))),
                 Err(e) => Err(NErr::io_error(format!("{}", e))),
             },
             a => Err(NErr::argument_error_1(&a)),
@@ -4886,7 +4925,7 @@ pub fn initialize(env: &mut Env) {
                 Ok(mut f) => {
                     let mut contents = Vec::new();
                     match f.read(&mut contents) {
-                        Ok(_) => Ok(Obj::Seq(Seq::Bytes(Rc::new(contents)))),
+                        Ok(_) => Ok(Obj::Seq(Seq::Bytes(Arc::new(contents)))),
                         Err(e) => Err(NErr::io_error(format!("{}", e))),
                     }
                 }
@@ -4985,7 +5024,7 @@ pub fn initialize(env: &mut Env) {
                 {
                     Ok(res) => {
                         if res.status.success() {
-                            Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
+                            Ok(Obj::Seq(Seq::Bytes(Arc::new(res.stdout))))
                         } else {
                             Err(NErr::io_error(format!(
                                 "subprocess exited with nonzero status {}",
@@ -5024,7 +5063,7 @@ pub fn initialize(env: &mut Env) {
                             NErr::io_error(format!("Failed to join child stdin writer"))
                         })?;
                         if res.status.success() {
-                            Ok(Obj::Seq(Seq::Bytes(Rc::new(res.stdout))))
+                            Ok(Obj::Seq(Seq::Bytes(Arc::new(res.stdout))))
                         } else {
                             Err(NErr::io_error(format!(
                                 "subprocess exited with nonzero status {}",
@@ -5133,7 +5172,7 @@ pub fn initialize(env: &mut Env) {
                 let sz = to_usize_ok(&a)?;
                 let mut bytes = vec![0; sz];
                 rand::thread_rng().fill_bytes(&mut bytes);
-                Ok(Obj::Seq(Seq::Bytes(Rc::new(bytes))))
+                Ok(Obj::Seq(Seq::Bytes(Arc::new(bytes))))
             }
             a => Err(NErr::argument_error_1(&a)),
         },
@@ -5164,7 +5203,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "request_bytes".to_string(),
         body: |_env, args| match request_response(args)?.bytes() {
-            Ok(b) => Ok(Obj::Seq(Seq::Bytes(Rc::new(b.to_vec())))),
+            Ok(b) => Ok(Obj::Seq(Seq::Bytes(Arc::new(b.to_vec())))),
             Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
         },
     });
@@ -5187,7 +5226,7 @@ pub fn initialize(env: &mut Env) {
                     if k.len() == 16 && m.len() == 16 {
                         aes::Aes128::new(generic_array::GenericArray::from_slice(&k))
                             .encrypt_block(generic_array::GenericArray::from_mut_slice(
-                                Rc::make_mut(&mut m).as_mut(),
+                                Arc::make_mut(&mut m).as_mut(),
                             ));
                         Ok(Obj::Seq(Seq::Bytes(m)))
                     } else {
@@ -5204,7 +5243,7 @@ pub fn initialize(env: &mut Env) {
                     if k.len() == 16 && m.len() == 16 {
                         aes::Aes128::new(generic_array::GenericArray::from_slice(&k))
                             .decrypt_block(generic_array::GenericArray::from_mut_slice(
-                                Rc::make_mut(&mut m).as_mut(),
+                                Arc::make_mut(&mut m).as_mut(),
                             ));
                         Ok(Obj::Seq(Seq::Bytes(m)))
                     } else {
@@ -5227,7 +5266,7 @@ pub fn initialize(env: &mut Env) {
                             aes_gcm::Aes256Gcm::new(generic_array::GenericArray::from_slice(&k));
                         let nonce = aes_gcm::Nonce::from_slice(&n);
                         match cipher.encrypt(nonce, &**m) {
-                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Rc::new(ct)))),
+                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Arc::new(ct)))),
                             Err(e) => Err(NErr::io_error(format!("{}", e))),
                         }
                     } else {
@@ -5252,7 +5291,7 @@ pub fn initialize(env: &mut Env) {
                             aes_gcm::Aes256Gcm::new(generic_array::GenericArray::from_slice(&k));
                         let nonce = aes_gcm::Nonce::from_slice(&n);
                         match cipher.decrypt(nonce, &**m) {
-                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Rc::new(ct)))),
+                            Ok(ct) => Ok(Obj::Seq(Seq::Bytes(Arc::new(ct)))),
                             Err(e) => Err(NErr::io_error(format!("{}", e))),
                         }
                     } else {
@@ -5267,7 +5306,7 @@ pub fn initialize(env: &mut Env) {
         env.insert_builtin(OneArgBuiltin {
             name: "md5".to_string(),
             body: |a| match a {
-                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Arc::new(
                     Md5::new().chain_update(&*b).finalize().to_vec(),
                 )))),
                 a => Err(NErr::argument_error_1(&a)),
@@ -5276,7 +5315,7 @@ pub fn initialize(env: &mut Env) {
         env.insert_builtin(OneArgBuiltin {
             name: "sha256".to_string(),
             body: |a| match a {
-                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+                Obj::Seq(Seq::Bytes(b)) => Ok(Obj::Seq(Seq::Bytes(Arc::new(
                     Sha256::new().chain_update(&*b).finalize().to_vec(),
                 )))),
                 a => Err(NErr::argument_error_1(&a)),
@@ -5287,7 +5326,7 @@ pub fn initialize(env: &mut Env) {
             body: |a| match a {
                 Obj::Seq(Seq::Bytes(b)) => {
                     let h: [u8; 32] = blake3::Hasher::new().update(&*b).finalize().into();
-                    Ok(Obj::Seq(Seq::Bytes(Rc::new(h.to_vec()))))
+                    Ok(Obj::Seq(Seq::Bytes(Arc::new(h.to_vec()))))
                 }
                 a => Err(NErr::argument_error_1(&a)),
             },
@@ -5298,7 +5337,7 @@ pub fn initialize(env: &mut Env) {
         name: "memoize".to_string(),
         body: |a| match a {
             Obj::Func(f, p) => Ok(Obj::Func(
-                Func::Memoized(Box::new(f), Rc::new(RefCell::new(HashMap::new()))),
+                Func::Memoized(Box::new(f), Arc::new(RwLock::new(HashMap::new()))),
                 p,
             )),
             a => Err(NErr::argument_error_1(&a)),
@@ -5309,7 +5348,7 @@ pub fn initialize(env: &mut Env) {
         name: "vars".to_string(),
         body: |env, _args| {
             Ok(Obj::Seq(Seq::Dict(
-                Rc::new(
+                Arc::new(
                     try_borrow_nres(env, "vars", "vars")?
                         .vars
                         .iter()
@@ -5331,6 +5370,18 @@ pub fn initialize(env: &mut Env) {
         body: |a| match a {
             Obj::Num(NNum::Int(NInt::Big(_))) => Ok(Obj::one()),
             _ => Ok(Obj::zero()),
+        },
+    });
+
+    env.insert_builtin(OneArgBuiltin {
+        name: "env_var".to_string(),
+        body: |a| match a {
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::String(Arc::new(
+                std::env::var(s.as_str()).map_err(|e| {
+                    NErr::io_error(format!("can't get environment variable: {:?}", e))
+                })?,
+            )))),
+            a => Err(NErr::argument_error_1(&a)),
         },
     });
 }
@@ -5362,7 +5413,7 @@ pub fn encapsulated_eval(code: &str, input: &[u8]) -> WasmOutputs {
     });
     initialize(&mut env);
 
-    let e = Rc::new(RefCell::new(env));
+    let e = Arc::new(RwLock::new(env));
 
     match parse(code) {
         Err(p) => WasmOutputs {
@@ -5375,13 +5426,13 @@ pub fn encapsulated_eval(code: &str, input: &[u8]) -> WasmOutputs {
         },
         Ok(Some(code)) => match evaluate(&e, &code) {
             Err(err) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e| {
+                output: e.write().unwrap().mut_top_env(|e| {
                     String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
                 }),
                 error: format!("{}", err),
             },
             Ok(res) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e| {
+                output: e.write().unwrap().mut_top_env(|e| {
                     String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
                 }) + &format!("{}", res),
                 error: String::new(),

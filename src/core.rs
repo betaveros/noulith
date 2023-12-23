@@ -3,14 +3,14 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, Write};
 
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 use num::bigint::BigInt;
 use num::complex::Complex64;
@@ -37,12 +37,12 @@ pub enum Obj {
 // Sequences produce NRes<Obj> when iterated over.
 #[derive(Debug, Clone)]
 pub enum Seq {
-    String(Rc<String>),
-    List(Rc<Vec<Obj>>),
-    Dict(Rc<HashMap<ObjKey, Obj>>, Option<Box<Obj>>), // default value
-    Vector(Rc<Vec<NNum>>),
-    Bytes(Rc<Vec<u8>>),
-    Stream(Rc<dyn Stream>),
+    String(Arc<String>),
+    List(Arc<Vec<Obj>>),
+    Dict(Arc<HashMap<ObjKey, Obj>>, Option<Box<Obj>>), // default value
+    Vector(Arc<Vec<NNum>>),
+    Bytes(Arc<Vec<u8>>),
+    Stream(Arc<dyn Stream>),
 }
 
 impl Seq {
@@ -152,11 +152,11 @@ pub fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usi
     (clo, chi.max(clo))
 }
 
-// to support Rc<dyn Stream>, can't have Clone, because
+// to support Arc<dyn Stream>, can't have Clone, because
 // https://doc.rust-lang.org/reference/items/traits.html#object-safety
 //
 // more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
-pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug {
+pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug + Send + Sync {
     fn peek(&self) -> Option<NRes<Obj>>;
     fn clone_box(&self) -> Box<dyn Stream>;
     // FIXME: this used to mean "length or infinity" but it increasingly looks like we actually
@@ -201,10 +201,10 @@ pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug {
                 let mut it = self.clone_box();
                 for _ in 0..lo {
                     if it.next().is_none() {
-                        return Ok(Seq::Stream(Rc::from(it)));
+                        return Ok(Seq::Stream(Arc::from(it)));
                     }
                 }
-                Ok(Seq::Stream(Rc::from(it)))
+                Ok(Seq::Stream(Arc::from(it)))
             }
             (lo, Some(hi)) if lo >= 0 && hi >= 0 => {
                 let mut it = self.clone_box();
@@ -221,19 +221,19 @@ pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug {
                         None => break,
                     }
                 }
-                Ok(Seq::List(Rc::new(v)))
+                Ok(Seq::List(Arc::new(v)))
             }
             (lo, hi) => {
                 let mut v = self.force()?;
                 let (lo, hi) = pythonic_slice(v.as_slice(), Some(lo), hi);
-                Ok(Seq::List(Rc::new(v.drain(lo..hi).collect())))
+                Ok(Seq::List(Arc::new(v.drain(lo..hi).collect())))
             }
         }
     }
     fn reversed(&self) -> NRes<Seq> {
         let mut xs = self.force()?;
         xs.reverse();
-        Ok(Seq::List(Rc::new(xs)))
+        Ok(Seq::List(Arc::new(xs)))
     }
 }
 
@@ -287,7 +287,7 @@ pub enum MutObjIntoIter<'a> {
     String(RcStringIter<'a>),
     Vector(RcVecIter<'a, NNum>),
     Bytes(RcVecIter<'a, u8>),
-    Stream(&'a mut Rc<dyn Stream>),
+    Stream(&'a mut Arc<dyn Stream>),
 }
 
 // iterates over (index, value) or (key, value)
@@ -297,7 +297,7 @@ pub enum MutObjIntoIterPairs<'a> {
     String(usize, RcStringIter<'a>),
     Vector(usize, RcVecIter<'a, NNum>),
     Bytes(usize, RcVecIter<'a, u8>),
-    Stream(usize, &'a mut Rc<dyn Stream>),
+    Stream(usize, &'a mut Arc<dyn Stream>),
 }
 
 pub fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
@@ -346,12 +346,12 @@ impl Iterator for MutObjIntoIter<'_> {
             MutObjIntoIter::String(it) => Some(Ok(Obj::from(it.next()?))),
             MutObjIntoIter::Vector(it) => Some(Ok(Obj::Num(it.next()?.clone()))),
             MutObjIntoIter::Bytes(it) => Some(Ok(Obj::u8(it.next()?))),
-            MutObjIntoIter::Stream(it) => match Rc::get_mut(it) {
+            MutObjIntoIter::Stream(it) => match Arc::get_mut(it) {
                 Some(it) => it.next(),
                 None => {
                     let mut it2 = it.clone_box();
                     let ret = it2.next();
-                    **it = Rc::from(it2);
+                    **it = Arc::from(it2);
                     ret
                 }
             },
@@ -411,12 +411,12 @@ impl Iterator for MutObjIntoIterPairs<'_> {
                 Some(Ok((ObjKey::from(j), Obj::u8(o))))
             }
             MutObjIntoIterPairs::Stream(i, s) => {
-                let o = match Rc::get_mut(s) {
+                let o = match Arc::get_mut(s) {
                     Some(it) => it.next()?,
                     None => {
                         let mut it2 = s.clone_box();
                         let ret = it2.next();
-                        **s = Rc::from(it2);
+                        **s = Arc::from(it2);
                         ret?
                     }
                 };
@@ -468,11 +468,11 @@ static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 pub struct Struct {
     pub id: usize,
     pub size: usize,
-    pub name: Rc<String>,
+    pub name: Arc<String>,
 }
 
 impl Struct {
-    pub fn new(size: usize, name: Rc<String>) -> Self {
+    pub fn new(size: usize, name: Arc<String>) -> Self {
         Struct {
             id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             size,
@@ -522,7 +522,7 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
-            ObjType::Struct(s) => (&**s.name).clone(),
+            ObjType::Struct(s) => s.name.as_str(),
             ObjType::StructInstance => "struct_instance",
             ObjType::Satisfying(..) => "satisfying(???)",
         }
@@ -607,8 +607,8 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
         ObjType::String => Ok(Obj::from(format!("{}", arg))),
         ObjType::Bytes => match arg {
             Obj::Seq(Seq::Bytes(xs)) => Ok(Obj::Seq(Seq::Bytes(xs))),
-            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Rc::new(s.as_bytes().to_vec())))),
-            mut arg => Ok(Obj::Seq(Seq::Bytes(Rc::new(
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Seq(Seq::Bytes(Arc::new(s.as_bytes().to_vec())))),
+            mut arg => Ok(Obj::Seq(Seq::Bytes(Arc::new(
                 mut_obj_into_iter(&mut arg, "bytes conversion")?
                     .map(|e| to_byte(e?, "bytes conversion"))
                     .collect::<NRes<Vec<u8>>>()?,
@@ -623,7 +623,7 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             // nonsensical but maybe this is something some day
             /*
             mut arg => Ok(Obj::Dict(
-                    Rc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
+                    Arc::new(mut_obj_into_iter_pairs(&mut arg, "dict conversion")?.collect::<HashMap<ObjKey, Obj>>()), None)),
                     */
             mut arg => Ok(Obj::dict(
                 mut_obj_into_iter(&mut arg, "dict conversion")?
@@ -693,7 +693,7 @@ pub fn to_byte(obj: Obj, reason: &'static str) -> NRes<u8> {
 }
 
 pub fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
-    Ok(Obj::Seq(Seq::Vector(Rc::new(
+    Ok(Obj::Seq(Seq::Vector(Arc::new(
         iter.map(|e| to_nnum(e?, "can't convert to vector"))
             .collect::<NRes<Vec<NNum>>>()?,
     ))))
@@ -745,23 +745,23 @@ impl From<u8> for Obj {
 }
 impl From<char> for Obj {
     fn from(n: char) -> Self {
-        Obj::Seq(Seq::String(Rc::new(n.to_string())))
+        Obj::Seq(Seq::String(Arc::new(n.to_string())))
     }
 }
 impl From<&str> for Obj {
     fn from(n: &str) -> Self {
-        Obj::Seq(Seq::String(Rc::new(n.to_string())))
+        Obj::Seq(Seq::String(Arc::new(n.to_string())))
     }
 }
 impl From<String> for Obj {
     fn from(n: String) -> Self {
-        Obj::Seq(Seq::String(Rc::new(n)))
+        Obj::Seq(Seq::String(Arc::new(n)))
     }
 }
 /*
 impl From<Vec<Obj>> for Obj {
     fn from(n: Vec<Obj>) -> Self {
-        Obj::Seq(Seq::List(Rc::new(n)))
+        Obj::Seq(Seq::List(Arc::new(n)))
     }
 }
 */
@@ -1002,10 +1002,10 @@ impl Obj {
         Obj::Num(NNum::u8(n))
     }
     pub fn list(n: Vec<Obj>) -> Self {
-        Obj::Seq(Seq::List(Rc::new(n)))
+        Obj::Seq(Seq::List(Arc::new(n)))
     }
     pub fn dict(m: HashMap<ObjKey, Obj>, def: Option<Obj>) -> Self {
-        Obj::Seq(Seq::Dict(Rc::new(m), def.map(Box::new)))
+        Obj::Seq(Seq::Dict(Arc::new(m), def.map(Box::new)))
     }
 
     pub fn zero() -> Self {
@@ -1481,7 +1481,7 @@ impl ObjKey {
 pub enum NErr {
     Throw(
         Obj,
-        Vec<(String, CodeLoc, CodeLoc, Option<(Rc<String>, Rc<String>)>)>,
+        Vec<(String, CodeLoc, CodeLoc, Option<(Arc<String>, Arc<String>)>)>,
     ),
     // Optional (source file, source code), added when we pass through an eval boundary roughly
     // speaking. Is this bonkers? Idk.
@@ -1539,7 +1539,7 @@ impl<'a> Display for FmtCodeLocRange<'a> {
 }
 
 impl NErr {
-    pub fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
+    pub fn supply_source(self: &mut NErr, src_file: Arc<String>, src: Arc<String>) {
         match self {
             NErr::Throw(_, trace) => {
                 for tup in trace {
@@ -1783,8 +1783,8 @@ pub enum Expr {
     RatLit(BigRational),
     FloatLit(f64),
     ImaginaryFloatLit(f64),
-    StringLit(Rc<String>),
-    BytesLit(Rc<Vec<u8>>),
+    StringLit(Arc<String>),
+    BytesLit(Arc<Vec<u8>>),
     FormatString(Vec<Result<char, (LocExpr, MyFmtFlags)>>),
     Ident(String),
     Underscore,
@@ -1802,7 +1802,7 @@ pub enum Expr {
     And(Box<LocExpr>, Box<LocExpr>),
     Or(Box<LocExpr>, Box<LocExpr>),
     Coalesce(Box<LocExpr>, Box<LocExpr>),
-    Annotation(Box<LocExpr>, Option<Rc<LocExpr>>), // FIXME Rc? :(
+    Annotation(Box<LocExpr>, Option<Arc<LocExpr>>), // FIXME Arc? :(
     Consume(Box<Lvalue>),
     Pop(Box<Lvalue>),
     Remove(Box<Lvalue>),
@@ -1820,14 +1820,14 @@ pub enum Expr {
     Return(Option<Box<LocExpr>>),
     Throw(Box<LocExpr>),
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
-    Struct(Rc<String>, Vec<Rc<String>>),
+    Struct(Arc<String>, Vec<Arc<String>>),
     Freeze(Box<LocExpr>),
     Import(Box<LocExpr>),
     // lvalues only
     Literally(Box<LocExpr>),
 
     // these get cloned in particular
-    Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
+    Lambda(Arc<Vec<Box<Lvalue>>>, Arc<LocExpr>),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
@@ -1841,7 +1841,7 @@ pub enum Expr {
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
-    InternalLambda(Rc<LocExpr>),
+    InternalLambda(Arc<LocExpr>),
 }
 
 impl Expr {
@@ -1853,8 +1853,8 @@ impl Expr {
             Expr::RatLit(x) => Some(Obj::from(NNum::from(x.clone()))),
             Expr::FloatLit(x) => Some(Obj::from(*x)),
             Expr::ImaginaryFloatLit(x) => Some(Obj::Num(NNum::Complex(Complex64::new(0.0, *x)))),
-            Expr::StringLit(s) => Some(Obj::Seq(Seq::String(Rc::clone(s)))),
-            Expr::BytesLit(s) => Some(Obj::Seq(Seq::Bytes(Rc::clone(s)))),
+            Expr::StringLit(s) => Some(Obj::Seq(Seq::String(Arc::clone(s)))),
+            Expr::BytesLit(s) => Some(Obj::Seq(Seq::Bytes(Arc::clone(s)))),
             Expr::Frozen(x) => Some(x.clone()),
             _ => None,
         }
@@ -1866,7 +1866,7 @@ pub enum Lvalue {
     Underscore,
     Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
-    Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
+    Annotation(Box<Lvalue>, Option<Arc<LocExpr>>), // FIXME Arc? :(
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
@@ -1969,7 +1969,7 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     }
 }
 
-pub trait Builtin: Debug {
+pub trait Builtin: Debug + Send + Sync {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
     // there are a LOT of builtins who specialize based on how many arguments they get, and a LOT
@@ -2131,9 +2131,9 @@ pub fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
 
 #[derive(Clone)]
 pub struct Closure {
-    pub params: Rc<Vec<Box<Lvalue>>>,
-    pub body: Rc<LocExpr>,
-    pub env: Rc<RefCell<Env>>,
+    pub params: Arc<Vec<Box<Lvalue>>>,
+    pub body: Arc<LocExpr>,
+    pub env: Arc<RwLock<Env>>,
 }
 
 // directly debug-printing env can easily recurse infinitely
@@ -2169,7 +2169,7 @@ pub struct Parser {
 #[derive(Clone)]
 pub struct FreezeEnv {
     pub bound: HashSet<String>,
-    pub env: Rc<RefCell<Env>>,
+    pub env: Arc<RwLock<Env>>,
     pub warn: bool,
 }
 
@@ -2220,9 +2220,9 @@ fn opt_box_freeze(env: &mut FreezeEnv, expr: &Option<Box<LocExpr>>) -> NRes<Opti
     }
 }
 
-fn opt_rc_freeze(env: &mut FreezeEnv, expr: &Option<Rc<LocExpr>>) -> NRes<Option<Rc<LocExpr>>> {
+fn opt_rc_freeze(env: &mut FreezeEnv, expr: &Option<Arc<LocExpr>>) -> NRes<Option<Arc<LocExpr>>> {
     match expr {
-        Some(x) => Ok(Some(Rc::new(freeze(env, x)?))),
+        Some(x) => Ok(Some(Arc::new(freeze(env, x)?))),
         None => Ok(None),
     }
 }
@@ -2588,7 +2588,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 );
                 Ok(Expr::Lambda(
                     params.clone(),
-                    Rc::new(freeze(&mut env2, body)?),
+                    Arc::new(freeze(&mut env2, body)?),
                 ))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
@@ -2651,7 +2651,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, body)?,
             )),
             Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
-            Expr::InternalLambda(body) => Ok(Expr::InternalLambda(Rc::new(freeze(env, body)?))),
+            Expr::InternalLambda(body) => Ok(Expr::InternalLambda(Arc::new(freeze(env, body)?))),
         }?,
     })
 }
@@ -3232,8 +3232,8 @@ impl Parser {
                                             start,
                                             end: e.end,
                                             expr: Expr::Lambda(
-                                                Rc::new(vec![Box::new(param)]),
-                                                Rc::new(LocExpr {
+                                                Arc::new(vec![Box::new(param)]),
+                                                Arc::new(LocExpr {
                                                     expr: Expr::Switch(Box::new(scrutinee), v),
                                                     start,
                                                     end,
@@ -3266,7 +3266,7 @@ impl Parser {
                                 Ok(LocExpr {
                                     start,
                                     end: body.end,
-                                    expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
+                                    expr: Expr::Lambda(Arc::new(params), Arc::new(body)),
                                 })
                             }
                         }
@@ -3378,16 +3378,16 @@ impl Parser {
                 Token::Struct => {
                     self.advance();
                     if let Some(Token::Ident(name)) = self.peek() {
-                        let name = Rc::new(name.clone());
+                        let name = Arc::new(name.clone());
                         self.advance();
                         self.require(Token::LeftParen, "struct begin")?;
                         let mut fields = Vec::new();
                         if let Some(Token::Ident(field1)) = self.peek() {
-                            fields.push(Rc::new(field1.clone()));
+                            fields.push(Arc::new(field1.clone()));
                             self.advance();
                             while self.try_consume(&Token::Comma).is_some() {
                                 if let Some(Token::Ident(field)) = self.peek() {
-                                    fields.push(Rc::new(field.clone()));
+                                    fields.push(Arc::new(field.clone()));
                                     self.advance();
                                 } else {
                                     Err(self.error_here(format!("bad struct field")))?
@@ -3474,7 +3474,7 @@ impl Parser {
                     Ok(LocExpr {
                         start,
                         end: s.end,
-                        expr: Expr::InternalLambda(Rc::new(s)),
+                        expr: Expr::InternalLambda(Arc::new(s)),
                     })
                 }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
@@ -3870,7 +3870,7 @@ impl Parser {
                     let anno = if self.peek_csc_stopper() {
                         None
                     } else {
-                        Some(Rc::new(self.single("annotation")?))
+                        Some(Arc::new(self.single("annotation")?))
                     };
                     // lol annotated expressions may not be contiguous
                     annotated.extend(pending_annotation.drain(..).map(|e| {
@@ -4051,9 +4051,9 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 
 #[derive(Debug, Clone)]
 pub enum Func {
-    Builtin(Rc<dyn Builtin>),
+    Builtin(Arc<dyn Builtin>),
     Closure(Closure),
-    InternalLambda(Rc<LocExpr>),
+    InternalLambda(Arc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4087,10 +4087,10 @@ pub enum Func {
     CallSection(Option<Box<Obj>>, Vec<Result<Obj, bool>>),
     Type(ObjType), // includes Struct now
     StructField(Struct, usize),
-    Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
+    Memoized(Box<Func>, Arc<RwLock<HashMap<Vec<ObjKey>, Obj>>>),
 }
 
-pub trait WriteMaybeExtractable: Write {
+pub trait WriteMaybeExtractable: Write + Send + Sync {
     fn extract(&self) -> Option<&[u8]>;
 }
 
@@ -4112,7 +4112,7 @@ impl WriteMaybeExtractable for Vec<u8> {
 
 pub struct TopEnv {
     pub backrefs: Vec<Obj>,
-    pub input: Box<dyn BufRead>,
+    pub input: Box<dyn BufRead + Send + Sync>,
     pub output: Box<dyn WriteMaybeExtractable>,
 }
 
@@ -4128,8 +4128,8 @@ impl Debug for TopEnv {
 
 #[derive(Debug)]
 pub struct Env {
-    pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
-    pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
+    pub vars: HashMap<String, (ObjType, Box<RwLock<Obj>>)>,
+    pub parent: Result<Arc<RwLock<Env>>, Arc<RwLock<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
 }
 // simple, linear-time, and at least finds when one is a subsequence of the other.
@@ -4153,11 +4153,11 @@ pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
 }
 
 pub fn try_borrow_nres<'a, T>(
-    r: &'a RefCell<T>,
+    r: &'a RwLock<T>,
     msg1: &str,
     msg2: &str,
-) -> NRes<std::cell::Ref<'a, T>> {
-    match r.try_borrow() {
+) -> NRes<std::sync::RwLockReadGuard<'a, T>> {
+    match r.read() {
         Ok(r) => Ok(r),
         Err(b) => Err(NErr::io_error(format!(
             "internal borrow error: {}: {}: {}",
@@ -4166,11 +4166,11 @@ pub fn try_borrow_nres<'a, T>(
     }
 }
 pub fn try_borrow_mut_nres<'a, T>(
-    r: &'a RefCell<T>,
+    r: &'a RwLock<T>,
     msg1: &str,
     msg2: &str,
-) -> NRes<std::cell::RefMut<'a, T>> {
-    match r.try_borrow_mut() {
+) -> NRes<std::sync::RwLockWriteGuard<'a, T>> {
+    match r.write() {
         Ok(r) => Ok(r),
         Err(b) => Err(NErr::io_error(format!(
             "internal borrow mut error: {}: {}: {}",
@@ -4245,7 +4245,7 @@ impl Env {
     pub fn new(top: TopEnv) -> Env {
         Env {
             vars: HashMap::new(),
-            parent: Err(Rc::new(RefCell::new(top))),
+            parent: Err(Arc::new(RwLock::new(top))),
             internal_stack: Vec::new(),
         }
     }
@@ -4257,21 +4257,21 @@ impl Env {
             output: Box::new(io::sink()),
         })
     }
-    pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
-        Rc::new(RefCell::new(Env {
+    pub fn with_parent(env: &Arc<RwLock<Env>>) -> Arc<RwLock<Env>> {
+        Arc::new(RwLock::new(Env {
             vars: HashMap::new(),
-            parent: Ok(Rc::clone(&env)),
+            parent: Ok(Arc::clone(&env)),
             internal_stack: Vec::new(),
         }))
     }
     pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
         match &self.parent {
-            Ok(v) => v.borrow().mut_top_env(f),
-            Err(t) => f(&mut t.borrow_mut()),
+            Ok(v) => v.read().unwrap().mut_top_env(f),
+            Err(t) => f(&mut t.write().unwrap()),
         }
     }
 
-    pub fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
+    pub fn try_borrow_get_var(env: &Arc<RwLock<Env>>, s: &str) -> NRes<Obj> {
         let r = try_borrow_nres(env, "env", s)?;
         match r.vars.get(s) {
             Some(v) => Ok(try_borrow_nres(&*v.1, "variable", s)?.clone()),
@@ -4298,7 +4298,7 @@ impl Env {
         }
     }
 
-    pub fn try_borrow_peek(env: &Rc<RefCell<Env>>, i: usize) -> NRes<Obj> {
+    pub fn try_borrow_peek(env: &Arc<RwLock<Env>>, i: usize) -> NRes<Obj> {
         let r = try_borrow_nres(env, "internal", "peek")?;
         let s = &r.internal_stack;
         let x = s[s.len() - i - 1].clone();
@@ -4306,7 +4306,7 @@ impl Env {
         Ok(x)
     }
 
-    pub fn try_borrow_set_peek(env: &Rc<RefCell<Env>>, i: usize, x: Obj) -> NRes<()> {
+    pub fn try_borrow_set_peek(env: &Arc<RwLock<Env>>, i: usize, x: Obj) -> NRes<()> {
         let mut r = try_borrow_mut_nres(env, "internal", "peek set")?;
         let s = &mut r.internal_stack;
         let n = s.len();
@@ -4317,12 +4317,12 @@ impl Env {
     pub fn modify_existing_var<T>(
         &self,
         key: &str,
-        f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
+        f: impl FnOnce(&(ObjType, Box<RwLock<Obj>>)) -> T,
     ) -> Option<T> {
         match self.vars.get(key) {
             Some(target) => Some(f(target)),
             None => match &self.parent {
-                Ok(p) => p.borrow().modify_existing_var(key, f),
+                Ok(p) => p.read().unwrap().modify_existing_var(key, f),
                 Err(_) => None,
             },
         }
@@ -4334,7 +4334,7 @@ impl Env {
                 Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
             }
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((ty, Box::new(RefCell::new(val))));
+                e.insert((ty, Box::new(RwLock::new(val))));
                 Ok(())
             }
         }
@@ -4351,7 +4351,7 @@ impl Env {
         self.insert(
             b.builtin_name().to_string(),
             ObjType::Any,
-            Obj::Func(Func::Builtin(Rc::new(b)), p),
+            Obj::Func(Func::Builtin(Arc::new(b)), p),
         )
         .unwrap()
     }
@@ -4369,13 +4369,13 @@ impl Env {
         self.insert(
             alias.to_string(),
             ObjType::Any,
-            Obj::Func(Func::Builtin(Rc::new(b)), p),
+            Obj::Func(Func::Builtin(Arc::new(b)), p),
         )
         .unwrap()
     }
 }
 
-pub type REnv = Rc<RefCell<Env>>;
+pub type REnv = Arc<RwLock<Env>>;
 
 impl Display for Func {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

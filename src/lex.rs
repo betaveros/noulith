@@ -1,7 +1,7 @@
 use num::bigint::BigInt;
 use num::BigRational;
 use std::collections::HashSet;
-use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
@@ -10,9 +10,9 @@ pub enum Token {
     RatLit(BigRational),
     FloatLit(f64),
     ImaginaryFloatLit(f64),
-    StringLit(Rc<String>),
-    BytesLit(Rc<Vec<u8>>),
-    FormatString(Rc<String>),
+    StringLit(Arc<String>),
+    BytesLit(Arc<Vec<u8>>),
+    FormatString(Arc<String>),
     Ident(String),
     LeftParen,
     VLeftParen,
@@ -331,7 +331,7 @@ impl<'a> Lexer<'a> {
                 }
                 '\'' | '"' => {
                     let s = self.lex_simple_string_after_start(c);
-                    self.emit(Token::StringLit(Rc::new(s)))
+                    self.emit(Token::StringLit(Arc::new(s)))
                 }
                 '∧' => self.emit(Token::And),
                 '∨' => self.emit(Token::Or),
@@ -460,7 +460,7 @@ impl<'a> Lexer<'a> {
                                     // TODO this isn't how it works we need to deal with hex
                                     // escapes differently at least
                                     let s = self.lex_simple_string_after_start(delim);
-                                    self.emit(Token::BytesLit(Rc::new(s.into_bytes())))
+                                    self.emit(Token::BytesLit(Arc::new(s.into_bytes())))
                                 }
                                 Some('[') => self.emit(Token::Invalid(
                                     "lexing: bytes: literal is TODO".to_string(),
@@ -475,7 +475,7 @@ impl<'a> Lexer<'a> {
                             match self.next() {
                                 Some(delim @ ('\'' | '"')) => {
                                     let s = self.lex_simple_string_after_start(delim);
-                                    self.emit(Token::FormatString(Rc::new(s)))
+                                    self.emit(Token::FormatString(Arc::new(s)))
                                 }
                                 _ => self.emit(Token::Invalid(
                                     "lexing: format string: no quote".to_string(),
@@ -498,7 +498,7 @@ impl<'a> Lexer<'a> {
                                         }
                                     }
                                     self.next();
-                                    self.emit(Token::StringLit(Rc::new(acc)))
+                                    self.emit(Token::StringLit(Arc::new(acc)))
                                 }
                                 _ => self.emit(Token::Invalid(
                                     "lexing: raw string literal: no quote".to_string(),

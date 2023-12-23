@@ -5,12 +5,12 @@ use crate::lex::*;
 use crate::nint::NInt;
 use crate::nnum::NNum;
 use num::complex::Complex64;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Display;
 use std::fs;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
 
 #[derive(Debug)]
 pub enum EvaluatedIndexOrSlice {
@@ -27,7 +27,7 @@ pub enum EvaluatedLvalue {
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     Literal(Obj),
-    Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
+    Destructure(Arc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
     DestructureStruct(Struct, Vec<Box<EvaluatedLvalue>>),
     InternalPeek(usize),
 }
@@ -261,7 +261,7 @@ impl LvalueChainEvaluator {
 }
 
 // allow splats
-pub fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<Obj>> {
+pub fn eval_seq(env: &Arc<RwLock<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<Obj>> {
     let mut acc = Vec::new();
     for x in exprs {
         match &((**x).expr) {
@@ -278,7 +278,7 @@ pub fn eval_seq(env: &Rc<RefCell<Env>>, exprs: &Vec<Box<LocExpr>>) -> NRes<Vec<O
 }
 
 pub fn eval_index_or_slice(
-    env: &Rc<RefCell<Env>>,
+    env: &Arc<RwLock<Env>>,
     expr: &IndexOrSlice,
 ) -> NRes<EvaluatedIndexOrSlice> {
     match expr {
@@ -296,7 +296,7 @@ pub fn eval_index_or_slice(
     }
 }
 
-pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
+pub fn eval_lvalue(env: &Arc<RwLock<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     match expr {
         Lvalue::Underscore => Ok(EvaluatedLvalue::Underscore),
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
@@ -364,9 +364,9 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
 
 // Important: callers are responsible for absorbing NErr::Break!
 fn evaluate_for(
-    env: &Rc<RefCell<Env>>,
+    env: &Arc<RwLock<Env>>,
     its: &[ForIteration],
-    callback: &mut impl FnMut(&Rc<RefCell<Env>>) -> NRes<()>,
+    callback: &mut impl FnMut(&Arc<RwLock<Env>>) -> NRes<()>,
 ) -> NRes<()> {
     match its {
         [] => match callback(env) {
@@ -426,7 +426,7 @@ fn evaluate_for(
 }
 
 fn splat_section_eval(
-    env: &Rc<RefCell<Env>>,
+    env: &Arc<RwLock<Env>>,
     args: &Vec<Box<LocExpr>>,
 ) -> NRes<Result<Vec<Obj>, Vec<Result<Obj, bool>>>> {
     // check for underscores indicating a call section
@@ -485,7 +485,7 @@ fn splat_section_eval(
     Ok(acc)
 }
 
-pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
+pub fn evaluate(env: &Arc<RwLock<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.expr {
         Expr::Null => Ok(Obj::Null),
         Expr::IntLit64(n) => Ok(Obj::from(NInt::Small(*n))),
@@ -493,8 +493,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::RatLit(n) => Ok(Obj::from(NNum::from(n.clone()))),
         Expr::FloatLit(n) => Ok(Obj::from(*n)),
         Expr::ImaginaryFloatLit(n) => Ok(Obj::Num(NNum::Complex(Complex64::new(0.0, *n)))),
-        Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Rc::clone(s)))),
-        Expr::BytesLit(s) => Ok(Obj::Seq(Seq::Bytes(Rc::clone(s)))),
+        Expr::StringLit(s) => Ok(Obj::Seq(Seq::String(Arc::clone(s)))),
+        Expr::BytesLit(s) => Ok(Obj::Seq(Seq::Bytes(Arc::clone(s)))),
         Expr::Frozen(x) => Ok(x.clone()),
         Expr::FormatString(s) => {
             let mut acc = String::new();
@@ -748,7 +748,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             &mut *try_borrow_mut_nres(vv, "var for pop", &s)?,
                             &ixs,
                             |x| match x {
-                                Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
+                                Obj::Seq(Seq::List(xs)) => Arc::make_mut(xs)
                                     .pop()
                                     .ok_or(NErr::empty_error("can't pop empty".to_string())),
                                 _ => Err(NErr::type_error("can't pop".to_string())),
@@ -786,7 +786,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                                 EvaluatedIndexOrSlice::Index(i),
                                             ) => {
                                                 let ii = pythonic_index(xs, i)?;
-                                                Ok(Rc::make_mut(xs).remove(ii))
+                                                Ok(Arc::make_mut(xs).remove(ii))
                                             }
                                             (
                                                 Obj::Seq(Seq::List(xs)),
@@ -795,13 +795,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                                 let (lo, hi) =
                                                     pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
                                                 Ok(Obj::list(
-                                                    Rc::make_mut(xs).drain(lo..hi).collect(),
+                                                    Arc::make_mut(xs).drain(lo..hi).collect(),
                                                 ))
                                             }
                                             (
                                                 Obj::Seq(Seq::Dict(xs, _)),
                                                 EvaluatedIndexOrSlice::Index(i),
-                                            ) => Rc::make_mut(xs)
+                                            ) => Arc::make_mut(xs)
                                                 .remove(&to_key(i.clone())?)
                                                 .ok_or(NErr::key_error(
                                                     "key not found in dict".to_string(),
@@ -868,7 +868,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             } => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        // Drop the Rc from the lvalue so that functions can try to consume it. We
+                        // Drop the Arc from the lvalue so that functions can try to consume it. We
                         // used to only do this when the function was pure, but that required a
                         // stupid amount of code to bookkeep and prevents users from writing
                         // consuming modifiers. Instead it's now enshrined into the semantics.
@@ -1194,9 +1194,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         )),
         Expr::Lambda(params, body) => Ok(Obj::Func(
             Func::Closure(Closure {
-                params: Rc::clone(params),
-                body: Rc::clone(body),
-                env: Rc::clone(env),
+                params: Arc::clone(params),
+                body: Arc::clone(body),
+                env: Arc::clone(env),
             }),
             Precedence::zero(),
         )),
@@ -1233,7 +1233,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         Expr::Freeze(expr) => {
             let mut frenv = FreezeEnv {
                 bound: HashSet::new(),
-                env: Rc::clone(env),
+                env: Arc::clone(env),
                 warn: false,
             };
             evaluate(env, &freeze(&mut frenv, expr)?)
@@ -1257,7 +1257,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         } {
                             Ok(x) => Ok(x),
                             Err(mut e) => {
-                                e.supply_source(f.clone(), Rc::new(c));
+                                e.supply_source(f.clone(), Arc::new(c));
                                 Err(e)
                             }
                         },
@@ -1333,12 +1333,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 Obj::Num(NNum::Int(n)) => {
                     let mut i = NInt::Small(0);
                     while i < n {
-                        let s = try_borrow_nres(env, "internal", "for check")?.internal_stack.len();
+                        let s = try_borrow_nres(env, "internal", "for check")?
+                            .internal_stack
+                            .len();
                         let ret = evaluate(env, body);
                         try_borrow_mut_nres(env, "internal", "for end")
-                                .expect("internal for: stack is out of sync, unrecoverable")
-                                .internal_stack.
-                                truncate(s);
+                            .expect("internal for: stack is out of sync, unrecoverable")
+                            .internal_stack
+                            .truncate(s);
                         match ret {
                             Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
                             Err(NErr::Continue) => (),
@@ -1348,10 +1350,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         i += 1;
                     }
                 }
-                e => return Err(NErr::type_error(format!(
-                    "{}: internal for: not int and not iterable",
-                    FmtObj::debug(&e)
-                ))),
+                e => {
+                    return Err(NErr::type_error(format!(
+                        "{}: internal for: not int and not iterable",
+                        FmtObj::debug(&e)
+                    )))
+                }
             }
             Ok(Obj::Null)
         }
@@ -1384,7 +1388,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             call(env, val, args)
         }
         Expr::InternalLambda(body) => Ok(Obj::Func(
-            Func::InternalLambda(Rc::clone(body)),
+            Func::InternalLambda(Arc::clone(body)),
             Precedence::zero(),
         )),
     }
@@ -1426,7 +1430,7 @@ impl Closure {
 pub fn soft_from_utf8(bs: Vec<u8>) -> Obj {
     match String::from_utf8(bs) {
         Ok(s) => Obj::from(s),
-        Err(e) => Obj::Seq(Seq::Bytes(Rc::new(e.into_bytes()))),
+        Err(e) => Obj::Seq(Seq::Bytes(Arc::new(e.into_bytes()))),
     }
 }
 
@@ -1449,11 +1453,11 @@ pub fn slice_seq(xr: Seq, lo: Option<Obj>, hi: Option<Obj>) -> NRes<Obj> {
         }
         (Seq::Vector(s), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(s, lo.as_ref(), hi.as_ref())?;
-            Ok(Obj::Seq(Seq::Vector(Rc::new(s[lo..hi].to_vec()))))
+            Ok(Obj::Seq(Seq::Vector(Arc::new(s[lo..hi].to_vec()))))
         }
         (Seq::Bytes(s), lo, hi) => {
             let (lo, hi) = pythonic_slice_obj(s, lo.as_ref(), hi.as_ref())?;
-            Ok(Obj::Seq(Seq::Bytes(Rc::new(s[lo..hi].to_vec()))))
+            Ok(Obj::Seq(Seq::Bytes(Arc::new(s[lo..hi].to_vec()))))
         }
         (Seq::Stream(s), lo, hi) => {
             let lo = obj_to_isize_slice_index(lo.as_ref())?;
@@ -1807,11 +1811,11 @@ pub fn set_index(
         }
         (Obj::Seq(s), [fi, rest @ ..]) => match (s, fi) {
             (Seq::List(v), EvaluatedIndexOrSlice::Index(i)) => {
-                set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value, every)
+                set_index(pythonic_mut(&mut Arc::make_mut(v), i)?, rest, value, every)
             }
             (Seq::List(v), EvaluatedIndexOrSlice::Slice(i, j)) => {
                 if every {
-                    let v = Rc::make_mut(v);
+                    let v = Arc::make_mut(v);
                     let (lo, hi) = pythonic_slice_obj(v, i.as_ref(), j.as_ref())?;
                     for i in lo..hi {
                         set_index(&mut v[i], rest, value.clone(), true)?;
@@ -1819,12 +1823,12 @@ pub fn set_index(
                     Ok(())
                 } else {
                     todo!("assgn to slice")
-                    // set_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, value)
+                    // set_index(pythonic_mut(&mut Arc::make_mut(v), i)?, rest, value)
                 }
             }
             (Seq::String(s), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
                 Some(Obj::Seq(Seq::String(v))) => {
-                    let mut_s = Rc::make_mut(s);
+                    let mut_s = Arc::make_mut(s);
                     if v.as_bytes().len() == 1 {
                         // FIXME lmao
                         let mut owned = std::mem::take(mut_s).into_bytes();
@@ -1863,7 +1867,7 @@ pub fn set_index(
             (Seq::String(_), _) => Err(NErr::type_error(format!("string bad slice"))),
             (Seq::Dict(v, _), EvaluatedIndexOrSlice::Index(kk)) => {
                 let k = to_key(kk.clone())?;
-                let mut_d = Rc::make_mut(v);
+                let mut_d = Arc::make_mut(v);
                 // We might create a new map entry, but only at the end, which is a bit of a
                 // mismatch for Rust's map API if we want to recurse all the way
                 if rest.is_empty() {
@@ -1886,7 +1890,7 @@ pub fn set_index(
                 }
             }
             (Seq::Dict(v, _), EvaluatedIndexOrSlice::Slice(None, None)) if rest.is_empty() => {
-                let mut_d = Rc::make_mut(v);
+                let mut_d = Arc::make_mut(v);
                 if every {
                     for (_, vv) in mut_d.iter_mut() {
                         set_index(vv, rest, value.clone(), true)?;
@@ -1902,7 +1906,7 @@ pub fn set_index(
             (Seq::Vector(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
                 Some(Obj::Num(n)) => {
                     let i = pythonic_index(v, i)?;
-                    Rc::make_mut(v)[i] = n;
+                    Arc::make_mut(v)[i] = n;
                     Ok(())
                 }
                 Some(e) => Err(NErr::type_error(format!(
@@ -1915,7 +1919,7 @@ pub fn set_index(
             (Seq::Bytes(v), EvaluatedIndexOrSlice::Index(i)) if rest.is_empty() => match value {
                 Some(Obj::Num(ref n)) => {
                     let i = pythonic_index(v, i)?;
-                    Rc::make_mut(v)[i] = n
+                    Arc::make_mut(v)[i] = n
                         .to_u8()
                         .ok_or(NErr::value_error(format!("can't to byte: {}", n)))?;
                     Ok(())
@@ -1972,7 +1976,7 @@ pub fn set_index(
     }
 }
 
-// be careful not to call this with both lhs holding a mutable reference into a RefCell and rhs
+// be careful not to call this with both lhs holding a mutable reference into a RwLock and rhs
 // trying to take such a reference!
 pub fn modify_existing_index(
     lhs: &mut Obj,
@@ -1992,11 +1996,11 @@ pub fn modify_existing_index(
         Some((i, rest)) => {
             match (lhs, i) {
                 (Obj::Seq(Seq::List(v)), EvaluatedIndexOrSlice::Index(i)) => {
-                    modify_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
+                    modify_existing_index(pythonic_mut(&mut Arc::make_mut(v), i)?, rest, f)
                 }
                 (Obj::Seq(Seq::Dict(v, def)), EvaluatedIndexOrSlice::Index(kk)) => {
                     let k = to_key(kk.clone())?;
-                    let mut_d = Rc::make_mut(v);
+                    let mut_d = Arc::make_mut(v);
                     match mut_d.entry(k) {
                         std::collections::hash_map::Entry::Occupied(mut e) => {
                             modify_existing_index(e.get_mut(), rest, f)
@@ -2055,18 +2059,18 @@ pub fn modify_every_existing_index(
         Some((i, rest)) => {
             match (lhs, i) {
                 (Obj::Seq(Seq::List(v)), EvaluatedIndexOrSlice::Index(i)) => {
-                    modify_every_existing_index(pythonic_mut(&mut Rc::make_mut(v), i)?, rest, f)
+                    modify_every_existing_index(pythonic_mut(&mut Arc::make_mut(v), i)?, rest, f)
                 }
                 (Obj::Seq(Seq::List(v)), EvaluatedIndexOrSlice::Slice(lo, hi)) => {
                     let (lo, hi) = pythonic_slice_obj(v, lo.as_ref(), hi.as_ref())?;
-                    for m in &mut Rc::make_mut(v)[lo..hi] {
+                    for m in &mut Arc::make_mut(v)[lo..hi] {
                         modify_every_existing_index(m, rest, f)?;
                     }
                     Ok(())
                 }
                 (Obj::Seq(Seq::Dict(v, def)), EvaluatedIndexOrSlice::Index(kk)) => {
                     let k = to_key(kk.clone())?;
-                    let mut_d = Rc::make_mut(v);
+                    let mut_d = Arc::make_mut(v);
                     match mut_d.entry(k) {
                         std::collections::hash_map::Entry::Occupied(mut e) => {
                             modify_every_existing_index(e.get_mut(), rest, f)
@@ -2410,7 +2414,7 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
 // different: doesn't hold a mutable borrow to the environment when calling rhs; doesn't accept
 // declarations
 pub fn modify_every(
-    env: &Rc<RefCell<Env>>,
+    env: &Arc<RwLock<Env>>,
     lhs: &EvaluatedLvalue,
     rhs: &mut impl FnMut(Obj) -> NRes<Obj>,
 ) -> NRes<()> {
@@ -2654,7 +2658,7 @@ impl Func {
             }
             Func::Memoized(f, memo) => {
                 let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
-                match memo.try_borrow() {
+                match memo.read() {
                     Ok(memo) => match memo.get(&kargs) {
                         Some(res) => return Ok(res.clone()),
                         None => {}
@@ -2662,7 +2666,7 @@ impl Func {
                     Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
                 };
                 let res = f.run(env, kargs.iter().cloned().map(key_to_obj).collect())?;
-                match memo.try_borrow_mut() {
+                match memo.write() {
                     Ok(mut memo) => memo.insert(kargs, res.clone()),
                     Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
                 };
@@ -2741,7 +2745,7 @@ pub fn is_type(ty: &ObjType, arg: &Obj) -> bool {
 /*
 // note we must (?) not hold a mutable borrow of env while calling f since f might (will probably?)
 // also get one
-fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<()> {
+fn modify_every_lvalue(env: &Arc<RwLock<Env>>, expr: &Lvalue, f: &Func) -> NRes<()> {
     match expr {
         Lvalue::IndexedIdent(s, v) => {
             let mut sr = env.borrow_mut().get_var(s)?;
@@ -2751,7 +2755,7 @@ fn modify_every_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue, f: &Func) -> NRes<
             Ok(sr)
         },
         Lvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
-        Lvalue::CommaSeq(v) => Ok(Obj::List(Rc::new(
+        Lvalue::CommaSeq(v) => Ok(Obj::List(Arc::new(
             v.iter().map(|e| Ok(eval_lvalue_as_obj(env, e)?)).collect::<NRes<Vec<Obj>>>()?
         ))),
         // maybe if commaseq eagerly looks for splats...

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use num::bigint::Sign;
 
@@ -62,19 +62,19 @@ impl Stream for Repeat {
         };
         Ok(match (lo < 0, hi < 0) {
             (true, true) | (false, false) => {
-                Seq::List(Rc::new(vec![self.0.clone(); (hi - lo).max(0) as usize]))
+                Seq::List(Arc::new(vec![self.0.clone(); (hi - lo).max(0) as usize]))
             }
-            (true, false) => Seq::List(Rc::new(Vec::new())),
-            (false, true) => Seq::Stream(Rc::new(self.clone())),
+            (true, false) => Seq::List(Arc::new(Vec::new())),
+            (false, true) => Seq::Stream(Arc::new(self.clone())),
         })
     }
     fn reversed(&self) -> NRes<Seq> {
-        Ok(Seq::Stream(Rc::new(self.clone())))
+        Ok(Seq::Stream(Arc::new(self.clone())))
     }
 }
 #[derive(Debug, Clone)]
 // just gonna say this has to be nonempty
-pub struct Cycle(pub Rc<Vec<Obj>>, pub usize);
+pub struct Cycle(pub Arc<Vec<Obj>>, pub usize);
 impl Iterator for Cycle {
     type Item = NRes<Obj>;
     fn next(&mut self) -> Option<NRes<Obj>> {
@@ -111,7 +111,7 @@ impl Stream for Cycle {
         v.reverse();
         // 0 -> 0, 1 -> n - 1...
         let i = (v.len() - self.1) % v.len();
-        Ok(Seq::Stream(Rc::new(Cycle(Rc::new(v), i))))
+        Ok(Seq::Stream(Arc::new(Cycle(Arc::new(v), i))))
     }
 }
 #[derive(Debug, Clone)]
@@ -182,11 +182,11 @@ impl Stream for Range {
 
 // Order: lexicographic indexes
 #[derive(Debug, Clone)]
-pub struct Permutations(pub Rc<Vec<Obj>>, pub Option<Rc<Vec<usize>>>);
+pub struct Permutations(pub Arc<Vec<Obj>>, pub Option<Arc<Vec<usize>>>);
 impl Iterator for Permutations {
     type Item = NRes<Obj>;
     fn next(&mut self) -> Option<NRes<Obj>> {
-        let v = Rc::make_mut(self.1.as_mut()?);
+        let v = Arc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
 
         // 1 6 4 2 -> 2 1 4 6
@@ -275,11 +275,11 @@ impl Stream for Permutations {
 
 // Order: lexicographic indexes
 #[derive(Debug, Clone)]
-pub struct Combinations(pub Rc<Vec<Obj>>, pub Option<Rc<Vec<usize>>>);
+pub struct Combinations(pub Arc<Vec<Obj>>, pub Option<Arc<Vec<usize>>>);
 impl Iterator for Combinations {
     type Item = NRes<Obj>;
     fn next(&mut self) -> Option<NRes<Obj>> {
-        let v = Rc::make_mut(self.1.as_mut()?);
+        let v = Arc::make_mut(self.1.as_mut()?);
         if v.len() > self.0.len() {
             return None;
         }
@@ -346,11 +346,11 @@ impl Stream for Combinations {
 
 // Order: big-endian binary
 #[derive(Debug, Clone)]
-pub struct Subsequences(pub Rc<Vec<Obj>>, pub Option<Rc<Vec<bool>>>);
+pub struct Subsequences(pub Arc<Vec<Obj>>, pub Option<Arc<Vec<bool>>>);
 impl Iterator for Subsequences {
     type Item = NRes<Obj>;
     fn next(&mut self) -> Option<NRes<Obj>> {
-        let v = Rc::make_mut(self.1.as_mut()?);
+        let v = Arc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(
             v.iter()
                 .zip(self.0.iter())
@@ -427,11 +427,11 @@ impl Stream for Subsequences {
 }
 
 #[derive(Debug, Clone)]
-pub struct CartesianPower(pub Rc<Vec<Obj>>, pub Option<Rc<Vec<usize>>>);
+pub struct CartesianPower(pub Arc<Vec<Obj>>, pub Option<Arc<Vec<usize>>>);
 impl Iterator for CartesianPower {
     type Item = NRes<Obj>;
     fn next(&mut self) -> Option<NRes<Obj>> {
-        let v = Rc::make_mut(self.1.as_mut()?);
+        let v = Arc::make_mut(self.1.as_mut()?);
         let ret = Obj::list(v.iter().map(|i| self.0[*i].clone()).collect());
 
         // let mut last = self.0.len();
