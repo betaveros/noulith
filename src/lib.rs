@@ -46,6 +46,8 @@ use md5::{Digest, Md5};
 use sha2::Sha256;
 
 #[cfg(target_arch = "wasm32")]
+use js_sys;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
 mod core;
@@ -3847,6 +3849,14 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("expected func".to_string())),
         },
     });
+    env.insert_builtin(OneArgBuiltin {
+        name: "repr".to_string(),
+        body: |arg| {
+            let mut flags = MyFmtFlags::new();
+            flags.repr = true;
+            Ok(Obj::from(format!("{}", FmtObj(&arg, &flags))))
+        },
+    });
     env.insert_builtin(BasicBuiltin {
         name: "$".to_string(),
         body: |_env, args| {
@@ -5495,26 +5505,51 @@ pub fn initialize(env: &mut Env) {
     });
 }
 
-// copypasta
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub struct WasmOutputs {
-    output: String,
-    error: String,
+// #[cfg_attr(target_arch = "wasm32")]
+#[cfg(target_arch = "wasm32")]
+pub fn obj_to_js_value(obj: Obj) -> JsValue {
+    match obj {
+        Obj::Null => JsValue::NULL,
+        Obj::Seq(Seq::List(ls)) => JsValue::from(
+            ls.iter()
+                .map(|obj| obj_to_js_value(obj.clone()))
+                .collect::<js_sys::Array>(),
+        ),
+        Obj::Seq(Seq::Dict(d, def)) => {
+            let a = d
+                .iter()
+                .map(|(k, v)| {
+                    JsValue::from(js_sys::Array::of2(
+                        &obj_to_js_value(key_to_obj(k.clone())),
+                        &obj_to_js_value(v.clone()),
+                    ))
+                })
+                .collect::<js_sys::Array>();
+            match def {
+                None => {}
+                Some(def) => {
+                    // FIXME Noulith doesn't have booleans so use JS false as
+                    // a "default" sentinel (symbols can't pass the webworker serialization
+                    // barrier) (I am lazy)
+                    a.unshift(&JsValue::from(js_sys::Array::of2(
+                        // &JsValue::symbol(Some("default")),
+                        &JsValue::FALSE,
+                        &obj_to_js_value(*def),
+                    )));
+                }
+            };
+            JsValue::from(a)
+        }
+        _ => JsValue::from(format!("{}", obj)),
+    }
 }
 
+// Can't be bothered to write the code to create JavaScript objects with nice keys and everything
+// (looks annoying, apparently use js_sys::Reflect)
+// just return an [stdout, error, result] array
+#[cfg(target_arch = "wasm32")]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-impl WasmOutputs {
-    pub fn get_output(&self) -> String {
-        self.output.to_string()
-    }
-    pub fn get_error(&self) -> String {
-        self.error.to_string()
-    }
-}
-
-// stdout and error
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn encapsulated_eval(code: &str, input: &[u8]) -> WasmOutputs {
+pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(io::Cursor::new(input.to_vec())),
@@ -5524,28 +5559,34 @@ pub fn encapsulated_eval(code: &str, input: &[u8]) -> WasmOutputs {
 
     let e = Rc::new(RefCell::new(env));
 
+    let mut output = JsValue::UNDEFINED;
+    let mut error = JsValue::UNDEFINED;
+    let mut result = JsValue::UNDEFINED;
+
     match parse(code) {
-        Err(p) => WasmOutputs {
-            output: String::new(),
-            error: p.render(code),
-        },
-        Ok(None) => WasmOutputs {
-            output: String::new(),
-            error: String::new(),
-        },
+        Err(p) => {
+            error = JsValue::from(p.render(code));
+        }
+        Ok(None) => {}
         Ok(Some(code)) => match evaluate(&e, &code) {
-            Err(err) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e| {
+            Err(err) => {
+                output = JsValue::from(e.borrow_mut().mut_top_env(|e| {
                     String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
-                }),
-                error: format!("{}", err),
-            },
-            Ok(res) => WasmOutputs {
-                output: e.borrow_mut().mut_top_env(|e| {
+                }));
+                error = JsValue::from(format!("{}", err));
+            }
+            Ok(res) => {
+                let output_s = e.borrow_mut().mut_top_env(|e| {
                     String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
-                }) + &format!("{}", res),
-                error: String::new(),
-            },
+                });
+                if fancy {
+                    output = JsValue::from(output_s);
+                    result = obj_to_js_value(res);
+                } else {
+                    output = JsValue::from(output_s + &format!("{}", res));
+                }
+            }
         },
     }
+    js_sys::Array::of3(&output, &error, &result)
 }

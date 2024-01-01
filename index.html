@@ -16,6 +16,20 @@ textarea {
 	font-family: monospace;
 	white-space: pre-wrap;
 }
+#result {
+	font-family: monospace;
+	white-space: pre-wrap;
+}
+table {
+	border-collapse: collapse;
+}
+td {
+	border: 1px solid lightgray;
+	padding: 0.25em;
+}
+.default {
+	opacity: 0.5;
+}
 #error {
 	color: #c00;
 }
@@ -26,19 +40,15 @@ textarea {
 </head>
 <body>
 <h1>noulith</h1>
-<p>
-Copypasta from my other language.
-</p>
-<p>Code:</p>
+<label for="code">Code:</label>
 <textarea id="code"></textarea>
-<p>Input:</p>
+<label for="input">Input:</label>
 <textarea id="input"></textarea>
-<button id="run" type="button" role="button" disabled>Loading...</button>
+<button id="run" type="button" role="button" disabled>Loading...</button> <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
 <div id="outer-output">
-<p>Output:</p>
-<div id="output"></div>
-<p>Error:</p>
-<div id="error"></div>
+	<div id="mid-output">Output: <div id="output"></div></div>
+	<div id="mid-result">Result: <div id="result"></div></div>
+	<div id="mid-error">Error: <div id="error"></div></div>
 </div>
 <button id="gen-url" type="button" role="button">Generate URL</button>
 <textarea id="url"></textarea>
@@ -55,9 +65,10 @@ async function prepare(worker) {
 	const code = document.getElementById('code');
 	const input = document.getElementById('input');
 	const runner = document.getElementById('run');
+	const fancy = document.getElementById('fancy');
 	function run() {
 		runner.disabled = true;
-		worker.postMessage([code.value, input.value]);
+		worker.postMessage([code.value, input.value, fancy.checked]);
 	}
 	runner.addEventListener('click', run);
 	code.addEventListener('keydown', function(event) {
@@ -84,6 +95,45 @@ function b64decode(s) {
 	}
 	return new TextDecoder().decode(uarr);
 }
+function renderInto(obj, node) {
+	console.log(obj);
+	console.log(node.tagName);
+	if (node.tagName === 'TR') {
+		if (Array.isArray(obj)) {
+			for (let elt of obj) {
+				let td = document.createElement("td");
+				renderInto(elt, td);
+				node.appendChild(td);
+			}
+		} else {
+			let td = document.createElement("td");
+			if (obj === false) {
+				td.textContent = "default";
+				td.classList.add("default");
+			} else {
+				td.textContent = obj;
+			}
+			node.appendChild(td);
+		}
+	} else {
+		if (Array.isArray(obj)) {
+			let table = document.createElement("table");
+			for (let elt of obj) {
+				let tr = document.createElement("tr");
+				renderInto(elt, tr);
+				table.appendChild(tr);
+			}
+			node.appendChild(table);
+		} else {
+			if (obj === false) {
+				node.textContent = "default";
+				node.classList.add("default");
+			} else {
+				node.textContent = obj;
+			}
+		}
+	}
+}
 document.addEventListener('DOMContentLoaded', function() {
 	var base64 = location.hash.substr(1);
 	const code = document.getElementById('code');
@@ -98,7 +148,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 	const outerOutput = document.getElementById('outer-output');
 	const output = document.getElementById('output');
+	const result = document.getElementById('result');
 	const error = document.getElementById('error');
+	const midOutput = document.getElementById('mid-output');
+	const midResult = document.getElementById('mid-result');
+	const midError = document.getElementById('mid-error');
 	const runner = document.getElementById('run');
 	const myWorker = new Worker('worker.js');
 	myWorker.onmessage = function(e) {
@@ -108,7 +162,14 @@ document.addEventListener('DOMContentLoaded', function() {
 			runner.disabled = false;
 			outerOutput.style.display = 'block';
 			output.textContent = e.data[0];
+			midOutput.style.display = e.data[0] ? 'block' : 'none';
+
 			error.textContent = e.data[1];
+			midError.style.display = e.data[1] ? 'block' : 'none';
+
+			result.textContent = '';
+			renderInto(e.data[2], result);
+			midResult.style.display = (e.data[2] === null || e.data[2] === undefined) ? 'none' : 'block';
 		}
 	};
 });

@@ -32,7 +32,8 @@ request = ["reqwest"]
 crypto = ["aes", "aes-gcm", "md-5", "sha2", "blake3"]
 
 [target.'cfg(target_arch="wasm32")'.dependencies]
-wasm-bindgen = "0.2.74"
+wasm-bindgen = "0.2.89"
+js-sys = "0.3.66"
 getrandom = { version = "0.2", features = ["js"] } # ???
 
 [lib]

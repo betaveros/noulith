@@ -6,8 +6,8 @@ await wasm_bindgen('./pkg/noulith_bg.wasm');
 postMessage("ready");
 addEventListener('message', async function(e) {
   console.log('Message received from main script');
-  let r = encapsulated_eval(e.data[0], e.data[1]);
+  let r = encapsulated_eval(e.data[0], e.data[1], e.data[2]);
   console.log('Posting');
-  postMessage([r.get_output(), r.get_error()]);
+  postMessage(r);
 });
 })();

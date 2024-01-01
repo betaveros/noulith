@@ -268,8 +268,14 @@ fn indexing() {
         simple_eval("x := [[0] ** 10] ** 10; x[1][2] = 3; x[2][2] = 4; x[1][2] $ x[2][2]"),
         Obj::from("34")
     );
-    assert_eq!(simple_eval("[1, 2, 3] |.. 1 .. 4 then unwords"), Obj::from("1 4 3"));
-    assert_eq!(simple_eval("[1, 2, 3] |.. (-1) .. 4 then unwords"), Obj::from("1 2 4"));
+    assert_eq!(
+        simple_eval("[1, 2, 3] |.. 1 .. 4 then unwords"),
+        Obj::from("1 4 3")
+    );
+    assert_eq!(
+        simple_eval("[1, 2, 3] |.. (-1) .. 4 then unwords"),
+        Obj::from("1 2 4")
+    );
 }
 
 #[test]
@@ -300,13 +306,34 @@ fn dicts() {
 
 #[test]
 fn more_dicts() {
-    assert_eq!(simple_eval("({'a': 1, 'b': 2} || {'a': 4, 'b': 8})['a']"), i(4));
-    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"), i(5));
-    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"), i(-3));
-    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||+ {'A': 4, 'b': 8})['a']"), i(1));
-    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||- {'A': 4, 'b': 8})['a']"), i(1));
-    assert_eq!(simple_eval("({'A': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"), i(4));
-    assert_eq!(simple_eval("({'A': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"), i(-4));
+    assert_eq!(
+        simple_eval("({'a': 1, 'b': 2} || {'a': 4, 'b': 8})['a']"),
+        i(4)
+    );
+    assert_eq!(
+        simple_eval("({'a': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"),
+        i(5)
+    );
+    assert_eq!(
+        simple_eval("({'a': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"),
+        i(-3)
+    );
+    assert_eq!(
+        simple_eval("({'a': 1, 'b': 2} ||+ {'A': 4, 'b': 8})['a']"),
+        i(1)
+    );
+    assert_eq!(
+        simple_eval("({'a': 1, 'b': 2} ||- {'A': 4, 'b': 8})['a']"),
+        i(1)
+    );
+    assert_eq!(
+        simple_eval("({'A': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"),
+        i(4)
+    );
+    assert_eq!(
+        simple_eval("({'A': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"),
+        i(-4)
+    );
 }
 
 #[test]
@@ -486,7 +513,6 @@ fn lazy_hofs() {
         Obj::from("2 4 6 8")
     );
 }
-
 
 #[test]
 fn folds() {
