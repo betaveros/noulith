@@ -4540,7 +4540,8 @@ pub fn initialize(env: &mut Env) {
                 let mut it = mut_seq_into_iter(&mut s);
                 match (it.next(), it.next(), it.next()) {
                     (Some(k), Some(v), None) => {
-                        Rc::make_mut(&mut a)[obj_clamp_to_usize_ok(&k?.clone())?] = v?.clone();
+                        let i = pythonic_index(&a, &k?.clone())?;
+                        Rc::make_mut(&mut a)[i] = v?.clone();
                         Ok(Obj::Seq(Seq::List(a)))
                     }
                     _ => Err(NErr::argument_error("RHS must be pair".to_string())),

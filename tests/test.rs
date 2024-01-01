@@ -268,6 +268,8 @@ fn indexing() {
         simple_eval("x := [[0] ** 10] ** 10; x[1][2] = 3; x[2][2] = 4; x[1][2] $ x[2][2]"),
         Obj::from("34")
     );
+    assert_eq!(simple_eval("[1, 2, 3] |.. 1 .. 4 then unwords"), Obj::from("1 4 3"));
+    assert_eq!(simple_eval("[1, 2, 3] |.. (-1) .. 4 then unwords"), Obj::from("1 2 4"));
 }
 
 #[test]
