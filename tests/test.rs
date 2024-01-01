@@ -1,11 +1,11 @@
 extern crate noulith;
-use std::rc::Rc;
-use std::cell::RefCell;
 use noulith::simple_eval;
-use noulith::Obj;
 use noulith::Env;
+use noulith::Obj;
 use noulith::{evaluate, parse};
 use num::bigint::BigInt;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 fn i(n: i64) -> Obj {
     Obj::i64(n)
@@ -127,6 +127,14 @@ fn math() {
     assert_eq!(simple_eval("7 % 4"), i(3));
     assert_eq!(simple_eval("7 // 4"), i(1));
     assert_eq!(simple_eval("7 %% 4"), i(3));
+}
+
+#[test]
+fn number_theory() {
+    assert_eq!(simple_eval("is_prime 35"), i(0));
+    assert_eq!(simple_eval("is_prime 37"), i(1));
+    assert_eq!(simple_eval("6 lcm 10"), i(30));
+    assert_eq!(simple_eval("6 gcd 10"), i(2));
 }
 
 #[test]
@@ -289,6 +297,17 @@ fn dicts() {
 }
 
 #[test]
+fn more_dicts() {
+    assert_eq!(simple_eval("({'a': 1, 'b': 2} || {'a': 4, 'b': 8})['a']"), i(4));
+    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"), i(5));
+    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"), i(-3));
+    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||+ {'A': 4, 'b': 8})['a']"), i(1));
+    assert_eq!(simple_eval("({'a': 1, 'b': 2} ||- {'A': 4, 'b': 8})['a']"), i(1));
+    assert_eq!(simple_eval("({'A': 1, 'b': 2} ||+ {'a': 4, 'b': 8})['a']"), i(4));
+    assert_eq!(simple_eval("({'A': 1, 'b': 2} ||- {'a': 4, 'b': 8})['a']"), i(-4));
+}
+
+#[test]
 fn fast_append_pop() {
     assert_eq!(
         simple_eval(
@@ -427,6 +446,47 @@ fn basic_hofs() {
 }
 
 #[test]
+fn more_hofs() {
+    assert_eq!(
+        simple_eval("1 to 10 filter ((%3) equals 2) then unwords"),
+        Obj::from("2 5 8")
+    );
+}
+
+#[test]
+fn dict_hofs() {
+    assert_eq!(
+        simple_eval("set(1 to 10) map_keys (//2) then sort then unwords"),
+        Obj::from("0 1 2 3 4 5")
+    );
+    assert_eq!(
+        simple_eval("(for (k <- 1 to 5) yield k: k) map_values (//2) then items then sort then flatten then unwords"),
+        Obj::from("1 0 2 1 3 1 4 2 5 2")
+    );
+    assert_eq!(
+        simple_eval("{1: 2, 2: 3, 3: 4} filter_keys (>2) then items then flatten then unwords"),
+        Obj::from("3 4")
+    );
+    assert_eq!(
+        simple_eval("{1: 2, 2: 3, 3: 4} filter_values (<3) then items then flatten then unwords"),
+        Obj::from("1 2")
+    );
+}
+
+#[test]
+fn lazy_hofs() {
+    assert_eq!(
+        simple_eval("iota(1) lazy_map (*2) take 4 then unwords"),
+        Obj::from("2 4 6 8")
+    );
+    assert_eq!(
+        simple_eval("iota(1) lazy_filter even take 4 then unwords"),
+        Obj::from("2 4 6 8")
+    );
+}
+
+
+#[test]
 fn folds() {
     assert_eq!(simple_eval("1 to 10 fold +"), i(55));
     assert_eq!(simple_eval("1 to 10 fold + from 1000"), i(1055));
@@ -539,5 +599,8 @@ fn switch() {
 fn backrefs() {
     let env = Env::empty();
     env.mut_top_env(|v| v.backrefs.push(i(1337)));
-    assert_eq!(evaluate(&Rc::new(RefCell::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(), i(1337));
+    assert_eq!(
+        evaluate(&Rc::new(RefCell::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(),
+        i(1337)
+    );
 }

@@ -636,3 +636,73 @@ impl Stream for MappedStream {
     }
     */
 }
+
+// i think just equally illegal
+// again we'll treat NErr::Break as graceful termination
+pub struct FilteredStream(pub NRes<(Box<dyn Stream>, Func, REnv)>);
+impl Clone for FilteredStream {
+    fn clone(&self) -> FilteredStream {
+        match &self.0 {
+            Err(e) => FilteredStream(Err(e.clone())),
+            Ok((inner, func, renv)) => {
+                FilteredStream(Ok((inner.clone_box(), func.clone(), renv.clone())))
+            }
+        }
+    }
+}
+// directly debug-printing env can easily recurse infinitely
+impl Debug for FilteredStream {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match &self.0 {
+            Err(NErr::Break(None)) => write!(fmt, "FilteredStream(stopped)"),
+            Err(e) => write!(fmt, "FilteredStream(ERROR: {:?})", e),
+            Ok((inner, func, _)) => write!(fmt, "FilteredStream({:?}, {:?}, ...)", inner, func),
+        }
+    }
+}
+impl Iterator for FilteredStream {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        let (inner, func, renv) = self.0.as_mut().ok()?;
+        loop {
+            match inner.next() {
+                Some(Err(e)) => {
+                    self.0 = Err(e.clone());
+                    return Some(Err(e));
+                }
+                Some(Ok(cur)) => match func.run1(&renv, cur.clone()) {
+                    Ok(nxt) => {
+                        if nxt.truthy() {
+                            return Some(Ok(cur));
+                        }
+                    }
+                    Err(e) => {
+                        self.0 = Err(e.clone());
+                        return Some(Err(e));
+                    }
+                },
+                None => {
+                    self.0 = Err(NErr::Break(None));
+                    return None;
+                }
+            }
+        }
+    }
+}
+impl Display for FilteredStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match &self.0 {
+            Ok((inner, func, _)) => write!(formatter, "FilteredStream({}, {}, ...)", inner, func),
+            Err(e) => write!(formatter, "FilteredStream(ERROR: {})", e),
+        }
+    }
+}
+impl Stream for FilteredStream {
+    fn peek(&self) -> Option<NRes<Obj>> {
+        // lol this can be arbitrarily slow:
+        self.clone().next()
+    }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+}

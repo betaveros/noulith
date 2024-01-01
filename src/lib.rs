@@ -1454,6 +1454,38 @@ impl Builtin for Fanout {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LiftedEquals;
+
+impl Builtin for LiftedEquals {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        Ok(Obj::Func(
+            Func::OnFanoutConst(
+                Box::new(Func::Builtin(Rc::new(ComparisonOperator::of(
+                    "==",
+                    |a, b| Ok(a == b),
+                )))),
+                args,
+            ),
+            Precedence::zero(),
+        ))
+    }
+
+    fn builtin_name(&self) -> &str {
+        "equals"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "equals" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 // not actually chainable, but conditional partial application, and also I want aliases
 #[derive(Debug, Clone)]
 pub struct Group {
@@ -3316,6 +3348,15 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
+        name: "lazy_filter".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(Seq::Stream(s)), Obj::Func(b, _)) => Ok(Obj::Seq(Seq::Stream(Rc::new(
+                FilteredStream(Ok((s.clone_box(), b, Rc::clone(env)))),
+            )))),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
         name: "each".to_string(),
         body: |env, mut a, b| {
             let it = mut_obj_into_iter(&mut a, "each")?;
@@ -3371,6 +3412,53 @@ pub fn initialize(env: &mut Env) {
                     None => None,
                 },
             )),
+            _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "filter_keys".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(d, def)), Obj::Func(b, _)) => {
+                // don't see an easy functional way to do this given fallible predicate
+                let mut m = HashMap::new();
+                for (k, v) in d.iter() {
+                    if b.run1(env, key_to_obj(k.clone()))?.truthy() {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+                Ok(Obj::dict(m, def.map(|x| *x)))
+            }
+            _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "filter_values".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(d, def)), Obj::Func(b, _)) => {
+                let mut m = HashMap::new();
+                for (k, v) in d.iter() {
+                    if b.run1(env, v.clone())?.truthy() {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+                Ok(Obj::dict(m, def.map(|x| *x)))
+            }
+            _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "filter_items".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(d, def)), Obj::Func(b, _)) => {
+                // don't see an easy functional way to do this given fallible predicate
+                let mut m = HashMap::new();
+                for (k, v) in d.iter() {
+                    if b.run2(env, key_to_obj(k.clone()), v.clone())?.truthy() {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
+                Ok(Obj::dict(m, def.map(|x| *x)))
+            }
             _ => Err(NErr::type_error("not dict or callable".to_string())),
         },
     });
@@ -3453,6 +3541,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(ZipLongest);
     env.insert_builtin(Parallel);
     env.insert_builtin(Fanout);
+    env.insert_builtin(LiftedEquals);
     env.insert_builtin(EnvOneArgBuiltin {
         name: "transpose".to_string(),
         body: |_env, a| {
@@ -4336,6 +4425,62 @@ pub fn initialize(env: &mut Env) {
         body: |a, b| match (a, b) {
             (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(mut b, _))) => {
                 Rc::make_mut(&mut a).extend(Rc::make_mut(&mut b).drain());
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "||+".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
+                let m = Rc::make_mut(&mut a);
+                for (k, v) in unwrap_or_clone(b) {
+                    match m.entry(k) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(v);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            let slot = e.get_mut();
+                            *slot = expect_nums_and_vectorize_2_nums(
+                                |a, b| a + b,
+                                std::mem::take(slot),
+                                v,
+                                "||+",
+                            )?
+                        }
+                    }
+                }
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "||-".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
+                let m = Rc::make_mut(&mut a);
+                for (k, v) in unwrap_or_clone(b) {
+                    match m.entry(k) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(expect_nums_and_vectorize_1(
+                                |a| Ok(Obj::Num(-a)),
+                                v,
+                                "||- unary",
+                            )?);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            let slot = e.get_mut();
+                            *slot = expect_nums_and_vectorize_2_nums(
+                                |a, b| a - b,
+                                std::mem::take(slot),
+                                v,
+                                "||-",
+                            )?
+                        }
+                    }
+                }
                 Ok(Obj::Seq(Seq::Dict(a, d)))
             }
             (a, b) => Err(NErr::argument_error_2(&a, &b)),

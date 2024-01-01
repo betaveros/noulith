@@ -4068,6 +4068,9 @@ pub enum Func {
     Parallel(Vec<Func>),
     // a... -> [f1(a...), f2(a...), ...]
     Fanout(Vec<Func>),
+    // a... -> f(g1(a...), g2(a...), ...)
+    // where, if g_i isn't a function, it's constant
+    OnFanoutConst(Box<Func>, Vec<Obj>),
     // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
     Flip(Box<Func>),
     // each Err is a slot for an argument, true if splat
@@ -4394,6 +4397,9 @@ impl Display for Func {
                 write!(formatter, "Parallel({})", CommaSeparated(fs))
             }
             Func::Fanout(fs) => write!(formatter, "Fanout({})", CommaSeparated(fs)),
+            Func::OnFanoutConst(f, gs) => {
+                write!(formatter, "OnFanoutConst({} . {})", f, CommaSeparated(gs))
+            }
             Func::Flip(f) => write!(formatter, "Flip({})", f),
             // TODO
             Func::ListSection(xs) => {

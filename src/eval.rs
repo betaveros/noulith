@@ -1333,12 +1333,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 Obj::Num(NNum::Int(n)) => {
                     let mut i = NInt::Small(0);
                     while i < n {
-                        let s = try_borrow_nres(env, "internal", "for check")?.internal_stack.len();
+                        let s = try_borrow_nres(env, "internal", "for check")?
+                            .internal_stack
+                            .len();
                         let ret = evaluate(env, body);
                         try_borrow_mut_nres(env, "internal", "for end")
-                                .expect("internal for: stack is out of sync, unrecoverable")
-                                .internal_stack.
-                                truncate(s);
+                            .expect("internal for: stack is out of sync, unrecoverable")
+                            .internal_stack
+                            .truncate(s);
                         match ret {
                             Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
                             Err(NErr::Continue) => (),
@@ -1348,10 +1350,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         i += 1;
                     }
                 }
-                e => return Err(NErr::type_error(format!(
-                    "{}: internal for: not int and not iterable",
-                    FmtObj::debug(&e)
-                ))),
+                e => {
+                    return Err(NErr::type_error(format!(
+                        "{}: internal for: not int and not iterable",
+                        FmtObj::debug(&e)
+                    )))
+                }
             }
             Ok(Obj::Null)
         }
@@ -2563,6 +2567,16 @@ impl Func {
                 }
                 Ok(Obj::list(res))
             }
+            Func::OnFanoutConst(f, gs) => {
+                let mut mapped_args = Vec::new();
+                for g in gs {
+                    mapped_args.push(match g {
+                        Obj::Func(gf, _) => gf.run(env, args.clone())?,
+                        x => x.clone(),
+                    });
+                }
+                f.run(env, mapped_args)
+            }
             Func::Flip(f) => match few2(args) {
                 // weird lol
                 Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
@@ -2696,6 +2710,7 @@ impl Func {
             Func::OnComposition(..) => None,
             Func::Parallel(_) => None,
             Func::Fanout(_) => None,
+            Func::OnFanoutConst(..) => None,
             Func::Flip(..) => None,
             Func::ListSection(_) => None,
             Func::ChainSection(..) => None,
