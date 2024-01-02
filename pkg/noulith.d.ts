@@ -4,22 +4,10 @@ declare namespace wasm_bindgen {
 	/**
 	* @param {string} code
 	* @param {Uint8Array} input
-	* @returns {WasmOutputs}
+	* @param {boolean} fancy
+	* @returns {Array<any>}
 	*/
-	export function encapsulated_eval(code: string, input: Uint8Array): WasmOutputs;
-	/**
-	*/
-	export class WasmOutputs {
-	  free(): void;
-	/**
-	* @returns {string}
-	*/
-	  get_output(): string;
-	/**
-	* @returns {string}
-	*/
-	  get_error(): string;
-	}
+	export function encapsulated_eval(code: string, input: Uint8Array, fancy: boolean): Array<any>;
 	
 }
 
@@ -27,14 +15,9 @@ declare type InitInput = RequestInfo | URL | Response | BufferSource | WebAssemb
 
 declare interface InitOutput {
   readonly memory: WebAssembly.Memory;
-  readonly __wbg_wasmoutputs_free: (a: number) => void;
-  readonly wasmoutputs_get_output: (a: number, b: number) => void;
-  readonly wasmoutputs_get_error: (a: number, b: number) => void;
-  readonly encapsulated_eval: (a: number, b: number, c: number, d: number) => number;
-  readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
-  readonly __wbindgen_free: (a: number, b: number) => void;
-  readonly __wbindgen_malloc: (a: number) => number;
-  readonly __wbindgen_realloc: (a: number, b: number, c: number) => number;
+  readonly encapsulated_eval: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly __wbindgen_malloc: (a: number, b: number) => number;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
   readonly __wbindgen_exn_store: (a: number) => void;
 }
 

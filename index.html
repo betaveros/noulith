@@ -42,7 +42,7 @@ td {
 <h1>noulith</h1>
 <label for="code">Code:</label>
 <textarea id="code"></textarea>
-<label for="input">Input:</label> <select id="input-select"><option value="">user input</option><option value="ukacd.gz">UKACD.gz (use read_compressed())</option><option value="yawl.gz">YAWL.gz (use read_compressed())</option></select>
+<label for="input">Input:</label> <select id="input-select"><option value="">user input</option><option value="ukacd.gz">UKACD.gz (use read_compressed())</option><option value="yawl.gz">YAWL.gz (use read_compressed())</option><option value="file">file</option></select> <input type="file" id="input-file" />
 <textarea id="input"></textarea>
 <button id="run" type="button" role="button" disabled>Loading...</button> <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
 <div id="outer-output">
@@ -64,15 +64,22 @@ async function prepare(worker) {
 	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
 	const code = document.getElementById('code');
 	const input = document.getElementById('input');
+	const fileInput = document.getElementById('input-file');
 	const runner = document.getElementById('run');
 	const fancy = document.getElementById('fancy');
 	function run() {
 		runner.disabled = true;
 		let sel = document.getElementById('input-select').value;
-		if (sel) {
-			fetch(sel).then(x => x.arrayBuffer().then(b => {
+		if (sel === 'file') {
+			let file = fileInput.files[0];
+			console.log(file);
+			file.arrayBuffer().then(buf => {
+				worker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
+			});
+		} else if (sel) {
+			fetch(sel).then(x => x.arrayBuffer().then(buf => {
 				console.log(b);
-				worker.postMessage([code.value, new Uint8Array(b), fancy.checked]);
+				worker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
 			}));
 		} else {
 			worker.postMessage([code.value, new TextEncoder().encode(input.value), fancy.checked]);
@@ -162,6 +169,16 @@ document.addEventListener('DOMContentLoaded', function() {
 		}
 		urlElem.style.display = 'block';
 	});
+
+	function changeSelect() {
+		const input = document.getElementById('input');
+		const fileInput = document.getElementById('input-file');
+		input.disabled = Boolean(inputSelect.value);
+		fileInput.disabled = inputSelect.value !== 'file';
+	}
+
+	changeSelect();
+	inputSelect.addEventListener('change', changeSelect);
 
 	const outerOutput = document.getElementById('outer-output');
 	const output = document.getElementById('output');
