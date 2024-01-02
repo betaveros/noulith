@@ -6,11 +6,9 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, Read, Write};
 
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
-use std::rc::Rc;
 
 use regex::Regex;
 
@@ -45,6 +43,9 @@ use md5::{Digest, Md5};
 #[cfg(feature = "crypto")]
 use sha2::Sha256;
 
+#[cfg(feature = "parallel")]
+use rayon::iter::{ParallelBridge, ParallelIterator};
+
 #[cfg(target_arch = "wasm32")]
 use js_sys;
 #[cfg(target_arch = "wasm32")]
@@ -58,6 +59,7 @@ mod iter;
 mod lex;
 mod nint;
 pub mod nnum;
+mod rc;
 mod streams;
 // mod optim;
 use crate::few::*;
@@ -69,6 +71,7 @@ pub use crate::eval::*;
 pub use crate::lex::Token;
 use crate::nint::NInt;
 use crate::nnum::NNum;
+pub use crate::rc::*;
 
 // can "destructure"
 #[derive(Debug, Clone)]
@@ -3397,6 +3400,25 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    #[cfg(feature = "parallel")]
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "par_each".to_string(),
+        body: |env, mut a, b| {
+            let it = mut_obj_into_iter(&mut a, "par_each")?;
+            match b {
+                Obj::Func(b, _) => {
+                    it.par_bridge()
+                        .map(|e| {
+                            b.run1(env, e?)?;
+                            Ok(())
+                        })
+                        .collect::<NRes<_>>()?;
+                    Ok(Obj::Null)
+                }
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
         body: |env, mut a, b| {
@@ -3405,6 +3427,24 @@ pub fn initialize(env: &mut Env) {
                 match b {
                     Obj::Func(b, _) => Ok(Obj::list(
                         it.map(|e| b.run1(env, e?)).collect::<NRes<Vec<Obj>>>()?,
+                    )),
+                    _ => Err(NErr::type_error("not callable".to_string())),
+                }
+            };
+            ret
+        },
+    });
+    #[cfg(feature = "parallel")]
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "par_map".to_string(),
+        body: |env, mut a, b| {
+            let ret = {
+                let it = mut_obj_into_iter(&mut a, "par_map")?;
+                match b {
+                    Obj::Func(b, _) => Ok(Obj::list(
+                        it.par_bridge()
+                            .map(|e| b.run1(env, e?))
+                            .collect::<NRes<Vec<Obj>>>()?,
                     )),
                     _ => Err(NErr::type_error("not callable".to_string())),
                 }

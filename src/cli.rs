@@ -1,8 +1,7 @@
-use std::cell::RefCell;
 use std::io;
 use std::io::BufReader;
-use std::rc::Rc;
 
+use noulith::{cell_borrow, cell_borrow_mut, Rc, RefCell};
 use noulith::{evaluate, initialize, lex, parse, type_of, Env, Obj, Token, TopEnv};
 
 use rustyline::error::ReadlineError;
@@ -33,7 +32,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
             let color = match token.token {
                 Token::Invalid(_) => Some("\x1b[31m"),
                 Token::Ident(s) => {
-                    if self.0.borrow().vars.contains_key(&s) {
+                    if cell_borrow(&self.0).vars.contains_key(&s) {
                         Some("\x1b[36m")
                     } else {
                         None
@@ -138,9 +137,7 @@ impl rustyline::completion::Completer for NoulithHelper {
                 }
                 match token.token {
                     Token::Ident(x) => {
-                        let v = self
-                            .0
-                            .borrow()
+                        let v = cell_borrow(&self.0)
                             .vars
                             .keys()
                             .filter(|s| s.starts_with(&x))
@@ -200,7 +197,7 @@ pub fn repl() {
                     Ok(Some(expr)) => match evaluate(&e, &expr) {
                         Ok(Obj::Null) => {}
                         Ok(x) => {
-                            let refs_len = e.borrow_mut().mut_top_env(|v| {
+                            let refs_len = cell_borrow_mut(&e).mut_top_env(|v| {
                                 v.backrefs.push(x.clone());
                                 v.backrefs.len()
                             });

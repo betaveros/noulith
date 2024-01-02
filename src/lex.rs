@@ -1,7 +1,7 @@
+use crate::rc::Rc;
 use num::bigint::BigInt;
 use num::BigRational;
 use std::collections::HashSet;
-use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {

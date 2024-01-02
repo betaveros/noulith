@@ -2,10 +2,10 @@ extern crate noulith;
 use noulith::simple_eval;
 use noulith::Env;
 use noulith::Obj;
+use noulith::Rc;
+use noulith::RefCell;
 use noulith::{evaluate, parse};
 use num::bigint::BigInt;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 fn i(n: i64) -> Obj {
     Obj::i64(n)

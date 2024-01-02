@@ -1,9 +1,9 @@
-use noulith::{evaluate, initialize, parse, warn, Env, Expr, LocExpr, Obj, ObjType, TopEnv};
-use std::cell::RefCell;
+use noulith::{
+    evaluate, initialize, parse, warn, Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv,
+};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
-use std::rc::Rc;
 
 #[cfg(feature = "cli")]
 mod cli;
@@ -39,7 +39,7 @@ fn repl() {
             Ok(Some(expr)) => match evaluate(&e, &expr) {
                 Ok(Obj::Null) => {}
                 Ok(x) => {
-                    let refs_len = e.borrow_mut().mut_top_env(|v| {
+                    let refs_len = noulith::cell_borrow_mut(&e).mut_top_env(|v| {
                         v.backrefs.push(x.clone());
                         v.backrefs.len()
                     });

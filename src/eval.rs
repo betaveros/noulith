@@ -4,13 +4,12 @@ use crate::iter::*;
 use crate::lex::*;
 use crate::nint::NInt;
 use crate::nnum::NNum;
+use crate::rc::*;
 use num::complex::Complex64;
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Display;
 use std::fs;
-use std::rc::Rc;
 
 #[derive(Debug)]
 pub enum EvaluatedIndexOrSlice {
@@ -2668,7 +2667,7 @@ impl Func {
             }
             Func::Memoized(f, memo) => {
                 let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
-                match memo.try_borrow() {
+                match cell_try_borrow(memo) {
                     Ok(memo) => match memo.get(&kargs) {
                         Some(res) => return Ok(res.clone()),
                         None => {}
@@ -2676,7 +2675,7 @@ impl Func {
                     Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
                 };
                 let res = f.run(env, kargs.iter().cloned().map(key_to_obj).collect())?;
-                match memo.try_borrow_mut() {
+                match cell_try_borrow_mut(memo) {
                     Ok(mut memo) => memo.insert(kargs, res.clone()),
                     Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
                 };

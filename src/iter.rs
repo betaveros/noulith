@@ -1,5 +1,5 @@
+use crate::rc::Rc;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub fn unwrap_or_clone<T: Clone>(x: Rc<T>) -> T {
     match Rc::try_unwrap(x) {

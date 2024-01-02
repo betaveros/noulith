@@ -1,12 +1,12 @@
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::rc::Rc;
 
 use num::bigint::Sign;
 
 use crate::core::*;
 use crate::nint::NInt;
+use crate::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct Repeat(pub Obj);

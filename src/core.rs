@@ -3,14 +3,12 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, Write};
 
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 
 use num::bigint::BigInt;
 use num::complex::Complex64;
@@ -23,6 +21,7 @@ use crate::lex::*;
 
 use crate::nint::NInt;
 use crate::nnum::NNum;
+use crate::rc::*;
 
 // The fundamental unitype and all its types...
 #[derive(Debug, Clone)]
@@ -156,7 +155,7 @@ pub fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usi
 // https://doc.rust-lang.org/reference/items/traits.html#object-safety
 //
 // more using this as "lazy, possibly infinite list" rn i.e. trying to support indexing etc.
-pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug {
+pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug + MaybeSync + MaybeSend {
     fn peek(&self) -> Option<NRes<Obj>>;
     fn clone_box(&self) -> Box<dyn Stream>;
     // FIXME: this used to mean "length or infinity" but it increasingly looks like we actually
@@ -1969,7 +1968,7 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     }
 }
 
-pub trait Builtin: Debug {
+pub trait Builtin: Debug + MaybeSync + MaybeSend {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
     // there are a LOT of builtins who specialize based on how many arguments they get, and a LOT
@@ -4093,7 +4092,7 @@ pub enum Func {
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
 
-pub trait WriteMaybeExtractable: Write {
+pub trait WriteMaybeExtractable: Write + MaybeSync + MaybeSend {
     fn extract(&self) -> Option<&[u8]>;
 }
 
@@ -4115,7 +4114,7 @@ impl WriteMaybeExtractable for Vec<u8> {
 
 pub struct TopEnv {
     pub backrefs: Vec<Obj>,
-    pub input: Box<dyn BufRead>,
+    pub input: Box<dyn BufRead + Send + Sync>,
     pub output: Box<dyn WriteMaybeExtractable>,
 }
 
@@ -4155,12 +4154,8 @@ pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
     dist + a.len() - ai + b.len() - bi
 }
 
-pub fn try_borrow_nres<'a, T>(
-    r: &'a RefCell<T>,
-    msg1: &str,
-    msg2: &str,
-) -> NRes<std::cell::Ref<'a, T>> {
-    match r.try_borrow() {
+pub fn try_borrow_nres<'a, T>(r: &'a RefCell<T>, msg1: &str, msg2: &str) -> NRes<Ref<'a, T>> {
+    match cell_try_borrow(r) {
         Ok(r) => Ok(r),
         Err(b) => Err(NErr::io_error(format!(
             "internal borrow error: {}: {}: {}",
@@ -4172,8 +4167,8 @@ pub fn try_borrow_mut_nres<'a, T>(
     r: &'a RefCell<T>,
     msg1: &str,
     msg2: &str,
-) -> NRes<std::cell::RefMut<'a, T>> {
-    match r.try_borrow_mut() {
+) -> NRes<RefMut<'a, T>> {
+    match cell_try_borrow_mut(r) {
         Ok(r) => Ok(r),
         Err(b) => Err(NErr::io_error(format!(
             "internal borrow mut error: {}: {}: {}",
@@ -4269,8 +4264,8 @@ impl Env {
     }
     pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
         match &self.parent {
-            Ok(v) => v.borrow().mut_top_env(f),
-            Err(t) => f(&mut t.borrow_mut()),
+            Ok(v) => cell_borrow(v).mut_top_env(f),
+            Err(t) => f(&mut cell_borrow_mut(t)),
         }
     }
 
@@ -4325,7 +4320,7 @@ impl Env {
         match self.vars.get(key) {
             Some(target) => Some(f(target)),
             None => match &self.parent {
-                Ok(p) => p.borrow().modify_existing_var(key, f),
+                Ok(p) => cell_borrow(p).modify_existing_var(key, f),
                 Err(_) => None,
             },
         }
