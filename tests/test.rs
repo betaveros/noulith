@@ -214,6 +214,10 @@ fn more_lists() {
         Obj::from("7654321")
     );
     assert_eq!(
+        simple_eval("[1,3,5,7,2,4,6] sort_on - join ''"),
+        Obj::from("7654321")
+    );
+    assert_eq!(
         simple_eval("[1,2,3,4,5,6,7] window 3 map (join '') join ','"),
         Obj::from("123,234,345,456,567")
     );

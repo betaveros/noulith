@@ -359,7 +359,7 @@ All the usuals and some weird ones: `each`, `map`, `flat_map`, `filter`, `reject
 
 `fold`/`reduce` (which are the same) require a nonempty sequence with two arguments, but also chain with an optional `from` starting value, e.g. `x fold * from 1`.
 
-`sort` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards. Sorry, no built-in Schwartzian transform yet.
+`sort` takes a three-valued comparator, which you can get by `<=> on` some key function. Or `>=<` for backwards. Or `sort_on` for the Schwartzian transform taking the key function directly.
 
 ```
 [[1], [2, 3, 4], [5, 6]] sort_by (<=> on len)

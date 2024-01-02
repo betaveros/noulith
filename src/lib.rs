@@ -2280,6 +2280,30 @@ fn sorted_by<T: Clone + Into<Obj>>(env: &REnv, f: Func, mut v: Vec<T>) -> NRes<V
 fn multi_sort_by(env: &REnv, f: Func, v: Seq) -> NRes<Seq> {
     multi!(v, sorted_by(env, f, v))
 }
+fn sorted_on<T: Clone + Into<Obj>>(env: &REnv, f: Func, v: Vec<T>) -> NRes<Vec<T>> {
+    let mut ret = Ok(());
+    let mut w = v
+        .into_iter()
+        .map(|a| Ok((f.run1(env, a.clone().into())?, a)))
+        .collect::<NRes<Vec<(Obj, T)>>>()?;
+    w.sort_by(|(ak, _), (bk, _)| {
+        if ret.is_err() {
+            return Ordering::Equal;
+        }
+        match ncmp(&ak, &bk) {
+            Ok(ord) => ord,
+            Err(e) => {
+                ret = Err(e);
+                Ordering::Equal
+            }
+        }
+    });
+    ret?;
+    Ok(w.into_iter().map(|(_, obj)| obj).collect())
+}
+fn multi_sort_on(env: &REnv, f: Func, v: Seq) -> NRes<Seq> {
+    multi!(v, sorted_on(env, f, v))
+}
 fn uniqued<T: Clone + Into<Obj>>(v: Vec<T>) -> NRes<Vec<T>> {
     let mut seen = HashSet::new();
     let mut ret = Vec::new();
@@ -4421,6 +4445,13 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(Sort);
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "sort_on".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::Seq(multi_sort_on(env, f, s)?)),
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
     env.insert_builtin(OneArgBuiltin {
         name: "reverse".to_string(),
         body: |a| match a {
