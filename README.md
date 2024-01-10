@@ -387,3 +387,17 @@ Other goodies: `id`, `const` (returns its second argument!), `flip`. Some Haskel
 If compiled with `request`:
 
 - `request("https://httpbin.org/", {"method": "POST", "headers": {"Foo": "Bar"}})`
+
+### "internal" control flow and functions
+
+weird things that are faster to evaluate than always making/following chains of environments, looking up variable names in maps, etc. in theory the hope is that we can automatically translate code to use these things to optimize them, in practice it's a ton of work lol.
+
+- `__internal_frame expr`: record the stack's length, execute the body, then truncate the stack back to the same length (if the stack is too short you're on your own)
+- `__internal_push expr`: push something onto the stack
+- `__internal_pop`: pop something from the stack (and return it)
+- `__internal_peek integer-const`: get or assign to some position, 0-indexed from the top of the stack
+- `__internal_for (expr) body`:
+  - if the expr evaluates to an integer: evaluate the body n times, restoring the stack's length each time, without changing the environment
+  - if the expr evaluates to an iterable: for each item, push it, evaluate the body, then restore the stack's length to before the push
+- `__internal_call integer-const expr`: pop the top n elements of the stack, then call the expression with those as arguments (bottom to top)
+- `__internal_lambda body`: makes an internal lambda that, when called, doesn't enter a new environment; but records the stack length, pushes the arguments on, then executes and can return a value as usual, restoring the stack length before returning

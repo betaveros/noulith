@@ -1840,7 +1840,7 @@ pub enum Expr {
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
-    InternalLambda(Rc<LocExpr>),
+    InternalLambda(usize, Rc<LocExpr>),
 }
 
 impl Expr {
@@ -2650,7 +2650,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, body)?,
             )),
             Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
-            Expr::InternalLambda(body) => Ok(Expr::InternalLambda(Rc::new(freeze(env, body)?))),
+            Expr::InternalLambda(argc, body) => {
+                Ok(Expr::InternalLambda(*argc, Rc::new(freeze(env, body)?)))
+            }
         }?,
     })
 }
@@ -3442,6 +3444,15 @@ impl Parser {
                         Err(self.error_here(format!("internal peek no n")))?
                     }
                 }
+                Token::InternalPeekN(n) => {
+                    let n = *n;
+                    self.advance();
+                    Ok(LocExpr {
+                        start,
+                        end,
+                        expr: Expr::InternalPeek(n),
+                    })
+                }
                 Token::InternalFor => {
                     self.advance();
                     self.require(Token::LeftParen, "internal for start")?;
@@ -3456,11 +3467,11 @@ impl Parser {
                 }
                 Token::InternalCall => {
                     self.advance();
-                    if let Some((end, n)) = self.try_consume_usize("internal call")? {
+                    if let Some((_end, n)) = self.try_consume_usize("internal call")? {
                         let body = self.single("internal call body")?;
                         Ok(LocExpr {
                             start,
-                            end,
+                            end: body.end,
                             expr: Expr::InternalCall(n, Box::new(body)),
                         })
                     } else {
@@ -3469,12 +3480,16 @@ impl Parser {
                 }
                 Token::InternalLambda => {
                     self.advance();
-                    let s = self.single("internal lambda")?;
-                    Ok(LocExpr {
-                        start,
-                        end: s.end,
-                        expr: Expr::InternalLambda(Rc::new(s)),
-                    })
+                    if let Some((_end, n)) = self.try_consume_usize("internal lambda")? {
+                        let body = self.single("internal lambda body")?;
+                        Ok(LocExpr {
+                            start,
+                            end: body.end,
+                            expr: Expr::InternalLambda(n, Rc::new(body)),
+                        })
+                    } else {
+                        Err(self.error_here(format!("internal lambda no n")))?
+                    }
                 }
                 _ => Err(self.error_here(format!("atom: Unexpected"))),
             }
@@ -4052,7 +4067,7 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
-    InternalLambda(Rc<LocExpr>),
+    InternalLambda(usize, Rc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4380,7 +4395,7 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::InternalLambda(_) => write!(formatter, "InternalLambda"),
+            Func::InternalLambda(n, ..) => write!(formatter, "InternalLambda({}, ?)", n),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
             Func::PartialAppLast(f, x) => {
