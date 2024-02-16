@@ -2874,6 +2874,25 @@ impl Parser {
         }
     }
 
+    // consuming an int that's not a u8 is an error
+    fn try_consume_u8(&mut self, message: &str) -> Result<Option<(CodeLoc, u8)>, ParseError> {
+        if let Some(LocToken {
+            start: _,
+            end,
+            token: Token::IntLit(i),
+        }) = self.peek_loc_token()
+        {
+            let us = i
+                .to_u8()
+                .ok_or(self.error_here(format!("{}: not u8: {}", message, i)))?;
+            let end = *end;
+            self.advance();
+            Ok(Some((end, us)))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn peek_loc(&self) -> CodeLoc {
         match self.peek_loc_token() {
             Some(t) => t.start,
@@ -3157,6 +3176,38 @@ impl Parser {
                             end,
                             expr: Expr::List(exs),
                         })
+                    }
+                }
+                Token::BLeftBracket => {
+                    self.advance();
+                    if let Some(end) = self.try_consume(&Token::RightBracket) {
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::BytesLit(Rc::new(Vec::new())),
+                        })
+                    } else if let Some((_, b)) = self.try_consume_u8("bytes lit 0")? {
+                        let mut bytes = vec![b];
+                        while self.peek() == Some(&Token::Comma) {
+                            self.advance();
+                            if self.peek() == Some(&Token::RightBracket) {
+                                break;
+                            }
+                            if let Some((_, b)) = self.try_consume_u8("bytes lit cont")? {
+                                bytes.push(b);
+                            } else {
+                                return Err(self.error_here(format!("bytes lit: unexpected")));
+                            }
+                        }
+
+                        let end = self.require(Token::RightBracket, "bytes expr")?;
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::BytesLit(Rc::new(bytes)),
+                        })
+                    } else {
+                        Err(self.error_here(format!("bytes lit: unexpected")))
                     }
                 }
                 Token::LeftBrace => {

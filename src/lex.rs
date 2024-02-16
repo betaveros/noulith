@@ -18,6 +18,7 @@ pub enum Token {
     VLeftParen,
     RightParen,
     LeftBracket,
+    BLeftBracket,
     RightBracket,
     LeftBrace,
     RightBrace,
@@ -463,9 +464,7 @@ impl<'a> Lexer<'a> {
                                     let s = self.lex_simple_string_after_start(delim);
                                     self.emit(Token::BytesLit(Rc::new(s.into_bytes())))
                                 }
-                                Some('[') => self.emit(Token::Invalid(
-                                    "lexing: bytes: literal is TODO".to_string(),
-                                )),
+                                Some('[') => self.emit(Token::BLeftBracket),
                                 _ => {
                                     self.emit(Token::Invalid("lexing: bytes: no quote".to_string()))
                                 }
