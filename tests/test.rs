@@ -231,6 +231,26 @@ fn strings() {
 }
 
 #[test]
+fn split() {
+    assert_eq!(
+        simple_eval("'1-3-5' split '-' join '+'"),
+        Obj::from("1+3+5")
+    );
+    assert_eq!(
+        simple_eval("'1-3-5' split '-' by 2 join '+'"),
+        Obj::from("1+3-5")
+    );
+    assert_eq!(
+        simple_eval("'1-3-5' rsplit '-' join '+'"),
+        Obj::from("5+3+1")
+    );
+    assert_eq!(
+        simple_eval("'1-3-5' rsplit '-' by 2 join '+'"),
+        Obj::from("5+1-3")
+    );
+}
+
+#[test]
 fn streams() {
     assert_eq!(
         simple_eval("[1, 2] ^^ 3 map (join '') join ','"),
@@ -596,6 +616,11 @@ fn random() {
     assert_eq!(simple_eval("0 <= random() < 1"), i(1));
     assert_eq!(simple_eval("random() != random()"), i(1));
     assert_eq!(simple_eval("5 <= random_range(5, 10) < 10"), i(1));
+    assert_eq!(simple_eval("choose B'aaa'"), i(0x61));
+    assert_eq!(
+        simple_eval("sort(shuffle([5,3,1,4,2])) == [1,2,3,4,5]"),
+        i(1)
+    );
 }
 
 #[test]

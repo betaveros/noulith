@@ -5537,7 +5537,7 @@ pub fn initialize(env: &mut Env) {
                 match seq {
                     Seq::Bytes(l) => l
                         .choose(&mut rand::thread_rng())
-                        .map(|n| Obj::from(*n as usize))
+                        .map(|n| Obj::u8(*n))
                         .ok_or_else(|| {
                             NErr::value_error("Can't choose from empty bytes".to_string())
                         }),
