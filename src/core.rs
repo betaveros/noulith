@@ -1359,7 +1359,7 @@ impl MyDisplay for Obj {
             }
             Obj::Seq(Seq::Bytes(xs)) => write_bytes(xs.as_slice(), formatter, flags),
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
-            Obj::Instance(_, fields) => write!(formatter, "<instance: {}>", CommaSeparated(fields)),
+            Obj::Instance(s, fields) => write!(formatter, "<{} instance: {}>", s.name, CommaSeparated(fields)),
         }
     }
 }

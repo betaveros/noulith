@@ -48,6 +48,7 @@ td {
 <button id="stop" type="button" role="button" disabled>Loading...</button>
 <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
 <label><input type="checkbox" id="auto" /> Auto-rerun</label>
+<label style="display: none"><input type="checkbox" id="sanitize" checked /> Sanitize HTML</label>
 <div id="outer-output">
 	<div id="mid-output">Output: <div id="output"></div></div>
 	<div id="mid-result">Result: <div id="result"></div></div>
@@ -130,11 +131,64 @@ function b64decode(s) {
 	}
 	return new TextDecoder().decode(uarr);
 }
+const htmlAllowList = "a abbr acronym address article aside b big blockquote br caption cite code col colgroup dd del details dfn div dl dt em figcaption figure footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span sub sup strike strong sub summary sup table tbody td th thead tfoot tr time u ul var wbr".split(" ");
+function isAttrSafe(tag, attr, value) {
+	if (typeof tag !== "string" || typeof attr !== "string" || typeof value !== string) return false;
+	tag = tag.toLowerCase();
+	attr = attr.toLowerCase();
+
+	if (attr === "alt") return true;
+	if (attr === "title") return true;
+
+	if (tag === "a") {
+		return attr === "href" && (value.startsWith("http://") || value.startsWith("https://"));
+	}
+}
 function renderInto(obj, node) {
 	console.log(obj);
 	console.log(node.tagName);
+	const sanitize = document.getElementById('sanitize');
+	if (Array.isArray(obj) && obj[0] === true && obj[1] === 'HtmlTag') {
+		let tagName = obj[2];
+		let children = obj[3];
+		let attributes = obj[4];
+		if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
+			let elem =
+				tagName.startsWith("svg:") ?
+				document.createElementNS("http://www.w3.org/2000/svg", tagName.slice(4)) :
+				document.createElement(tagName);
+			if (!Array.isArray(children) || children[0] === true) children = [children];
+			children.forEach(child => renderInto(child, elem));
+
+			if (Array.isArray(attributes)) {
+				for (let attr of attributes) {
+					if (Array.isArray(attr)) {
+						let attrKey = attr[0];
+						let attrValue = attr[1];
+						if ((!sanitize.checked || isAttrSafe(tagName, attrKey, attrValue))) {
+							if (typeof attrKey === "string" && attrKey.startsWith("style:")) {
+								elem.style[attrKey.slice(6)] = attrValue;
+							} else {
+								elem.setAttributeNS(null, attrKey, attrValue);
+							}
+						}
+					}
+				}
+			}
+			node.appendChild(elem);
+
+			return;
+		}
+	}
+
 	if (node.tagName === 'TR') {
 		if (Array.isArray(obj)) {
+			if (obj[0] === true) {
+				let th = document.createElement("th");
+				renderInto(obj[1], th);
+				node.appendChild(th);
+				obj = obj.slice(2);
+			}
 			for (let elt of obj) {
 				let td = document.createElement("td");
 				renderInto(elt, td);
@@ -146,13 +200,21 @@ function renderInto(obj, node) {
 				td.textContent = "default";
 				td.classList.add("default");
 			} else {
-				td.textContent = obj;
+				renderInto(obj, td);
 			}
 			node.appendChild(td);
 		}
 	} else {
 		if (Array.isArray(obj)) {
 			let table = document.createElement("table");
+			if (obj[0] === true) {
+				let tr = document.createElement("tr");
+				let th = document.createElement("th");
+				renderInto(obj[1], th);
+				tr.appendChild(th);
+				node.appendChild(tr);
+				obj = obj.slice(2);
+			}
 			for (let elt of obj) {
 				let tr = document.createElement("tr");
 				renderInto(elt, tr);
@@ -164,7 +226,7 @@ function renderInto(obj, node) {
 				node.textContent = "default";
 				node.classList.add("default");
 			} else {
-				node.textContent = obj;
+				node.appendChild(document.createTextNode(obj));
 			}
 		}
 	}
@@ -206,6 +268,9 @@ document.addEventListener('DOMContentLoaded', function() {
 	const code = document.getElementById('code');
 	const urlElem = document.getElementById('url');
 	const inputSelect = document.getElementById('input-select');
+	const sanitize = document.getElementById('sanitize');
+	sanitize.checked = true;
+
 	let h = base64.indexOf("#");
 	if (h >= 0) {
 		inputSelect.value = base64.slice(h + 1);

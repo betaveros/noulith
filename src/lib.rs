@@ -5775,6 +5775,11 @@ pub fn obj_to_js_value(obj: Obj) -> JsValue {
                 .map(|obj| obj_to_js_value(obj.clone()))
                 .collect::<js_sys::Array>(),
         ),
+        Obj::Seq(Seq::Vector(ls)) => JsValue::from(
+            ls.iter()
+                .map(|obj| obj_to_js_value(Obj::from(obj.clone())))
+                .collect::<js_sys::Array>(),
+        ),
         Obj::Seq(Seq::Dict(d, def)) => {
             let a = d
                 .iter()
@@ -5800,6 +5805,15 @@ pub fn obj_to_js_value(obj: Obj) -> JsValue {
             };
             JsValue::from(a)
         }
+        Obj::Instance(s, fields) => {
+            // FIXME lol lmao
+            let a = fields.iter()
+                .map(|obj| obj_to_js_value(Obj::from(obj.clone())))
+                .collect::<js_sys::Array>();
+            a.unshift(&JsValue::from(&*s.name));
+            a.unshift(&JsValue::TRUE);
+            JsValue::from(a)
+        }
         _ => JsValue::from(format!("{}", obj)),
     }
 }
@@ -5816,6 +5830,32 @@ pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array
         output: Box::new(Vec::new()),
     });
     initialize(&mut env);
+
+    let tag_struct = Struct::new(3, Rc::new("HtmlTag".to_string()));
+    env.insert(
+        "HtmlTag".to_string(),
+        ObjType::Func,
+        Obj::Func(Func::Type(ObjType::Struct(tag_struct.clone())), Precedence::zero()),
+    )
+    .unwrap();
+    env.insert(
+        "html_tag_name".to_string(),
+        ObjType::Func,
+        Obj::Func(Func::StructField(tag_struct.clone(), 0), Precedence::zero()),
+    )
+    .unwrap();
+    env.insert(
+        "html_tag_children".to_string(),
+        ObjType::Func,
+        Obj::Func(Func::StructField(tag_struct.clone(), 1), Precedence::zero()),
+    )
+    .unwrap();
+    env.insert(
+        "html_tag_attributes".to_string(),
+        ObjType::Func,
+        Obj::Func(Func::StructField(tag_struct.clone(), 2), Precedence::zero()),
+    )
+    .unwrap();
 
     let e = Rc::new(RefCell::new(env));
 
