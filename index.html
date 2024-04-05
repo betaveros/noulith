@@ -16,6 +16,10 @@ textarea {
 	font-family: monospace;
 	white-space: pre-wrap;
 }
+#error {
+	background-color: #ffe4e4;
+	border-color: #fcc;
+}
 #result {
 	font-family: monospace;
 	white-space: pre-wrap;
@@ -30,19 +34,24 @@ td {
 .default {
 	opacity: 0.5;
 }
-#error {
-	color: #c00;
-}
 #outer-output, #url {
 	display: none;
 }
 </style>
 </head>
 <body>
-<h1>noulith</h1>
+	<h1><a href="https://github.com/betaveros/noulith">noulith</a></h1>
 <label for="code">Code:</label>
 <textarea id="code"></textarea>
-<label for="input">Input:</label> <select id="input-select"><option value="">user input</option><option value="file">file</option></select> <input type="file" id="input-file" />
+<label for="input">Input:</label>
+<select id="input-select">
+	<option value="">user input</option>
+	<option value="ukacd.gz">UKACD.gz (use read_compressed())</option>
+	<option value="yawl.gz">YAWL.gz (use read_compressed())</option>
+	<option value="ranked-wiki-wikt-90.gz">ranked-wiki-wikt-90.gz (only scores ≥90) (use read_compressed())</option>
+	<option value="file">file</option>
+</select>
+<input type="file" id="input-file" />
 <textarea id="input"></textarea>
 <button id="run" type="button" role="button" disabled>Loading...</button>
 <button id="stop" type="button" role="button" disabled>Loading...</button>
@@ -56,8 +65,8 @@ td {
 </div>
 <button id="gen-url" type="button" role="button">Generate URL</button>
 <textarea id="url"></textarea>
-<script src='pkg/paradoc.js'></script>
 <script type="module">
+import { AnsiUp } from './ansi_up/ansi_up.js';
 // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
 // wasm-pack build --target web
 // import init, { encapsulated_eval } from './pkg/paradoc.js';
@@ -248,6 +257,7 @@ function init() {
 	const midError = document.getElementById('mid-error');
 	const runner = document.getElementById('run');
 	const stopper = document.getElementById('stop');
+	const ansi_up = new AnsiUp();
 	myWorker = new Worker('worker.js');
 	myWorker.onmessage = function(e) {
 		if (e.data === "ready") {
@@ -256,10 +266,10 @@ function init() {
 			runner.disabled = false;
 			stopper.disabled = true;
 			outerOutput.style.display = 'block';
-			output.textContent = e.data[0];
+			output.innerHTML = ansi_up.ansi_to_html(e.data[0]);
 			midOutput.style.display = e.data[0] ? 'block' : 'none';
 
-			error.textContent = e.data[1];
+			error.innerHTML = ansi_up.ansi_to_html(e.data[1]);
 			midError.style.display = e.data[1] ? 'block' : 'none';
 
 			result.textContent = '';
