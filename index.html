@@ -42,9 +42,12 @@ td {
 <h1>noulith</h1>
 <label for="code">Code:</label>
 <textarea id="code"></textarea>
-<label for="input">Input:</label>
+<label for="input">Input:</label> <select id="input-select"><option value="">user input</option><option value="file">file</option></select> <input type="file" id="input-file" />
 <textarea id="input"></textarea>
-<button id="run" type="button" role="button" disabled>Loading...</button> <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
+<button id="run" type="button" role="button" disabled>Loading...</button>
+<button id="stop" type="button" role="button" disabled>Loading...</button>
+<label><input type="checkbox" id="fancy" checked /> Fancy output</label>
+<label><input type="checkbox" id="auto" /> Auto-rerun</label>
 <div id="outer-output">
 	<div id="mid-output">Output: <div id="output"></div></div>
 	<div id="mid-result">Result: <div id="result"></div></div>
@@ -60,24 +63,56 @@ td {
 // wasm-pack build --target no-modules
 // const { encapsulated_eval } = wasm_bindgen;
 
-async function prepare(worker) {
+let myWorker;
+async function prepare() {
 	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
 	const code = document.getElementById('code');
 	const input = document.getElementById('input');
+	const fileInput = document.getElementById('input-file');
 	const runner = document.getElementById('run');
+	const stopper = document.getElementById('stop');
 	const fancy = document.getElementById('fancy');
+	const auto = document.getElementById('auto');
 	function run() {
 		runner.disabled = true;
-		worker.postMessage([code.value, input.value, fancy.checked]);
+		stopper.disabled = false;
+		let sel = document.getElementById('input-select').value;
+		if (sel === 'file') {
+			let file = fileInput.files[0];
+			console.log(file);
+			file.arrayBuffer().then(buf => {
+				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
+			});
+		} else if (sel) {
+			fetch(sel).then(x => x.arrayBuffer().then(buf => {
+				console.log(b);
+				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
+			}));
+		} else {
+			myWorker.postMessage([code.value, new TextEncoder().encode(input.value), fancy.checked]);
+		}
+	}
+	function stop() {
+		myWorker.terminate();
+		runner.disabled = true;
+		stopper.disabled = true;
+		init();
 	}
 	runner.addEventListener('click', run);
-	code.addEventListener('keydown', function(event) {
+	stopper.addEventListener('click', stop);
+	[code, input].forEach(elem => elem.addEventListener('keydown', function(event) {
 		if (event.ctrlKey && event.key == "Enter") {
 			run();
 		}
-	});
+	}));
+	[code, input].forEach(elem => elem.addEventListener('input', function(event) {
+		if (auto.checked) {
+			run();
+		}
+	}));
 	runner.disabled = false;
 	runner.textContent = "Run!";
+	stopper.textContent = "Stop";
 }
 
 function b64encode(s) {
@@ -134,18 +169,8 @@ function renderInto(obj, node) {
 		}
 	}
 }
-document.addEventListener('DOMContentLoaded', function() {
-	var base64 = location.hash.substr(1);
-	const code = document.getElementById('code');
-	const urlElem = document.getElementById('url');
-	if (base64.length) {
-		code.value = b64decode(base64);
-	}
-	document.getElementById('gen-url').addEventListener('click', function() {
-		urlElem.value = location.protocol + '//' + location.host + location.pathname + '#' + b64encode(code.value);
-		urlElem.style.display = 'block';
-	});
 
+function init() {
 	const outerOutput = document.getElementById('outer-output');
 	const output = document.getElementById('output');
 	const result = document.getElementById('result');
@@ -154,12 +179,14 @@ document.addEventListener('DOMContentLoaded', function() {
 	const midResult = document.getElementById('mid-result');
 	const midError = document.getElementById('mid-error');
 	const runner = document.getElementById('run');
-	const myWorker = new Worker('worker.js');
+	const stopper = document.getElementById('stop');
+	myWorker = new Worker('worker.js');
 	myWorker.onmessage = function(e) {
 		if (e.data === "ready") {
-			prepare(myWorker);
+			prepare();
 		} else {
 			runner.disabled = false;
+			stopper.disabled = true;
 			outerOutput.style.display = 'block';
 			output.textContent = e.data[0];
 			midOutput.style.display = e.data[0] ? 'block' : 'none';
@@ -172,6 +199,40 @@ document.addEventListener('DOMContentLoaded', function() {
 			midResult.style.display = (e.data[2] === null || e.data[2] === undefined) ? 'none' : 'block';
 		}
 	};
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+	var base64 = location.hash.substr(1);
+	const code = document.getElementById('code');
+	const urlElem = document.getElementById('url');
+	const inputSelect = document.getElementById('input-select');
+	let h = base64.indexOf("#");
+	if (h >= 0) {
+		inputSelect.value = base64.slice(h + 1);
+		base64 = base64.slice(0, h);
+	}
+	if (base64.length) {
+		code.value = b64decode(base64);
+	}
+	document.getElementById('gen-url').addEventListener('click', function() {
+		urlElem.value = location.protocol + '//' + location.host + location.pathname + '#' + b64encode(code.value);
+		if (inputSelect.value) {
+			urlElem.value += "#" + inputSelect.value;
+		}
+		urlElem.style.display = 'block';
+	});
+
+	function changeSelect() {
+		const input = document.getElementById('input');
+		const fileInput = document.getElementById('input-file');
+		input.disabled = Boolean(inputSelect.value);
+		fileInput.disabled = inputSelect.value !== 'file';
+	}
+
+	changeSelect();
+	inputSelect.addEventListener('change', changeSelect);
+
+	init();
 });
 
 </script>
