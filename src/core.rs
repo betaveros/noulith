@@ -4207,7 +4207,8 @@ pub enum Func {
         Option<Box<Option<Obj>>>,
         Option<Box<Option<Obj>>>,
     ),
-    // UpdateSection(Vec<(Box<Obj>, Box<Obj>)>),
+    // only going to support the simplest kind
+    UpdateSection(Vec<(Box<Obj>, Box<Obj>)>),
     ChainSection(
         Option<Box<Obj>>,
         Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
@@ -4532,6 +4533,13 @@ impl Display for Func {
                 FmtSectionBoxedSlot(f),
                 FmtSectionSlots(xs)
             ),
+            Func::UpdateSection(xs) => {
+                write!(formatter, "UpdateSection(")?;
+                for (k, v) in xs {
+                    write!(formatter, "{} = {},", k, v)?;
+                }
+                write!(formatter, ")")
+            }
             Func::ChainSection(xs, ys) => {
                 write!(formatter, "ChainSection({}", FmtSectionBoxedSlot(xs))?;
                 for (_start, _end, func, _prec, operand) in ys {

@@ -457,6 +457,7 @@ fn sections_etc() {
         simple_eval("[4, 5] map [_, 3] map (apply ^) then sum"),
         i(189)
     );
+    assert_eq!(simple_eval("sum! (_{1=10})([2, 5, 3])"), i(15));
 }
 
 #[test]

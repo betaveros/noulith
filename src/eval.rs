@@ -581,20 +581,35 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 )
             }
         },
-        Expr::Update(x, updates) => {
-            let mut xr = evaluate(env, x)?;
-            for (upk, upv) in updates {
-                let k = evaluate(env, upk)?;
-                let v = evaluate(env, upv)?;
-                add_trace(
-                    set_index(&mut xr, &[EvaluatedIndexOrSlice::Index(k)], Some(v), false),
-                    || format!("update"),
-                    expr.start,
-                    expr.end,
-                )?
-            };
-            Ok(xr)
-        },
+        Expr::Update(x, updates) => match &**x {
+                LocExpr {
+                    expr: Expr::Underscore,
+                    ..
+                }
+            => {
+                let mut upds = Vec::with_capacity(updates.len());
+                for (upk, upv) in updates {
+                    let k = Box::new(evaluate(env, upk)?);
+                    let v = Box::new(evaluate(env, upv)?);
+                    upds.push((k, v));
+                };
+                Ok(Obj::Func(Func::UpdateSection(upds), Precedence::zero()))
+            },
+            _ => {
+                let mut xr = evaluate(env, x)?;
+                for (upk, upv) in updates {
+                    let k = evaluate(env, upk)?;
+                    let v = evaluate(env, upv)?;
+                    add_trace(
+                        set_index(&mut xr, &[EvaluatedIndexOrSlice::Index(k)], Some(v), false),
+                        || format!("update"),
+                        expr.start,
+                        expr.end,
+                    )?
+                };
+                Ok(xr)
+            },
+        }
         Expr::Chain(op1, ops) => {
             if match &((**op1).expr) {
                 Expr::Underscore => true,
@@ -2665,6 +2680,15 @@ impl Func {
                 };
                 index(x, i)
             }
+            Func::UpdateSection(xs) => match few(args) {
+                Few::One(mut arg) => {
+                    for (k, v) in xs {
+                        set_index(&mut arg, &[EvaluatedIndexOrSlice::Index((**k).clone())], Some((**v).clone()), false)?;
+                    }
+                    Ok(arg)
+                },
+                _ => Err(NErr::argument_error(format!("UpdateSection one arg only"))),
+            }
             Func::SliceSection(x, lo, hi) => {
                 let mut it = args.into_iter();
                 let x = match x {
@@ -2748,6 +2772,7 @@ impl Func {
             Func::ChainSection(..) => None,
             Func::CallSection(..) => None,
             Func::IndexSection(..) => None,
+            Func::UpdateSection(..) => None,
             Func::SliceSection(..) => None,
             Func::Type(_) => None,
             Func::StructField(..) => None,
