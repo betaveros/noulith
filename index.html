@@ -133,12 +133,16 @@ function b64decode(s) {
 }
 const htmlAllowList = "a abbr acronym address article aside b big blockquote br caption cite code col colgroup dd del details dfn div dl dt em figcaption figure footer h1 h2 h3 h4 h5 h6 header hr i img ins kbd li mark ol p pre q rp rt ruby s samp small span sub sup strike strong sub summary sup table tbody td th thead tfoot tr time u ul var wbr".split(" ");
 function isAttrSafe(tag, attr, value) {
-	if (typeof tag !== "string" || typeof attr !== "string" || typeof value !== string) return false;
+	if (typeof tag !== "string" || typeof attr !== "string" || typeof value !== "string") return false;
 	tag = tag.toLowerCase();
 	attr = attr.toLowerCase();
 
 	if (attr === "alt") return true;
 	if (attr === "title") return true;
+	if (attr === "style:color") return true;
+	if (attr === "style:backgroundColor") return true;
+	if (attr === "style:fontWeight") return true;
+	if (attr === "style:fontStyle") return true;
 
 	if (tag === "a") {
 		return attr === "href" && (value.startsWith("http://") || value.startsWith("https://"));
