@@ -676,5 +676,42 @@ fn structs() {
     assert_eq!(simple_eval("struct Foo(bar, baz); baz(Foo(7, 9))"), i(9));
     assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7, 9))"), i(9));
     assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7))"), i(5));
-    assert_eq!(simple_eval("struct Foo(bar, baz); baz(Foo(7, 9){baz=20})"), i(20));
+    assert_eq!(
+        simple_eval("struct Foo(bar, baz); baz(Foo(7, 9){baz=20})"),
+        i(20)
+    );
+}
+
+#[test]
+fn breaking() {
+    assert_eq!(
+        simple_eval("x := 0; for (i <- 1 to 10) (x = i; if (i == 5) break); x"),
+        i(5)
+    );
+    assert_eq!(
+        simple_eval("x := 0; for (i <- 1 to 10) (if (i == 5) continue; x += i); x"),
+        i(50)
+    );
+    assert_eq!(
+        simple_eval("x := 0; for (i <- 1 to 10) for (j <- 1 to 10) (x += 1; if (j == 5) break); x"),
+        i(50)
+    );
+    assert_eq!(
+        simple_eval(
+            "x := 0; for (i <- 1 to 10) for (j <- 1 to 10) (x += 1; if (j == 5) break break); x"
+        ),
+        i(5)
+    );
+    assert_eq!(
+        simple_eval(
+            "x := 0; for (i <- 1 to 10) for (j <- 1 to 10) (if (j == 5) continue; x += 1); x"
+        ),
+        i(90)
+    );
+    assert_eq!(
+        simple_eval(
+            "x := 0; for (i <- 1 to 10) for (j <- 1 to 10) (if (j == 5) break continue; x += 1); x"
+        ),
+        i(40)
+    );
 }

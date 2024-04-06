@@ -658,11 +658,13 @@ pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
             args.reserve_exact(s.fields.len());
             while args.len() < s.fields.len() {
                 match &s.fields[args.len()].1 {
-                    None => return Err(NErr::argument_error(format!(
-                        "struct construction: not enough arguments at {}, wanted {}",
-                        args.len(),
-                        s.fields.len(),
-                    ))),
+                    None => {
+                        return Err(NErr::argument_error(format!(
+                            "struct construction: not enough arguments at {}, wanted {}",
+                            args.len(),
+                            s.fields.len(),
+                        )))
+                    }
                     Some(def) => args.push(def.clone()),
                 }
             }
@@ -1496,9 +1498,9 @@ pub enum NErr {
     ),
     // Optional (source file, source code), added when we pass through an eval boundary roughly
     // speaking. Is this bonkers? Idk.
-    Break(Option<Obj>),
+    Break(usize, Option<Obj>),
     Return(Obj),
-    Continue,
+    Continue(usize),
 }
 
 pub fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &CodeLoc) {
@@ -1591,9 +1593,9 @@ impl NErr {
                 }
                 out
             }
-            NErr::Break(None) => format!("break"),
-            NErr::Break(Some(e)) => format!("break {}", e),
-            NErr::Continue => format!("continue"),
+            NErr::Break(n, None) => format!("break^{}", n + 1),
+            NErr::Break(n, Some(e)) => format!("break^{} {}", n + 1, e),
+            NErr::Continue(n) => format!("continue^{}", n + 1),
             NErr::Return(e) => format!("return {}", e),
         }
     }
@@ -1729,9 +1731,9 @@ impl fmt::Display for NErr {
                 }
                 Ok(())
             }
-            NErr::Break(None) => write!(formatter, "break"),
-            NErr::Break(Some(e)) => write!(formatter, "break {}", e),
-            NErr::Continue => write!(formatter, "continue"),
+            NErr::Break(n, None) => write!(formatter, "break^{}", n + 1),
+            NErr::Break(n, Some(e)) => write!(formatter, "break^{} {}", n + 1, e),
+            NErr::Continue(n) => write!(formatter, "continue^{}", n + 1),
             NErr::Return(e) => write!(formatter, "return {}", e),
         }
     }
@@ -1827,8 +1829,8 @@ pub enum Expr {
     While(Box<LocExpr>, Box<LocExpr>),
     Switch(Box<LocExpr>, Vec<(Box<Lvalue>, Box<LocExpr>)>),
     Try(Box<LocExpr>, Box<Lvalue>, Box<LocExpr>),
-    Break(Option<Box<LocExpr>>),
-    Continue,
+    Break(usize, Option<Box<LocExpr>>),
+    Continue(usize),
     Return(Option<Box<LocExpr>>),
     Throw(Box<LocExpr>),
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
@@ -2661,10 +2663,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             }
             Expr::Literally(e) => Ok(Expr::Literally(box_freeze(env, e)?)),
 
-            Expr::Break(e) => Ok(Expr::Break(opt_box_freeze(env, e)?)),
+            Expr::Break(n, e) => Ok(Expr::Break(*n, opt_box_freeze(env, e)?)),
             Expr::Return(e) => Ok(Expr::Return(opt_box_freeze(env, e)?)),
             Expr::Throw(e) => Ok(Expr::Throw(box_freeze(env, e)?)),
-            Expr::Continue => Ok(Expr::Continue),
+            Expr::Continue(n) => Ok(Expr::Continue(*n)),
 
             Expr::InternalFrame(e) => Ok(Expr::InternalFrame(box_freeze(env, e)?)),
             Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
@@ -3083,18 +3085,30 @@ impl Parser {
                 }
                 Token::Break => {
                     self.advance();
-                    if self.peek_csc_stopper() {
+                    let mut n: usize = 0;
+                    let mut end = end;
+                    while let Some(e) = self.try_consume(&Token::Break) {
+                        n += 1;
+                        end = e;
+                    }
+                    if let Some(end) = self.try_consume(&Token::Continue) {
                         Ok(LocExpr {
                             start,
                             end,
-                            expr: Expr::Break(None),
+                            expr: Expr::Continue(n + 1),
+                        })
+                    } else if self.peek_csc_stopper() {
+                        Ok(LocExpr {
+                            start,
+                            end,
+                            expr: Expr::Break(n, None),
                         })
                     } else {
                         let s = self.single("break")?;
                         Ok(LocExpr {
                             start,
                             end,
-                            expr: Expr::Break(Some(Box::new(s))),
+                            expr: Expr::Break(n, Some(Box::new(s))),
                         })
                     }
                 }
@@ -3112,7 +3126,7 @@ impl Parser {
                     Ok(LocExpr {
                         start,
                         end,
-                        expr: Expr::Continue,
+                        expr: Expr::Continue(0),
                     })
                 }
                 Token::Return => {
@@ -4360,9 +4374,9 @@ pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
         Err(NErr::Throw(msg, trace)) => {
             Err(NErr::Throw(Obj::from(format!("{}: {}", s, msg)), trace))
         }
-        Err(NErr::Break(e)) => Err(NErr::Break(e)),
+        Err(NErr::Break(n, e)) => Err(NErr::Break(n, e)),
         Err(NErr::Return(e)) => Err(NErr::Return(e)),
-        Err(NErr::Continue) => Err(NErr::Continue),
+        Err(NErr::Continue(n)) => Err(NErr::Continue(n)),
     }
 }
 

@@ -506,7 +506,7 @@ impl Debug for Iterate {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
             Ok((obj, func, _)) => write!(fmt, "Iterate({:?}, {:?}, ...)", obj, func),
-            Err(NErr::Break(None)) => write!(fmt, "Iterate(stopped)"),
+            Err(NErr::Break(0, None)) => write!(fmt, "Iterate(stopped)"),
             Err(e) => write!(fmt, "Iterate(ERROR: {:?})", e),
         }
     }
@@ -528,7 +528,7 @@ impl Iterator for Iterate {
                 }
                 Some(Ok(ret))
             }
-            Err(NErr::Break(None)) => None,
+            Err(NErr::Break(0, None)) => None,
             Err(e) => Some(Err(e.clone())),
         }
     }
@@ -537,7 +537,7 @@ impl Display for Iterate {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         match &self.0 {
             Ok((obj, func, _)) => write!(formatter, "Iterate({}, {}, ...)", obj, func),
-            Err(NErr::Break(None)) => write!(formatter, "Iterate(stopped)"),
+            Err(NErr::Break(0, None)) => write!(formatter, "Iterate(stopped)"),
             Err(e) => write!(formatter, "Iterate(ERROR: {})", e),
         }
     }
@@ -546,7 +546,7 @@ impl Stream for Iterate {
     fn peek(&self) -> Option<NRes<Obj>> {
         match &self.0 {
             Ok((obj, _, _)) => Some(Ok(obj.clone())),
-            Err(NErr::Break(None)) => None,
+            Err(NErr::Break(0, None)) => None,
             Err(e) => Some(Err(e.clone())),
         }
     }
@@ -575,7 +575,7 @@ impl Clone for MappedStream {
 impl Debug for MappedStream {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
-            Err(NErr::Break(None)) => write!(fmt, "MappedStream(stopped)"),
+            Err(NErr::Break(0, None)) => write!(fmt, "MappedStream(stopped)"),
             Err(e) => write!(fmt, "MappedStream(ERROR: {:?})", e),
             Ok((inner, func, _)) => write!(fmt, "MappedStream({:?}, {:?}, ...)", inner, func),
         }
@@ -598,7 +598,7 @@ impl Iterator for MappedStream {
                 }
             },
             None => {
-                self.0 = Err(NErr::Break(None));
+                self.0 = Err(NErr::Break(0, None));
                 None
             }
         }
@@ -620,7 +620,7 @@ impl Stream for MappedStream {
                 Ok(nxt) => Some(Ok(nxt)),
                 Err(e) => Some(Err(e.clone())),
             },
-            Err(NErr::Break(None)) => None,
+            Err(NErr::Break(0, None)) => None,
             Err(e) => Some(Err(e)),
         }
     }
@@ -654,7 +654,7 @@ impl Clone for FilteredStream {
 impl Debug for FilteredStream {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
         match &self.0 {
-            Err(NErr::Break(None)) => write!(fmt, "FilteredStream(stopped)"),
+            Err(NErr::Break(0, None)) => write!(fmt, "FilteredStream(stopped)"),
             Err(e) => write!(fmt, "FilteredStream(ERROR: {:?})", e),
             Ok((inner, func, _)) => write!(fmt, "FilteredStream({:?}, {:?}, ...)", inner, func),
         }
@@ -682,7 +682,7 @@ impl Iterator for FilteredStream {
                     }
                 },
                 None => {
-                    self.0 = Err(NErr::Break(None));
+                    self.0 = Err(NErr::Break(0, None));
                     return None;
                 }
             }

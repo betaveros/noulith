@@ -1782,7 +1782,8 @@ impl Builtin for SeqAndMappedFoldBuiltin {
                 for e in mut_seq_into_iter(&mut s) {
                     state = match (self.body)(state, f.run1(env, e?)?) {
                         Ok(r) => r,
-                        Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(0, r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(n, r)) => return Err(NErr::Break(n - 1, r)),
                         e @ Err(_) => return err_add_name(e, &self.name),
                     }
                 }
@@ -1798,7 +1799,8 @@ impl Builtin for SeqAndMappedFoldBuiltin {
                 for e in mut_seq_into_iter(&mut s) {
                     state = match (self.body)(state, e?) {
                         Ok(r) => r,
-                        Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(0, r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(n, r)) => return Err(NErr::Break(n - 1, r)),
                         e @ Err(_) => return err_add_name(e, &self.name),
                     }
                 }
@@ -1815,7 +1817,8 @@ impl Builtin for SeqAndMappedFoldBuiltin {
                 for e in mut_seq_into_iter(&mut s) {
                     state = match (self.body)(state, f.run1(env, e?)?) {
                         Ok(r) => r,
-                        Err(NErr::Break(r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(0, r)) => return Ok(r.unwrap_or(Obj::Null)),
+                        Err(NErr::Break(n, r)) => return Err(NErr::Break(n - 1, r)),
                         e @ Err(_) => return err_add_name(e, &self.name),
                     }
                 }
@@ -3790,7 +3793,7 @@ pub fn initialize(env: &mut Env) {
         identity: Obj::from(false),
         body: |s, f| {
             if f.truthy() {
-                Err(NErr::Break(Some(Obj::from(true))))
+                Err(NErr::Break(0, Some(Obj::from(true))))
             } else {
                 Ok(s)
             }
@@ -3801,7 +3804,7 @@ pub fn initialize(env: &mut Env) {
         identity: Obj::from(true),
         body: |s, f| {
             if !f.truthy() {
-                Err(NErr::Break(Some(Obj::from(false))))
+                Err(NErr::Break(0, Some(Obj::from(false))))
             } else {
                 Ok(s)
             }
@@ -5837,7 +5840,10 @@ pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array
         Rc::new(vec![
             ("name".to_string(), None),
             ("children".to_string(), Some(Obj::list(vec![]))),
-            ("attributes".to_string(), Some(Obj::dict(HashMap::new(), None))),
+            (
+                "attributes".to_string(),
+                Some(Obj::dict(HashMap::new(), None)),
+            ),
         ]),
     );
     env.insert(

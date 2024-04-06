@@ -371,7 +371,7 @@ fn evaluate_for(
         [] => match callback(env) {
             Ok(()) => Ok(()),
             // don't catch break, thonking
-            Err(NErr::Continue) => Ok(()),
+            Err(NErr::Continue(0)) => Ok(()),
             Err(e) => Err(e),
         },
         [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
@@ -582,19 +582,18 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
         },
         Expr::Update(x, updates) => match &**x {
-                LocExpr {
-                    expr: Expr::Underscore,
-                    ..
-                }
-            => {
+            LocExpr {
+                expr: Expr::Underscore,
+                ..
+            } => {
                 let mut upds = Vec::with_capacity(updates.len());
                 for (upk, upv) in updates {
                     let k = Box::new(evaluate(env, upk)?);
                     let v = Box::new(evaluate(env, upv)?);
                     upds.push((k, v));
-                };
+                }
                 Ok(Obj::Func(Func::UpdateSection(upds), Precedence::zero()))
-            },
+            }
             _ => {
                 let mut xr = evaluate(env, x)?;
                 for (upk, upv) in updates {
@@ -606,10 +605,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         expr.start,
                         expr.end,
                     )?
-                };
+                }
                 Ok(xr)
-            },
-        }
+            }
+        },
         Expr::Chain(op1, ops) => {
             if match &((**op1).expr) {
                 Expr::Underscore => true,
@@ -1068,7 +1067,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             Ok(())
                         }) {
                             Ok(()) => Ok(Obj::Null),
-                            Err(NErr::Break(e)) => Ok(e.unwrap_or(Obj::Null)),
+                            Err(NErr::Break(0, e)) => Ok(e.unwrap_or(Obj::Null)),
+                            Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
+                            Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
                             Err(e) => Err(e),
                         }
                     }
@@ -1092,8 +1093,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                     cata.give(evaluate(e, body)?)
                                 });
                                 match inner {
-                                    Ok(()) | Err(NErr::Break(None)) => cata.finish(),
-                                    Err(NErr::Break(Some(e))) => Ok(e),
+                                    Ok(()) | Err(NErr::Break(0, None)) => cata.finish(),
+                                    Err(NErr::Break(0, Some(e))) => Ok(e),
+                                    Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
+                                    Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
                                     Err(e) => Err(e),
                                 }
                             }
@@ -1104,8 +1107,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                     Ok(())
                                 });
                                 let res = match inner {
-                                    Ok(()) | Err(NErr::Break(None)) => Ok(Obj::list(acc)),
-                                    Err(NErr::Break(Some(e))) => Ok(e),
+                                    Ok(()) | Err(NErr::Break(0, None)) => Ok(Obj::list(acc)),
+                                    Err(NErr::Break(0, Some(e))) => Ok(e),
+                                    Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
+                                    Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
                                     Err(e) => Err(e),
                                 }?;
                                 match into_res {
@@ -1121,8 +1126,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             acc.insert(to_key(evaluate(e, key_body)?)?, evaluate(e, value_body)?);
                             Ok(())
                         }) {
-                            Ok(()) | Err(NErr::Break(None)) => Ok(Obj::dict(acc, None)),
-                            Err(NErr::Break(Some(e))) => Ok(e),
+                            Ok(()) | Err(NErr::Break(0, None)) => Ok(Obj::dict(acc, None)),
+                            Err(NErr::Break(0, Some(e))) => Ok(e),
+                            Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
+                            Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
                             Err(e) => Err(e),
                         }
                     }
@@ -1153,8 +1160,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     expr.end,
                 ) {
                     Ok(_) => (),
-                    Err(NErr::Break(e)) => return Ok(e.unwrap_or(Obj::Null)),
-                    Err(NErr::Continue) => continue,
+                    Err(NErr::Break(0, e)) => return Ok(e.unwrap_or(Obj::Null)),
+                    Err(NErr::Continue(0)) => continue,
+                    Err(NErr::Break(n, e)) => return Err(NErr::Break(n - 1, e)),
+                    Err(NErr::Continue(n)) => return Err(NErr::Continue(n - 1)),
                     Err(e) => return Err(e),
                 }
             }
@@ -1199,7 +1208,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Try(body, pat, catcher) => {
             match evaluate(env, body) {
-                x @ (Ok(_) | Err(NErr::Break(_) | NErr::Continue | NErr::Return(_))) => x,
+                x @ (Ok(_) | Err(NErr::Break(..) | NErr::Continue(_) | NErr::Return(_))) => x,
                 Err(NErr::Throw(e, trace)) => {
                     let ee = Env::with_parent(env);
                     let p = eval_lvalue(&ee, pat)?;
@@ -1320,9 +1329,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             expr.start,
             expr.end,
         )),
-        Expr::Break(Some(e)) => Err(NErr::Break(Some(evaluate(env, e)?))),
-        Expr::Break(None) => Err(NErr::Break(None)),
-        Expr::Continue => Err(NErr::Continue),
+        Expr::Break(n, Some(e)) => Err(NErr::Break(*n, Some(evaluate(env, e)?))),
+        Expr::Break(n, None) => Err(NErr::Break(*n, None)),
+        Expr::Continue(n) => Err(NErr::Continue(*n)),
         Expr::Return(Some(e)) => Err(NErr::Return(evaluate(env, e)?)),
         Expr::Return(None) => Err(NErr::Return(Obj::Null)),
 
@@ -1367,8 +1376,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             ptr.internal_stack.truncate(s);
                         }
                         match ret {
-                            Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
-                            Err(NErr::Continue) => (),
+                            Err(NErr::Break(0, k)) => return Ok(k.unwrap_or(Obj::Null)),
+                            Err(NErr::Break(n, k)) => return Err(NErr::Break(n - 1, k)),
+                            Err(NErr::Continue(0)) => (),
+                            Err(NErr::Continue(n)) => return Err(NErr::Continue(n - 1)),
                             Err(r) => return Err(r),
                             Ok(_) => (),
                         }
@@ -1386,8 +1397,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             .internal_stack
                             .truncate(s);
                         match ret {
-                            Err(NErr::Break(k)) => return Ok(k.unwrap_or(Obj::Null)),
-                            Err(NErr::Continue) => (),
+                            Err(NErr::Break(0, k)) => return Ok(k.unwrap_or(Obj::Null)),
+                            Err(NErr::Break(n, k)) => return Err(NErr::Break(n - 1, k)),
+                            Err(NErr::Continue(0)) => (),
+                            Err(NErr::Continue(n)) => return Err(NErr::Continue(n - 1)),
                             Err(r) => return Err(r),
                             Ok(_) => (),
                         }
