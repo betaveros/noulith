@@ -135,14 +135,16 @@ const htmlAllowList = "a abbr acronym address article aside b big blockquote br 
 function isAttrSafe(tag, attr, value) {
 	if (typeof tag !== "string" || typeof attr !== "string" || typeof value !== "string") return false;
 	tag = tag.toLowerCase();
-	attr = attr.toLowerCase();
 
-	if (attr === "alt") return true;
-	if (attr === "title") return true;
 	if (attr === "style:color") return true;
 	if (attr === "style:backgroundColor") return true;
 	if (attr === "style:fontWeight") return true;
 	if (attr === "style:fontStyle") return true;
+
+	attr = attr.toLowerCase();
+
+	if (attr === "alt") return true;
+	if (attr === "title") return true;
 
 	if (tag === "a") {
 		return attr === "href" && (value.startsWith("http://") || value.startsWith("https://"));
