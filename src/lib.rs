@@ -5807,7 +5807,8 @@ pub fn obj_to_js_value(obj: Obj) -> JsValue {
         }
         Obj::Instance(s, fields) => {
             // FIXME lol lmao
-            let a = fields.iter()
+            let a = fields
+                .iter()
                 .map(|obj| obj_to_js_value(Obj::from(obj.clone())))
                 .collect::<js_sys::Array>();
             a.unshift(&JsValue::from(&*s.name));
@@ -5831,11 +5832,21 @@ pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array
     });
     initialize(&mut env);
 
-    let tag_struct = Struct::new(3, Rc::new("HtmlTag".to_string()));
+    let tag_struct = Struct::new(
+        Rc::new("HtmlTag".to_string()),
+        Rc::new(vec![
+            ("name".to_string(), None),
+            ("children".to_string(), Some(Obj::list(vec![]))),
+            ("attributes".to_string(), Some(Obj::dict(HashMap::new(), None))),
+        ]),
+    );
     env.insert(
         "HtmlTag".to_string(),
         ObjType::Func,
-        Obj::Func(Func::Type(ObjType::Struct(tag_struct.clone())), Precedence::zero()),
+        Obj::Func(
+            Func::Type(ObjType::Struct(tag_struct.clone())),
+            Precedence::zero(),
+        ),
     )
     .unwrap();
     env.insert(

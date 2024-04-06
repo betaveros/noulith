@@ -661,3 +661,11 @@ fn backrefs() {
         i(1337)
     );
 }
+
+#[test]
+fn structs() {
+    assert_eq!(simple_eval("struct Foo(bar, baz); bar(Foo(7, 9))"), i(7));
+    assert_eq!(simple_eval("struct Foo(bar, baz); baz(Foo(7, 9))"), i(9));
+    assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7, 9))"), i(9));
+    assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7))"), i(5));
+}

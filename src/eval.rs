@@ -1212,7 +1212,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             })
         }
         Expr::Struct(name, field_names) => {
-            let s = Struct::new(field_names.len(), name.clone());
+            let s = Struct::new(
+                name.clone(),
+                Rc::new(
+                    field_names
+                        .iter()
+                        .map(|(name, def)| {
+                            Ok((
+                                (&**name).clone(),
+                                match def {
+                                    Some(b) => Some(evaluate(&env, b)?),
+                                    None => None,
+                                },
+                            ))
+                        })
+                        .collect::<NRes<_>>()?,
+                ),
+            );
             assign(
                 &env,
                 &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
@@ -1222,7 +1238,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             for (i, field) in field_names.iter().enumerate() {
                 assign(
                     &env,
-                    &EvaluatedLvalue::IndexedIdent((&**field).clone(), Vec::new()),
+                    &EvaluatedLvalue::IndexedIdent((&*(*field).0).clone(), Vec::new()),
                     Some(&ObjType::Func),
                     Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
                 )?;
@@ -1611,13 +1627,13 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 .iter()
                 .map(|v| eval_lvalue_as_obj(env, v))
                 .collect::<NRes<Vec<Obj>>>()?;
-            if v.len() == s.size {
+            if v.len() == s.fields.len() {
                 Ok(Obj::Instance(s.clone(), v))
             } else {
                 Err(NErr::argument_error(format!(
                     "struct construction: wrong number of arguments: {}, wanted {}",
                     v.len(),
-                    s.size
+                    s.fields.len(),
                 )))
             }
         }

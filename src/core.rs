@@ -463,19 +463,25 @@ impl Precedence {
 // Structs
 static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Struct {
     pub id: usize,
-    pub size: usize,
     pub name: Rc<String>,
+    pub fields: Rc<Vec<(String, Option<Obj>)>>,
 }
+impl PartialEq for Struct {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Struct {}
 
 impl Struct {
-    pub fn new(size: usize, name: Rc<String>) -> Self {
+    pub fn new(name: Rc<String>, fields: Rc<Vec<(String, Option<Obj>)>>) -> Self {
         Struct {
             id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-            size,
             name,
+            fields,
         }
     }
 }
@@ -646,20 +652,21 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     }
 }
 
-pub fn call_type(ty: &ObjType, args: Vec<Obj>) -> NRes<Obj> {
+pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
     match ty {
         ObjType::Struct(s) => {
-            if args.len() == 0 {
-                Ok(Obj::Instance(s.clone(), vec![Obj::Null; s.size]))
-            } else if args.len() == s.size {
-                Ok(Obj::Instance(s.clone(), args))
-            } else {
-                Err(NErr::argument_error(format!(
-                    "struct construction: wrong number of arguments: {}, wanted {}",
-                    args.len(),
-                    s.size
-                )))
+            args.reserve_exact(s.fields.len());
+            while args.len() < s.fields.len() {
+                match &s.fields[args.len()].1 {
+                    None => return Err(NErr::argument_error(format!(
+                        "struct construction: not enough arguments at {}, wanted {}",
+                        args.len(),
+                        s.fields.len(),
+                    ))),
+                    Some(def) => args.push(def.clone()),
+                }
             }
+            Ok(Obj::Instance(s.clone(), args))
         }
         _ => call_type1(ty, expect_one(args, &ty.name())?),
     }
@@ -1359,7 +1366,12 @@ impl MyDisplay for Obj {
             }
             Obj::Seq(Seq::Bytes(xs)) => write_bytes(xs.as_slice(), formatter, flags),
             Obj::Func(f, p) => write!(formatter, "<{} p:{}>", f, p.0),
-            Obj::Instance(s, fields) => write!(formatter, "<{} instance: {}>", s.name, CommaSeparated(fields)),
+            Obj::Instance(s, fields) => write!(
+                formatter,
+                "<{} instance: {}>",
+                s.name,
+                CommaSeparated(fields)
+            ),
         }
     }
 }
@@ -1819,7 +1831,7 @@ pub enum Expr {
     Return(Option<Box<LocExpr>>),
     Throw(Box<LocExpr>),
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
-    Struct(Rc<String>, Vec<Rc<String>>),
+    Struct(Rc<String>, Vec<(Rc<String>, Option<Box<LocExpr>>)>),
     Freeze(Box<LocExpr>),
     Import(Box<LocExpr>),
     // lvalues only
@@ -2337,10 +2349,16 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 env.bind(
                     field_names
                         .iter()
-                        .map(|s| (&**s).clone())
+                        .map(|s| (&*((*s).0)).clone())
                         .collect::<HashSet<String>>(),
                 );
-                Ok(Expr::Struct(name.clone(), field_names.clone()))
+                Ok(Expr::Struct(
+                    name.clone(),
+                    field_names
+                        .iter()
+                        .map(|(name, def)| Ok((name.clone(), opt_box_freeze(env, def)?)))
+                        .collect::<NRes<_>>()?,
+                ))
             }
             Expr::FormatString(s) => Ok(Expr::FormatString(
                 s.iter()
@@ -3435,12 +3453,27 @@ impl Parser {
                         self.require(Token::LeftParen, "struct begin")?;
                         let mut fields = Vec::new();
                         if let Some(Token::Ident(field1)) = self.peek() {
-                            fields.push(Rc::new(field1.clone()));
+                            let field1 = field1.clone();
                             self.advance();
+
+                            let def = if self.try_consume(&Token::Assign).is_some() {
+                                Some(Box::new(self.single("field default")?))
+                            } else {
+                                None
+                            };
+                            fields.push((Rc::new(field1.clone()), def));
+
                             while self.try_consume(&Token::Comma).is_some() {
                                 if let Some(Token::Ident(field)) = self.peek() {
-                                    fields.push(Rc::new(field.clone()));
+                                    let field = field.clone();
                                     self.advance();
+
+                                    let def = if self.try_consume(&Token::Assign).is_some() {
+                                        Some(Box::new(self.single("field default")?))
+                                    } else {
+                                        None
+                                    };
+                                    fields.push((Rc::new(field.clone()), def));
                                 } else {
                                     Err(self.error_here(format!("bad struct field")))?
                                 }
