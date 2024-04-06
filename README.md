@@ -207,13 +207,15 @@ a, (d:int) = 3, 4
 
 These are checked at runtime! Assigning non-`int`s to x will throw an error. Hopefully. This is useful in other scenarios.
 
-You can also do operator-assignments like you'd expect, with *any* operator! `a f= b` is basically just `a = f(a, b)`. Note that the left side is parsed just like a call `a(f)`, so the operator can even be parenthesized: after
+You can also do operator-assignments like you'd expect, with *any* operator! `a f= b` is basically just `a = f(a, b)`.
+
+The left side is parsed similar to a call, so you can even use `!` to use a complicated operator: after
 
 ```
-x := [1, 2]; x (zip+)= [3, 4]
+x := [1, 2]; x! zip+= [3, 4]
 ```
 
-`x` is `[4, 6]`. In particular when you want to write `a = f(a)` you can just write `a .= f` because `.` is function application.
+`x` is `[4, 6]`. In particular when you want to write `a = f(a)` you can just write `a .= f` because `.` is function application. (In previous versions of Noulith, `x (zip+)= [3, 4]` worked, but that is solidly destructuring now.)
 
 One corner case in the semantics here: While the operator is being called, the LHS variable will be null. That is, the following code will print `null`:
 
@@ -246,6 +248,8 @@ x[0] = 4
 ```
 
 `y` will still be `[1, 2, 3]`. You may wish to think of `x[0] = 4` as syntax sugar for `x = [4] ++ x[1:]`, although when nothing else refers to the same list, it's actually as fast as a mutation.
+
+We have more functional-style update syntax too: `x{k1 = v1, k2 = v2}` is like `(x' = x; x'[k1] = v1; x'[k2] = v2; x')`.
 
 As a consequence, calling a function on a data structure cannot mutate it. There are a few special keywords that mutate whatever they're given. There's `swap` like `swap x, y` for swapping two values; there's `pop` and `remove` for mutating sequences; and the crudest instrument of all, `consume` gives you the value after replacing it in where it came from with `null`. After
 
@@ -308,19 +312,19 @@ case _ -> print("not sure")
 
 Try-catch: `try a catch x -> y`.
 
-`break` `continue` `return` work.
+`break` `continue` `return` work. You can `break` out of a loop with an expression to make the loop evaluate to something. You can even break out of multiple loops by repeating it, `break break break`.
 
 Only lambdas exist, declare all functions this way: `\a, b -> c`. You can annotate parameters and otherwise pattern match in functions as you'd expect: `\a: int, (b, c) -> d`.
 
 ### Structs
 
-Super bare-bones product types right now. No methods or namespaces or anything. (Haskell survived without them for a few decades, we can procrastinate.) You can't even give fields types or default values.
+Super bare-bones product types right now. No methods or namespaces or anything. (Haskell survived without them for a few decades, we can procrastinate.) Fields can have default values, otherwise they're required.
 
 ```
-struct Foo (bar, baz);
+struct Foo (bar, baz = "default");
 ```
 
-Then you can construct an all-null instance `Foo()` or all values with `Foo(a, b)`. `bar` and `baz` are now member access functions, or if you have a `foo` of type `Foo`, you can access, assign, or modify the fields as `foo[bar]` and `foo[baz]`. To be clear, these names really are not namespaced at all; `bar` and `baz` are new variables holding functions in whatever scope you declared this struct in, and can be passed around as functions in their own right, assigned to variables, etc. (but won't work on any other struct).
+Then you can construct `Foo(a, b)` or `Foo(a)` to let `bar` be the default value. `bar` and `baz` are now member access functions, or if you have a `foo` of type `Foo`, you can access, assign, or modify the fields as `foo[bar]` and `foo[baz]`. To be clear, these names really are not namespaced at all; `bar` and `baz` are new variables holding functions in whatever scope you declared this struct in, and can be passed around as functions in their own right, assigned to variables, etc. (but won't work on any other struct).
 
 ### Sequence operators
 
@@ -401,3 +405,7 @@ weird things that are faster to evaluate than always making/following chains of 
   - if the expr evaluates to an iterable: for each item, push it, evaluate the body, then restore the stack's length to before the push
 - `__internal_call integer-const expr`: pop the top n elements of the stack, then call the expression with those as arguments (bottom to top)
 - `__internal_lambda body`: makes an internal lambda that, when called, doesn't enter a new environment; but records the stack length, pushes the arguments on, then executes and can return a value as usual, restoring the stack length before returning
+
+### web stuff
+
+On the wasm version, lists and dictionaries can be pretty-printed and there's a `HtmlTag(html_tag_name, html_tag_children, html_tag_attributes)` struct that gets rendered out dynamically as HTML if your code evaluates to it. There's a fairly stringent allowlist by default that I would be surprised if there's any XSS that can get through it, though I'm not 100% confident. Hopefully there's nothing on this domain to steal anyway.
