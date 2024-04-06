@@ -303,6 +303,13 @@ fn indexing() {
 }
 
 #[test]
+fn updating() {
+    assert_eq!(simple_eval("(1 to 10){2 = 11}[2]"), i(11));
+    assert_eq!(simple_eval("{1: 2, 3: 4}{2 = 11}[1]"), i(2));
+    assert_eq!(simple_eval("{1: 2, 3: 4}{2 = 11}[2]"), i(11));
+}
+
+#[test]
 fn dicts() {
     assert_eq!(simple_eval("len({1, 2} || {3, 4})"), i(4));
     assert_eq!(simple_eval("len({1, 2} || {3, 2})"), i(3));
@@ -668,4 +675,5 @@ fn structs() {
     assert_eq!(simple_eval("struct Foo(bar, baz); baz(Foo(7, 9))"), i(9));
     assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7, 9))"), i(9));
     assert_eq!(simple_eval("struct Foo(bar, baz=5); baz(Foo(7))"), i(5));
+    assert_eq!(simple_eval("struct Foo(bar, baz); baz(Foo(7, 9){baz=20})"), i(20));
 }

@@ -1808,6 +1808,7 @@ pub enum Expr {
     ),
     Vector(Vec<Box<LocExpr>>),
     Index(Box<LocExpr>, IndexOrSlice),
+    Update(Box<LocExpr>, Vec<(Box<LocExpr>, Box<LocExpr>)>),
     Frozen(Obj),
     Chain(Box<LocExpr>, Vec<(Box<LocExpr>, Box<LocExpr>)>),
     And(Box<LocExpr>, Box<LocExpr>),
@@ -2406,6 +2407,12 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Index(x, ios) => Ok(Expr::Index(
                 box_freeze_underscore_ok(env, x)?,
                 freeze_ios(env, ios)?,
+            )),
+            Expr::Update(x, ps) => Ok(Expr::Update(
+                box_freeze_underscore_ok(env, x)?,
+                ps.iter()
+                    .map(|(k, v)| Ok((box_freeze(env, k)?, box_freeze(env, v)?)))
+                    .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?,
             )),
             Expr::Chain(op1, ops) => Ok(Expr::Chain(
                 box_freeze_underscore_ok(env, op1)?,
@@ -3696,6 +3703,25 @@ impl Parser {
                         }
                     }
                 }
+                Some(Token::LeftBrace) => {
+                    self.advance();
+                    let mut updates = Vec::new();
+                    while !self.peek_hard_stopper() {
+                        let k = self.single("update k")?;
+                        self.require(Token::Assign, "update =")?;
+                        let v = self.single("update v")?;
+                        updates.push((Box::new(k), Box::new(v)));
+                        if !self.try_consume(&Token::Comma).is_some() {
+                            break;
+                        }
+                    }
+                    let end = self.require(Token::RightBrace, "update end")?;
+                    cur = LocExpr {
+                        expr: Expr::Update(Box::new(cur), updates),
+                        start,
+                        end,
+                    };
+                }
                 Some(Token::Bang) => {
                     // FIXME
                     let bang_end = self.peek_loc_token().unwrap().end;
@@ -4181,6 +4207,7 @@ pub enum Func {
         Option<Box<Option<Obj>>>,
         Option<Box<Option<Obj>>>,
     ),
+    // UpdateSection(Vec<(Box<Obj>, Box<Obj>)>),
     ChainSection(
         Option<Box<Obj>>,
         Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,

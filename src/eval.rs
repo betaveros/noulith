@@ -581,6 +581,20 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 )
             }
         },
+        Expr::Update(x, updates) => {
+            let mut xr = evaluate(env, x)?;
+            for (upk, upv) in updates {
+                let k = evaluate(env, upk)?;
+                let v = evaluate(env, upv)?;
+                add_trace(
+                    set_index(&mut xr, &[EvaluatedIndexOrSlice::Index(k)], Some(v), false),
+                    || format!("update"),
+                    expr.start,
+                    expr.end,
+                )?
+            };
+            Ok(xr)
+        },
         Expr::Chain(op1, ops) => {
             if match &((**op1).expr) {
                 Expr::Underscore => true,
