@@ -86,7 +86,7 @@ async function prepare() {
 			});
 		} else if (sel) {
 			fetch(sel).then(x => x.arrayBuffer().then(buf => {
-				console.log(b);
+				console.log(buf);
 				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
 			}));
 		} else {
