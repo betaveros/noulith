@@ -3680,11 +3680,35 @@ impl Parser {
         }
     }
 
+    fn attach_symbol_accesses(&mut self, mut expr: LocExpr) -> Result<LocExpr, ParseError> {
+        while self.try_consume(&Token::DoubleColon).is_some() {
+            match self.peek_loc_token() {
+                Some(LocToken {
+                    token: Token::Ident(name),
+                    start: _id_start,
+                    end: id_end,
+                }) => {
+                    let name = name.clone();
+                    let end = *id_end;
+                    self.advance();
+                    expr = LocExpr {
+                        start: expr.start,
+                        end,
+                        expr: Expr::SymbolAccess(Box::new(expr), Rc::new(name)),
+                    };
+                }
+                _ => return Err(self.error_here(format!("double colon access: unexpected")))
+            }
+        }
+        Ok(expr)
+    }
+
     fn operand(&mut self) -> Result<LocExpr, ParseError> {
         let start = self.peek_loc();
         let mut cur = self.atom()?;
 
         loop {
+            cur = self.attach_symbol_accesses(cur)?;
             match self.peek() {
                 Some(Token::LeftParen) => {
                     self.advance();
@@ -3801,26 +3825,6 @@ impl Parser {
                         };
                     }
                 }
-                Some(Token::DoubleColon) => {
-                    self.advance();
-                    match self.peek_loc_token() {
-                        Some(LocToken {
-                            token: Token::Ident(name),
-                            start: _id_start,
-                            end: id_end,
-                        }) => {
-                            let name = name.clone();
-                            let end = *id_end;
-                            self.advance();
-                            cur = LocExpr {
-                                start,
-                                end,
-                                expr: Expr::SymbolAccess(Box::new(cur), Rc::new(name)),
-                            };
-                        }
-                        _ => return Err(self.error_here(format!("double colon access: unexpected")))
-                    }
-                }
                 _ => break Ok(cur),
             }
         }
@@ -3875,103 +3879,94 @@ impl Parser {
             // literals and just writing an expression like "-x" works. But we will be
             // aggressive-ish about checking that the chain ends afterwards so we don't get runaway
             // syntax errors.
-            let second = self.atom()?;
-            match second.expr {
-                Expr::Ident(op) => {
-                    if let Some(bang_end) = self.try_consume(&Token::Bang) {
-                        let ret = LocExpr {
-                            expr: Expr::Chain(
-                                Box::new(op1),
-                                vec![(
-                                    Box::new(LocExpr {
-                                        expr: Expr::Ident(op),
-                                        start: second.start,
-                                        end: second.end,
-                                    }),
-                                    Box::new(self.single("operator-bang operand")?),
-                                )],
-                            ),
-                            start,
-                            end: bang_end,
-                        };
-                        if self.peek() == Some(&Token::Comma) {
-                            Err(self.error_here("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string()))
-                        } else {
-                            Ok(ret)
-                        }
-                    } else if self.peek_chain_stopper() {
-                        Ok(LocExpr {
-                            expr: Expr::Call(
-                                Box::new(op1),
-                                vec![Box::new(LocExpr {
-                                    expr: Expr::Ident(op),
-                                    start: second.start,
-                                    end: second.end,
-                                })],
-                                CallSyntax::Juxtapose,
-                            ),
-                            start,
-                            end: second.end,
-                        })
-                    } else {
-                        let mut ops = vec![(
-                            Box::new(LocExpr {
-                                expr: Expr::Ident(op),
-                                start: second.start,
-                                end: second.end,
-                            }),
-                            Box::new(self.operand()?),
-                        )];
-
-                        while let Some(LocToken {
-                            token: Token::Ident(op),
-                            start: op_start,
-                            end: op_end,
-                        }) = self.peek_loc_token()
-                        {
-                            let op = op.to_string();
-                            let op_start = *op_start;
-                            let op_end = *op_end;
-                            self.advance();
-                            ops.push((
-                                Box::new(LocExpr {
-                                    start: op_start,
-                                    end: op_end,
-                                    expr: Expr::Ident(op),
-                                }),
-                                Box::new(if self.try_consume(&Token::Bang).is_some() {
-                                    self.single("operator-bang operand")?
-                                } else {
-                                    self.operand()?
-                                }),
-                            ));
-                        }
-
-                        Ok(LocExpr {
-                            start,
-                            end: ops.last().unwrap().1.end,
-                            expr: Expr::Chain(Box::new(op1), ops),
-                        })
-                    }
-                }
-                _ => {
-                    // second was not an identifier, only allowed to be a short chain
+            let mut second = self.atom()?;
+            let is_ident = match second.expr {
+                Expr::Ident(_) => true,
+                _ => false,
+            };
+            second = self.attach_symbol_accesses(second)?;
+            if is_ident {
+                if let Some(bang_end) = self.try_consume(&Token::Bang) {
                     let ret = LocExpr {
+                        expr: Expr::Chain(
+                            Box::new(op1),
+                            vec![(
+                                Box::new(second),
+                                Box::new(self.single("operator-bang operand")?),
+                            )],
+                        ),
                         start,
-                        end: second.end,
+                        end: bang_end,
+                    };
+                    if self.peek() == Some(&Token::Comma) {
+                        Err(self.error_here("Got comma after operator-bang operand; the precedence is too confusing so this is banned".to_string()))
+                    } else {
+                        Ok(ret)
+                    }
+                } else if self.peek_chain_stopper() {
+                    let end = second.end;
+                    Ok(LocExpr {
                         expr: Expr::Call(
                             Box::new(op1),
                             vec![Box::new(second)],
                             CallSyntax::Juxtapose,
                         ),
-                    };
-                    if !self.peek_chain_stopper() {
-                        Err(self.error_here(format!(
-                            "saw non-identifier in operator position: these chains must be short"
-                        )))
-                    } else {
-                        Ok(ret)
+                        start,
+                        end,
+                    })
+                } else {
+                    let mut ops = vec![(
+                        Box::new(second),
+                        Box::new(self.operand()?),
+                    )];
+
+                    while let Some(LocToken {
+                        token: Token::Ident(op),
+                        start: op_start,
+                        end: op_end,
+                    }) = self.peek_loc_token()
+                    {
+                        let op = op.to_string();
+                        let op_start = *op_start;
+                        let op_end = *op_end;
+                        self.advance();
+                        ops.push((
+                            Box::new(LocExpr {
+                                start: op_start,
+                                end: op_end,
+                                expr: Expr::Ident(op),
+                            }),
+                            Box::new(if self.try_consume(&Token::Bang).is_some() {
+                                self.single("operator-bang operand")?
+                            } else {
+                                self.operand()?
+                            }),
+                        ));
                     }
+
+                    Ok(LocExpr {
+                        start,
+                        end: ops.last().unwrap().1.end,
+                        expr: Expr::Chain(Box::new(op1), ops),
+                    })
+                }
+            } else {
+                // second was not an identifier, only allowed to be a short chain
+                let ret = LocExpr {
+                    start,
+                    end: second.end,
+                    expr: Expr::Call(
+                        Box::new(op1),
+                        vec![Box::new(second)],
+                        CallSyntax::Juxtapose,
+                    ),
+                };
+                if !self.peek_chain_stopper() {
+                    Err(self.error_here(format!(
+                        "saw non-identifier in operator position: these chains must be short"
+                    )))
+                } else {
+                    Ok(ret)
                 }
             }
         }

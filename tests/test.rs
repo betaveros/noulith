@@ -688,6 +688,11 @@ fn struct_symbols() {
 }
 
 #[test]
+fn namespace_poc() {
+    assert_eq!(simple_eval("struct Foo(bar); foo := Foo(+); 2 foo::bar 3"), i(5));
+}
+
+#[test]
 fn breaking() {
     assert_eq!(
         simple_eval("x := 0; for (i <- 1 to 10) (x = i; if (i == 5) break); x"),
