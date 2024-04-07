@@ -21,7 +21,7 @@ All functions take two arguments and partially apply on the right if called with
 | `gcd` | Greatest common divisor
 | `lcm` | Least common multiple
 | `&` | Bitwise AND
-| `|` | Bitwise OR
+| `\|` | Bitwise OR
 | `~` | Bitwise XOR, or bitwise NOT with one argument
 | `xor` | Bitwise XOR
 | `<<` | Bitwise left shift
@@ -111,17 +111,19 @@ These functions don't vectorize. Sequences are compared lexicographically.
 | `sort` | 1 or 2 | Sort by optional comparator (often `<=> on` some key function)
 | `sort_on` | 1 | Sort by key (Schwartzian)
 | `reverse` | 1 |
-| `||` | 2 | Union dictionaries, right-biased
-| `|.` | 2 | Add key with value `null`
-| `||+` | 2 | Union dictionaries, merging values at key collisions with `+`
-| `||-` | 2 | Union dictionaries, merging values at key collisions with `-`
+| `\|\|` | 2 | Union dictionaries, right-biased
+| `\|.` | 2 | Add key with value `null`
+| `\|\|+` | 2 | Union dictionaries, merging values at key collisions with `+`
+| `\|\|-` | 2 | Union dictionaries, merging values at key collisions with `-`
 | `-.`, `discard` | 2 | Remove key
-| `insert`, `|..` | 2 | Add key-value pair
+| `insert`, `\|..` | 2 | Add key-value pair
 | `&&` | 2 | Intersect sets; keeps values from left
 | `--` | 2 | Removes right keys from left dictionary
 
 ### Streams (~lazy sequences)
 
+| Function | Args | Definition |
+| - | - | - |
 | `repeat` | 1 | Infinite lazy sequence that just repeats one element forever.
 | `cycle` | 1 | Infinite lazy sequence that just cycles through elements of given sequence in order.
 | `iota` | 1 | Infinite lazy sequence counting from given integer up by 1 forever.
