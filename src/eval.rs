@@ -292,6 +292,7 @@ pub fn eval_index_or_slice(
                 None => None,
             },
         )),
+        IndexOrSlice::Symbol(s) => Ok(EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(Rc::clone(s)), Precedence::zero()))),
     }
 }
 
@@ -484,6 +485,20 @@ fn splat_section_eval(
     Ok(acc)
 }
 
+fn symbol_access(obj: Obj, sym: &str) -> NRes<Obj> {
+    match obj {
+        Obj::Instance(s, fields) => {
+            for (s_field, i_field) in s.fields.iter().zip(fields.into_iter()) {
+                if &s_field.0 == sym {
+                    return Ok(i_field)
+                }
+            }
+            Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*s.name)))
+        },
+        _ => Err(NErr::argument_error(format!("{} not struct {}", obj, sym))),
+    }
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.expr {
         Expr::Null => Ok(Obj::Null),
@@ -509,6 +524,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::from(acc))
         }
+        Expr::Symbol(s) => Ok(Obj::Func(Func::SymbolAccess(Rc::clone(s)), Precedence::zero())),
         Expr::Ident(s) => add_trace(
             Env::try_borrow_get_var(env, s),
             || format!("ident"),
@@ -959,6 +975,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 )),
             }
         }
+        Expr::SymbolAccess(s, e) => symbol_access(evaluate(env, s)?, e),
         Expr::CommaSeq(_) => Err(NErr::syntax_error_loc(
             "Comma seqs only allowed directly on a side of an assignment (for now)".to_string(),
             "seq".to_string(),
@@ -1587,6 +1604,7 @@ pub fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 Err(NErr::index_error(format!("wrong struct type",)))
             }
         }
+        (_, Obj::Func(Func::SymbolAccess(sym), _)) => symbol_access(xr, &**sym),
         (xr, ir) => Err(NErr::type_error(format!(
             "can't index {}[{}]",
             FmtObj::debug(&xr),
@@ -2025,6 +2043,17 @@ pub fn set_index(
             } else {
                 Err(NErr::index_error(format!("wrong struct type",)))
             }
+        }
+        (
+            Obj::Instance(struc, fields),
+            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(sym), _)), rest @ ..],
+        ) => {
+            for (s_field, i_field) in struc.fields.iter().zip(fields.iter_mut()) {
+                if &s_field.0 == &**sym {
+                    return set_index(i_field, rest, value, every)
+                }
+            }
+            Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*struc.name)))
         }
         (lhs, ii) => Err(NErr::index_error(format!(
             "can't set index {:?} {:?}",
@@ -2735,6 +2764,10 @@ impl Func {
                 }
                 f => err_add_name(Err(NErr::argument_error_few(&f)), &format!("field of {}", &*struc.name))
             }
+            Func::SymbolAccess(sym) => match few(args) {
+                Few::One(obj) => symbol_access(obj, sym),
+                f => err_add_name(Err(NErr::argument_error_few(&f)), "bad symbol call")
+            }
             Func::Memoized(f, memo) => {
                 let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
                 match cell_try_borrow(memo) {
@@ -2789,6 +2822,7 @@ impl Func {
             Func::SliceSection(..) => None,
             Func::Type(_) => None,
             Func::StructField(..) => None,
+            Func::SymbolAccess(_) => None,
             Func::Memoized(..) => None,
             Func::InternalLambda(..) => None,
         }

@@ -683,6 +683,11 @@ fn structs() {
 }
 
 #[test]
+fn struct_symbols() {
+    assert_eq!(simple_eval("struct Foo(bar, baz); foo := Foo(7, 9); foo::baz += 2; foo::baz"), i(11));
+}
+
+#[test]
 fn breaking() {
     assert_eq!(
         simple_eval("x := 0; for (i <- 1 to 10) (x = i; if (i == 5) break); x"),

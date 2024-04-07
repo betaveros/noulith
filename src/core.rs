@@ -1039,6 +1039,8 @@ impl PartialEq for Obj {
             (Obj::Null, Obj::Null) => true,
             (Obj::Num(a), Obj::Num(b)) => a == b,
             (Obj::Seq(a), Obj::Seq(b)) => a == b,
+            // hmm
+            // (Obj::Func(Func::SymbolAccess(a), _), Obj::Func(Func::SymbolAccess(b), _)) => a == b,
             _ => false,
         }
     }
@@ -1772,6 +1774,7 @@ pub enum ForBody {
 pub enum IndexOrSlice {
     Index(Box<LocExpr>),
     Slice(Option<Box<LocExpr>>, Option<Box<LocExpr>>),
+    Symbol(Rc<String>),
 }
 
 #[derive(Debug)]
@@ -1800,9 +1803,11 @@ pub enum Expr {
     BytesLit(Rc<Vec<u8>>),
     FormatString(Vec<Result<char, (LocExpr, MyFmtFlags)>>),
     Ident(String),
+    Symbol(Rc<String>),
     Underscore,
     Backref(usize),
     Call(Box<LocExpr>, Vec<Box<LocExpr>>, CallSyntax),
+    SymbolAccess(Box<LocExpr>, Rc<String>),
     List(Vec<Box<LocExpr>>),
     Dict(
         Option<Box<LocExpr>>,
@@ -2092,6 +2097,17 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 expr.end,
             )),
         },
+        Expr::SymbolAccess(e, f) => match to_lvalue(*e)? {
+            Lvalue::IndexedIdent(idn, mut ixs) => {
+                ixs.push(IndexOrSlice::Symbol(f));
+                Ok(Lvalue::IndexedIdent(idn, ixs))
+            }
+            ee => Err(ParseError::expr(
+                format!("can't to_lvalue symbol of nonident {:?}", ee),
+                expr.start,
+                expr.end,
+            )),
+        },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
         Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
             es.into_iter()
@@ -2316,6 +2332,7 @@ fn freeze_ios(env: &mut FreezeEnv, ios: &IndexOrSlice) -> NRes<IndexOrSlice> {
             opt_box_freeze(env, i)?,
             opt_box_freeze(env, j)?,
         )),
+        IndexOrSlice::Symbol(s) => Ok(IndexOrSlice::Symbol(Rc::clone(s))),
     }
 }
 
@@ -2344,6 +2361,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::FloatLit(x) => Ok(Expr::FloatLit(x.clone())),
             Expr::ImaginaryFloatLit(x) => Ok(Expr::ImaginaryFloatLit(x.clone())),
             Expr::StringLit(x) => Ok(Expr::StringLit(x.clone())),
+            Expr::Symbol(x) => Ok(Expr::Symbol(x.clone())),
             Expr::BytesLit(x) => Ok(Expr::BytesLit(x.clone())),
             Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
             Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
@@ -2473,6 +2491,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     None => Ok(Expr::Call(f, args, *syntax)),
                 }
             }
+            Expr::SymbolAccess(e, f) => Ok(Expr::SymbolAccess(
+                box_freeze(env, e)?,
+                f.clone(),
+            )),
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
             Expr::List(xs) => {
@@ -3046,6 +3068,26 @@ impl Parser {
                         end,
                         expr: Expr::Ident(s),
                     })
+                }
+                Token::DoubleColon => {
+                    self.advance();
+                    match self.peek_loc_token() {
+                        Some(LocToken {
+                            token: Token::Ident(name),
+                            start: _id_start,
+                            end: id_end,
+                        }) => {
+                            let name = name.clone();
+                            let end = *id_end;
+                            self.advance();
+                            Ok(LocExpr {
+                                start,
+                                end,
+                                expr: Expr::Symbol(Rc::new(name)),
+                            })
+                        }
+                        _ => Err(self.error_here(format!("double colon symbol: unexpected")))
+                    }
                 }
                 Token::Ellipsis => {
                     self.advance();
@@ -3759,6 +3801,26 @@ impl Parser {
                         };
                     }
                 }
+                Some(Token::DoubleColon) => {
+                    self.advance();
+                    match self.peek_loc_token() {
+                        Some(LocToken {
+                            token: Token::Ident(name),
+                            start: _id_start,
+                            end: id_end,
+                        }) => {
+                            let name = name.clone();
+                            let end = *id_end;
+                            self.advance();
+                            cur = LocExpr {
+                                start,
+                                end,
+                                expr: Expr::SymbolAccess(Box::new(cur), Rc::new(name)),
+                            };
+                        }
+                        _ => return Err(self.error_here(format!("double colon access: unexpected")))
+                    }
+                }
                 _ => break Ok(cur),
             }
         }
@@ -4230,6 +4292,7 @@ pub enum Func {
     CallSection(Option<Box<Obj>>, Vec<Result<Obj, bool>>),
     Type(ObjType), // includes Struct now
     StructField(Struct, usize),
+    SymbolAccess(Rc<String>),
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
 
@@ -4578,6 +4641,7 @@ impl Display for Func {
             }
             Func::Type(t) => write!(formatter, "{}", t.name()),
             Func::StructField(s, i) => write!(formatter, "<{} field {}>", s.name, i),
+            Func::SymbolAccess(s) => write!(formatter, "::{}", s),
             Func::Memoized(..) => write!(formatter, "<memoized>"),
         }
     }
