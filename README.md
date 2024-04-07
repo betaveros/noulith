@@ -23,7 +23,7 @@ You can [try Noulith online](https://betaveros.github.io/noulith/) (via wasm)!
   noulith> swap +, *
   noulith> f() # (2 times 5) plus 3
   13
-  noulith> swap +["precedence"], *["precedence"]
+  noulith> swap +::precedence, *::precedence
   noulith> f() # 2 times (5 plus 3)
   16
   noulith> swap +, *

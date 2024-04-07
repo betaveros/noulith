@@ -111,11 +111,11 @@ fn evil_operators() {
     assert_eq!(simple_eval("+, * = *, +; 2 + 5 * 3"), i(13));
     assert_eq!(
         simple_eval(
-            "+['precedence'], *['precedence'] = *['precedence'], +['precedence']; 2 + 5 * 3"
+            "+::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"
         ),
         i(21)
     );
-    assert_eq!(simple_eval("+, * = *, +; +['precedence'], *['precedence'] = *['precedence'], +['precedence']; 2 + 5 * 3"), i(16));
+    assert_eq!(simple_eval("+, * = *, +; +::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"), i(16));
 }
 
 #[test]

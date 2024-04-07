@@ -495,6 +495,10 @@ fn symbol_access(obj: Obj, sym: &str) -> NRes<Obj> {
             }
             Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*s.name)))
         },
+        Obj::Func(_, Precedence(p, _)) => match sym {
+            "precedence" => Ok(Obj::from(p)),
+            _ => Err(NErr::argument_error(format!("func only symbol is precedence; got {}", sym))),
+        }
         _ => Err(NErr::argument_error(format!("{} not struct {}", obj, sym))),
     }
 }
@@ -1593,7 +1597,7 @@ pub fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
                 ))),
             },
         },
-        (Obj::Func(_, Precedence(p, _)), Obj::Seq(Seq::String(k))) => match &**k {
+        (Obj::Func(_, Precedence(p, _)), Obj::Func(Func::SymbolAccess(k), _)) => match &**k {
             "precedence" => Ok(Obj::from(*p as f64)),
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         },
@@ -2010,7 +2014,7 @@ pub fn set_index(
         },
         (
             Obj::Func(_, Precedence(p, _)),
-            [EvaluatedIndexOrSlice::Index(Obj::Seq(Seq::String(r)))],
+            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(r), _))]
         ) => match &***r {
             "precedence" => match value {
                 Some(Obj::Num(f)) => match f.to_f64() {
