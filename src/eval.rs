@@ -2120,6 +2120,20 @@ pub fn modify_existing_index(
                         Err(NErr::index_error(format!("wrong struct type",)))
                     }
                 }
+                (
+                    Obj::Instance(struc, fields),
+                    EvaluatedIndexOrSlice::Index(Obj::Func(
+                        Func::SymbolAccess(sym),
+                        _,
+                    )),
+                ) => {
+                    for (s_field, i_field) in struc.fields.iter().zip(fields.iter_mut()) {
+                        if &s_field.0 == &**sym {
+                            return modify_existing_index(i_field, rest, f)
+                        }
+                    }
+                    Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*struc.name)))
+                }
                 // TODO everything
                 (lhs2, ii) => Err(NErr::type_error(format!(
                     "can't modify index {:?} {:?}",
