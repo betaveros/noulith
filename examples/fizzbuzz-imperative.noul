@@ -1,0 +1,7 @@
+for (x <- 1 to 100) (
+  o := '';
+  for (f, s <- [[3, 'Fizz'], [5, 'Buzz']])
+    if (x % f == 0)
+      o $= s;
+  print(if (o == '') x else o)
+)

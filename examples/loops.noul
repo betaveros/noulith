@@ -1,0 +1,22 @@
+primes := 2 to 10 filter \x: 2 til x all (x%) -> (!=0);
+
+print("Normal");
+for (x <- primes) echo(x^2 $ " ");
+
+print();
+print("Enumerate / zip with index");
+for (i, x <<- primes) echo(i, x^2 $ " ");
+
+print();
+print("Multiple loops");
+for (x <- primes; y <- primes) echo(x*y $ " ");
+
+print();
+print();
+print("With guards / filters");
+for (x <- primes; y <- primes; if x != y) echo(x*y $ " ");
+
+print();
+print();
+print("With extra declarations (scoped)");
+for (x <- primes; y <- primes; p := x * y) echo(p $ " ");

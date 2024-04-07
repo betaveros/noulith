@@ -1,0 +1,1 @@
+1 to 100 map (\x -> [[3, 'Fizz'], [5, 'Buzz']] filter (first >>> (x%) equals 0) map second join "" or x) each print

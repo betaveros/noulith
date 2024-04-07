@@ -1,0 +1,2 @@
+for (x <- 1 to 100)
+  print([[3, 'Fizz'], [5, 'Buzz']] map (\(f, s) -> if (x % f == 0) s else "") join "" or x)

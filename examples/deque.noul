@@ -1,0 +1,63 @@
+struct Deque (buffer = [], front = 0, back = 0);
+# Equal when empty. Else, "front < back" (in the modulo universe)
+# For simplicity we never completely fill the buffer. It's fine.
+
+dq_to_list := freeze \dq: Deque -> (
+	ret := [];
+	i := dq::front;
+	while (i != dq::back) (
+		ret append= consume dq::buffer[i];
+		i = (i + 1) % len(dq::buffer);
+	);
+	ret
+);
+
+dq_make_space := freeze \dq: Deque -> (
+	switch (dq::buffer)
+	case [] -> Deque([null, null], 0, 0)
+	case _ -> if ((dq::back + 1) % len(dq::buffer) == dq::front) (
+		print("Expanding");
+		contents := dq_to_list(consume dq);
+		Deque(contents ++ (null .* (2 + len(contents))), 0, len(contents))
+	) else dq
+);
+
+dq_push_back := freeze \dq: Deque, e -> (
+	dq .= dq_make_space;
+	next_back := (dq::back + 1) % len(dq::buffer);
+	dq::buffer[dq::back] = e;
+	dq::back = next_back;
+	dq
+);
+
+dq_push_front := freeze \dq: Deque, e -> (
+	dq .= dq_make_space;
+	next_front := (dq::front - 1) %% len(dq::buffer);
+	dq::front = next_front;
+	dq::buffer[dq::front] = e;
+	dq
+);
+
+dq_pop_front := freeze \dq: Deque -> (
+	if (dq::front == dq::back) throw "deque empty";
+	ret := consume dq::buffer[dq::front];
+	dq::front = (dq::front + 1) % len(dq::buffer);
+	[dq, ret]
+);
+
+dq_pop_back := freeze \dq: Deque -> (
+	if (dq::front == dq::back) throw "deque empty";
+	dq::back = (dq::back - 1) %% len(dq::buffer);
+	ret := consume dq::buffer[dq::back];
+	[dq, ret]
+);
+
+q := Deque();
+for (e <- 1 to 1000000) (
+	print e;
+	q dq_push_front= e;
+);
+while (true) (
+	q, (e:) = dq_pop_back(consume q);
+	print e;
+)
