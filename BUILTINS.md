@@ -192,7 +192,7 @@ The `is` functions tests if something is of a type e.g. `3 is int`
 | `>>>` | 2 | Function composition: `(f >>> g)(...) = g(f(...))`
 | `<<<`, `∘` | 2 | Function composition: `(f <<< g)(...) = f(g(...))`
 | `on` | 2 | Lifted function composition: `(f on g)(a1, a2, ...) = f(g(a1), g(a2), ...)`. Typical usage is to convert a "key function" into a comparator with `<=> on key_func`.
-| `***` | any | Parallel function composition: `(f ||| g)(a1, a2) = [f(a1), g(a2)]`
+| `***` | any | Parallel function composition: `(f *** g)(a1, a2) = [f(a1), g(a2)]`
 | `&&&` | any | Fanout function composition: `(f &&& g)(...) = [f(...), g(...)]`
 | `equals` | any | Wacky equality helper. `(f equals g)(...) = f(...) == g(...)` where if `f` or `g` are not functions they get used directly.
 
