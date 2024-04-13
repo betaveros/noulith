@@ -292,7 +292,10 @@ pub fn eval_index_or_slice(
                 None => None,
             },
         )),
-        IndexOrSlice::Symbol(s) => Ok(EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(Rc::clone(s)), Precedence::zero()))),
+        IndexOrSlice::Symbol(s) => Ok(EvaluatedIndexOrSlice::Index(Obj::Func(
+            Func::SymbolAccess(Rc::clone(s)),
+            Precedence::zero(),
+        ))),
     }
 }
 
@@ -490,15 +493,21 @@ fn symbol_access(obj: Obj, sym: &str) -> NRes<Obj> {
         Obj::Instance(s, fields) => {
             for (s_field, i_field) in s.fields.iter().zip(fields.into_iter()) {
                 if &s_field.0 == sym {
-                    return Ok(i_field)
+                    return Ok(i_field);
                 }
             }
-            Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*s.name)))
-        },
+            Err(NErr::argument_error(format!(
+                "no field {} in struct {}",
+                sym, &*s.name
+            )))
+        }
         Obj::Func(_, Precedence(p, _)) => match sym {
             "precedence" => Ok(Obj::from(p)),
-            _ => Err(NErr::argument_error(format!("func only symbol is precedence; got {}", sym))),
-        }
+            _ => Err(NErr::argument_error(format!(
+                "func only symbol is precedence; got {}",
+                sym
+            ))),
+        },
         _ => Err(NErr::argument_error(format!("{} not struct {}", obj, sym))),
     }
 }
@@ -528,7 +537,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::from(acc))
         }
-        Expr::Symbol(s) => Ok(Obj::Func(Func::SymbolAccess(Rc::clone(s)), Precedence::zero())),
+        Expr::Symbol(s) => Ok(Obj::Func(
+            Func::SymbolAccess(Rc::clone(s)),
+            Precedence::zero(),
+        )),
         Expr::Ident(s) => add_trace(
             Env::try_borrow_get_var(env, s),
             || format!("ident"),
@@ -2014,7 +2026,7 @@ pub fn set_index(
         },
         (
             Obj::Func(_, Precedence(p, _)),
-            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(r), _))]
+            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(r), _))],
         ) => match &***r {
             "precedence" => match value {
                 Some(Obj::Num(f)) => match f.to_f64() {
@@ -2054,10 +2066,13 @@ pub fn set_index(
         ) => {
             for (s_field, i_field) in struc.fields.iter().zip(fields.iter_mut()) {
                 if &s_field.0 == &**sym {
-                    return set_index(i_field, rest, value, every)
+                    return set_index(i_field, rest, value, every);
                 }
             }
-            Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*struc.name)))
+            Err(NErr::argument_error(format!(
+                "no field {} in struct {}",
+                sym, &*struc.name
+            )))
         }
         (lhs, ii) => Err(NErr::index_error(format!(
             "can't set index {:?} {:?}",
@@ -2122,17 +2137,17 @@ pub fn modify_existing_index(
                 }
                 (
                     Obj::Instance(struc, fields),
-                    EvaluatedIndexOrSlice::Index(Obj::Func(
-                        Func::SymbolAccess(sym),
-                        _,
-                    )),
+                    EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(sym), _)),
                 ) => {
                     for (s_field, i_field) in struc.fields.iter().zip(fields.iter_mut()) {
                         if &s_field.0 == &**sym {
-                            return modify_existing_index(i_field, rest, f)
+                            return modify_existing_index(i_field, rest, f);
                         }
                     }
-                    Err(NErr::argument_error(format!("no field {} in struct {}", sym, &*struc.name)))
+                    Err(NErr::argument_error(format!(
+                        "no field {} in struct {}",
+                        sym, &*struc.name
+                    )))
                 }
                 // TODO everything
                 (lhs2, ii) => Err(NErr::type_error(format!(

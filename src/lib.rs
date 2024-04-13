@@ -1029,6 +1029,62 @@ impl Builtin for ZipLongest {
 
 // self-chainable
 #[derive(Debug, Clone)]
+struct LazyZip;
+
+impl Builtin for LazyZip {
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::argument_error("lazy_zip: no args".to_string())),
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few::Many(args) => {
+                let mut func = None;
+                let mut streams: Vec<Box<dyn Stream>> = Vec::new();
+                for arg in args.into_iter() {
+                    match (arg, &mut func) {
+                        (Obj::Func(f, _), None) => {
+                            func = Some(f);
+                        }
+                        (Obj::Func(..), Some(_)) => Err(NErr::argument_error(
+                            "lazy_zip: more than one function".to_string(),
+                        ))?,
+                        (Obj::Seq(Seq::Stream(s)), _) => streams.push(s.clone_box()),
+                        (e, _) => {
+                            return Err(NErr::argument_error(format!(
+                                "lazy_zip: not stream: {}",
+                                FmtObj::debug(&e)
+                            )))
+                        }
+                    }
+                }
+                if streams.is_empty() {
+                    Err(NErr::argument_error("lazy_zip: zero streams".to_string()))?
+                }
+                Ok(Obj::Seq(Seq::Stream(Rc::new(ZippedStream(Ok((
+                    streams,
+                    func,
+                    Rc::clone(env),
+                )))))))
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "lazy_zip"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "lazy_zip" | "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+// self-chainable
+#[derive(Debug, Clone)]
 struct CartesianProduct;
 
 // surprisingly rare function where we really can't consume the iterators
@@ -3723,6 +3779,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(Zip);
     env.insert_builtin(ZipLongest);
+    env.insert_builtin(LazyZip);
     env.insert_builtin(Parallel);
     env.insert_builtin(Fanout);
     env.insert_builtin(LiftedEquals);

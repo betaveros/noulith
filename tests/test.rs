@@ -110,12 +110,15 @@ fn evil_operators() {
     assert_eq!(simple_eval("2 + 5 * 3"), i(17));
     assert_eq!(simple_eval("+, * = *, +; 2 + 5 * 3"), i(13));
     assert_eq!(
-        simple_eval(
-            "+::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"
-        ),
+        simple_eval("+::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"),
         i(21)
     );
-    assert_eq!(simple_eval("+, * = *, +; +::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"), i(16));
+    assert_eq!(
+        simple_eval(
+            "+, * = *, +; +::precedence, *::precedence = *::precedence, +::precedence; 2 + 5 * 3"
+        ),
+        i(16)
+    );
 }
 
 #[test]
@@ -684,12 +687,18 @@ fn structs() {
 
 #[test]
 fn struct_symbols() {
-    assert_eq!(simple_eval("struct Foo(bar, baz); foo := Foo(7, 9); foo::baz += 2; foo::baz"), i(11));
+    assert_eq!(
+        simple_eval("struct Foo(bar, baz); foo := Foo(7, 9); foo::baz += 2; foo::baz"),
+        i(11)
+    );
 }
 
 #[test]
 fn namespace_poc() {
-    assert_eq!(simple_eval("struct Foo(bar); foo := Foo(+); 2 foo::bar 3"), i(5));
+    assert_eq!(
+        simple_eval("struct Foo(bar); foo := Foo(+); 2 foo::bar 3"),
+        i(5)
+    );
 }
 
 #[test]

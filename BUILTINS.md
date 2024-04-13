@@ -133,6 +133,7 @@ These functions don't vectorize. Sequences are compared lexicographically.
 | `iterate` | 2 | Infinite lazy sequence that starts with first argument as its first element. Each subsequent element is obtained by calling the second argument on the previous element. Use with caution — no guarantees if the second argument is impure.
 | `lazy_map` | 2 | Lazy map where each element is obtained by calling the second argument on an element of the first. Gracefully terminates if the second argument `break`s. No guarantees if the second argument is impure.
 | `lazy_filter` | 2 | Lazy filter, first by second. No guarantees if the second argument is impure.
+| `lazy_zip` | any | Lazy zip two or more streams, optionally with a function. See above.
 
 ### Strings
 

@@ -432,6 +432,55 @@ impl Iterator for MutObjIntoIterPairs<'_> {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WrappedVec<T>(pub Rc<Vec<T>>, pub usize);
+
+impl<T: Clone + Into<Obj>> Iterator for WrappedVec<T> {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        if self.1 >= self.0.len() {
+            None
+        } else {
+            let ret = self.0[self.1].clone().into();
+            self.1 += 1;
+            Some(Ok(ret))
+        }
+    }
+}
+impl<T: Display> Display for WrappedVec<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            formatter,
+            "stream(({})[{}])",
+            CommaSeparated(&**self.0),
+            self.1
+        )
+    }
+}
+impl<T: Clone + Into<Obj> + Display + Debug + 'static> Stream for WrappedVec<T> {
+    fn peek(&self) -> Option<NRes<Obj>> {
+        if self.1 >= self.0.len() {
+            None
+        } else {
+            Some(Ok(self.0[self.1].clone().into()))
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+    fn len(&self) -> Option<usize> {
+        None
+    }
+    fn force(&self) -> NRes<Vec<Obj>> {
+        Err(NErr::value_error(
+            "Cannot force repeat because it's infinite".to_string(),
+        ))
+    }
+    // fn pythonic_index_isize...
+    // fn pythonic_slice...
+    // fn reversed...
+}
+
 // Functions
 
 #[derive(Debug, Clone, Copy)]
@@ -642,6 +691,26 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
                     .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                 None,
             )),
+        },
+        ObjType::Stream => match arg {
+            Obj::Seq(Seq::Stream(..)) => Ok(arg),
+            Obj::Seq(Seq::List(v)) => Ok(Obj::Seq(Seq::Stream(Rc::new(WrappedVec(v, 0))))),
+            Obj::Seq(Seq::String(v)) => Ok(Obj::Seq(Seq::Stream(Rc::new(WrappedVec(
+                Rc::new(v.chars().map(|c| c.to_string()).collect()),
+                0,
+            ))))),
+            Obj::Seq(Seq::Vector(v)) => Ok(Obj::Seq(Seq::Stream(Rc::new(WrappedVec(v, 0))))),
+            Obj::Seq(Seq::Bytes(v)) => Ok(Obj::Seq(Seq::Stream(Rc::new(WrappedVec(v, 0))))),
+            Obj::Seq(Seq::Dict(d, _)) => Ok(Obj::Seq(Seq::Stream(Rc::new(WrappedVec(
+                Rc::new(
+                    unwrap_or_clone(d)
+                        .into_keys()
+                        .map(|k| key_to_obj(k))
+                        .collect(),
+                ),
+                0,
+            ))))),
+            _ => Err(NErr::type_error("stream: expected seq".to_string())),
         },
         ObjType::Type => Ok(Obj::Func(Func::Type(type_of(&arg)), Precedence::zero())),
         ObjType::Struct(_) => call_type(ty, vec![arg]),
@@ -2491,10 +2560,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     None => Ok(Expr::Call(f, args, *syntax)),
                 }
             }
-            Expr::SymbolAccess(e, f) => Ok(Expr::SymbolAccess(
-                box_freeze(env, e)?,
-                f.clone(),
-            )),
+            Expr::SymbolAccess(e, f) => Ok(Expr::SymbolAccess(box_freeze(env, e)?, f.clone())),
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
             Expr::List(xs) => {
@@ -3086,7 +3152,7 @@ impl Parser {
                                 expr: Expr::Symbol(Rc::new(name)),
                             })
                         }
-                        _ => Err(self.error_here(format!("double colon symbol: unexpected")))
+                        _ => Err(self.error_here(format!("double colon symbol: unexpected"))),
                     }
                 }
                 Token::Ellipsis => {
@@ -3697,7 +3763,7 @@ impl Parser {
                         expr: Expr::SymbolAccess(Box::new(expr), Rc::new(name)),
                     };
                 }
-                _ => return Err(self.error_here(format!("double colon access: unexpected")))
+                _ => return Err(self.error_here(format!("double colon access: unexpected"))),
             }
         }
         Ok(expr)
@@ -3915,10 +3981,7 @@ impl Parser {
                         end,
                     })
                 } else {
-                    let mut ops = vec![(
-                        Box::new(second),
-                        Box::new(self.operand()?),
-                    )];
+                    let mut ops = vec![(Box::new(second), Box::new(self.operand()?))];
 
                     while let Some(LocToken {
                         token: Token::Ident(op),
@@ -3955,11 +4018,7 @@ impl Parser {
                 let ret = LocExpr {
                     start,
                     end: second.end,
-                    expr: Expr::Call(
-                        Box::new(op1),
-                        vec![Box::new(second)],
-                        CallSyntax::Juxtapose,
-                    ),
+                    expr: Expr::Call(Box::new(op1), vec![Box::new(second)], CallSyntax::Juxtapose),
                 };
                 if !self.peek_chain_stopper() {
                     Err(self.error_here(format!(

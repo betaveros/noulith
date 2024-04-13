@@ -637,6 +637,111 @@ impl Stream for MappedStream {
     */
 }
 
+// Zip x streams together and call a function. Note that can easily be a strict superset of
+// MappedStream...
+pub struct ZippedStream(pub NRes<(Vec<Box<dyn Stream>>, Option<Func>, REnv)>);
+impl Clone for ZippedStream {
+    fn clone(&self) -> ZippedStream {
+        match &self.0 {
+            Err(e) => ZippedStream(Err(e.clone())),
+            Ok((inner, func, renv)) => ZippedStream(Ok((
+                inner.iter().map(|stream| stream.clone_box()).collect(),
+                func.clone(),
+                renv.clone(),
+            ))),
+        }
+    }
+}
+// directly debug-printing env can easily recurse infinitely
+impl Debug for ZippedStream {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        match &self.0 {
+            Err(NErr::Break(0, None)) => write!(fmt, "ZippedStream(stopped)"),
+            Err(e) => write!(fmt, "ZippedStream(ERROR: {:?})", e),
+            Ok((inner, func, _)) => write!(fmt, "ZippedStream({:?}, {:?}, ...)", inner, func),
+        }
+    }
+}
+impl Iterator for ZippedStream {
+    type Item = NRes<Obj>;
+    fn next(&mut self) -> Option<NRes<Obj>> {
+        let (inner, func, renv) = self.0.as_mut().ok()?;
+        let mut args = Vec::with_capacity(inner.len());
+        for stream in inner {
+            match stream.next() {
+                Some(Err(e)) => {
+                    self.0 = Err(e.clone());
+                    return Some(Err(e));
+                }
+                Some(Ok(cur)) => {
+                    args.push(cur);
+                }
+                None => {
+                    self.0 = Err(NErr::Break(0, None));
+                    return None;
+                }
+            }
+        }
+        match func {
+            Some(func) => match func.run(&renv, args) {
+                Ok(nxt) => Some(Ok(nxt)),
+                Err(e) => {
+                    self.0 = Err(e.clone());
+                    Some(Err(e))
+                }
+            },
+            None => Some(Ok(Obj::list(args))),
+        }
+    }
+}
+impl Display for ZippedStream {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match &self.0 {
+            Ok((inner, None, _)) => {
+                write!(formatter, "ZippedStream(({}), ...)", CommaSeparated(inner))
+            }
+            Ok((inner, Some(func), _)) => write!(
+                formatter,
+                "ZippedStream(({}), {}, ...)",
+                CommaSeparated(inner),
+                func
+            ),
+            Err(e) => write!(formatter, "ZippedStream(ERROR: {})", e),
+        }
+    }
+}
+impl Stream for ZippedStream {
+    fn peek(&self) -> Option<NRes<Obj>> {
+        let (inner, func, renv) = self.0.as_ref().ok()?;
+        match inner
+            .iter()
+            .map(|stream| stream.peek())
+            .collect::<Option<NRes<Vec<Obj>>>>()?
+        {
+            Ok(inxt) => match func {
+                Some(func) => match func.run(&renv, inxt) {
+                    Ok(nxt) => Some(Ok(nxt)),
+                    Err(e) => Some(Err(e.clone())),
+                },
+                None => Some(Ok(Obj::list(inxt))),
+            },
+            Err(NErr::Break(0, None)) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+    fn clone_box(&self) -> Box<dyn Stream> {
+        Box::new(self.clone())
+    }
+    /*
+    fn len(&self) -> Option<usize> {
+        match &self.0 {
+            Ok((inner, _, _)) => inner.len(),
+            Err(_) => Some(0),
+        }
+    }
+    */
+}
+
 // i think just equally illegal
 // again we'll treat NErr::Break as graceful termination
 pub struct FilteredStream(pub NRes<(Box<dyn Stream>, Func, REnv)>);
