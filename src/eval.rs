@@ -1008,7 +1008,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Ok(v) => Ok(Obj::list(v)),
             Err(e) => Ok(Obj::Func(Func::ListSection(e), Precedence::zero())),
         },
-        Expr::Vector(xs) => to_obj_vector(eval_seq(env, xs)?.into_iter().map(Ok)),
         Expr::Dict(def, xs) => {
             let dv = match def {
                 Some(de) => Some(evaluate(env, de)?),

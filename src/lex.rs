@@ -15,7 +15,6 @@ pub enum Token {
     FormatString(Rc<String>),
     Ident(String),
     LeftParen,
-    VLeftParen,
     RightParen,
     LeftBracket,
     BLeftBracket,
@@ -457,17 +456,18 @@ impl<'a> Lexer<'a> {
                             self.next();
                         }
                         if acc == "B" {
-                            match self.next() {
-                                Some(delim @ ('\'' | '"')) => {
-                                    // TODO this isn't how it works we need to deal with hex
-                                    // escapes differently at least
-                                    let s = self.lex_simple_string_after_start(delim);
-                                    self.emit(Token::BytesLit(Rc::new(s.into_bytes())))
-                                }
-                                Some('[') => self.emit(Token::BLeftBracket),
-                                _ => {
-                                    self.emit(Token::Invalid("lexing: bytes: no quote".to_string()))
-                                }
+                            if let Some(delim @ ('\'' | '"')) = self.peek() {
+                                let delim = *delim;
+                                self.next();
+                                // TODO this isn't how it works we need to deal with hex
+                                // escapes differently at least
+                                let s = self.lex_simple_string_after_start(delim);
+                                self.emit(Token::BytesLit(Rc::new(s.into_bytes())))
+                            } else if self.peek() == Some(&'[') {
+                                self.next();
+                                self.emit(Token::BLeftBracket);
+                            } else {
+                                self.emit(Token::Ident(acc))
                             }
                         } else if acc == "F" {
                             // wow
@@ -503,11 +503,6 @@ impl<'a> Lexer<'a> {
                                 _ => self.emit(Token::Invalid(
                                     "lexing: raw string literal: no quote".to_string(),
                                 )),
-                            }
-                        } else if acc == "V" {
-                            match self.next() {
-                                Some('(') => self.emit(Token::VLeftParen),
-                                _ => self.emit(Token::Invalid("lexing: V: what".to_string())),
                             }
                         } else {
                             self.emit(match acc.as_str() {

@@ -1882,7 +1882,6 @@ pub enum Expr {
         Option<Box<LocExpr>>,
         Vec<(Box<LocExpr>, Option<Box<LocExpr>>)>,
     ),
-    Vector(Vec<Box<LocExpr>>),
     Index(Box<LocExpr>, IndexOrSlice),
     Update(Box<LocExpr>, Vec<(Box<LocExpr>, Box<LocExpr>)>),
     Frozen(Obj),
@@ -2574,7 +2573,6 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     None => Ok(Expr::List(v)),
                 }
             }
-            Expr::Vector(xs) => Ok(Expr::Vector(vec_box_freeze(env, xs)?)),
             Expr::Dict(def, xs) => Ok(Expr::Dict(
                 opt_box_freeze(env, def)?,
                 xs.iter()
@@ -3286,25 +3284,6 @@ impl Parser {
                     let e = self.expression()?;
                     self.require(Token::RightParen, "normal parenthesized expr")?;
                     Ok(e)
-                }
-                Token::VLeftParen => {
-                    self.advance();
-                    if let Some(end) = self.try_consume(&Token::RightParen) {
-                        Ok(LocExpr {
-                            start,
-                            end,
-                            expr: Expr::Vector(Vec::new()),
-                        })
-                    } else {
-                        let (exs, _) =
-                            self.annotated_comma_separated(false, "vector lit contents")?;
-                        let end = self.require(Token::RightParen, "vector expr")?;
-                        Ok(LocExpr {
-                            start,
-                            end,
-                            expr: Expr::Vector(exs),
-                        })
-                    }
                 }
                 Token::LeftBracket => {
                     self.advance();

@@ -3019,6 +3019,23 @@ pub fn initialize(env: &mut Env) {
         .unwrap();
     env.insert("false".to_string(), ObjType::Int, Obj::zero())
         .unwrap();
+
+    env.insert_builtin(BasicBuiltin {
+        name: "L".to_string(),
+        body: |_env, args| Ok(Obj::list(args)),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "V".to_string(),
+        body: |_env, args| to_obj_vector(args.into_iter().map(Ok)),
+    });
+    env.insert_builtin(BasicBuiltin {
+        name: "B".to_string(),
+        body: |_env, args| Ok(Obj::Seq(Seq::Bytes(Rc::new(
+            args.into_iter().map(|e| to_byte(e, "bytes conversion"))
+                .collect::<NRes<Vec<u8>>>()?,
+        )))),
+    });
+
     env.insert_builtin(TwoArgBuiltin {
         name: "and'".to_string(),
         body: |a, b| Ok(if a.truthy() { b } else { a }),
@@ -3653,6 +3670,24 @@ pub fn initialize(env: &mut Env) {
                 },
             )),
             _ => Err(NErr::type_error("not dict or callable".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "vector_map".to_string(),
+        body: |env, mut a, b| {
+            let ret = {
+                let it = mut_obj_into_iter(&mut a, "vector_map")?;
+                match b {
+                    Obj::Func(b, _) => Ok(Obj::Seq(Seq::Vector(
+                        Rc::new(it.map(|e| match b.run1(env, e?)? {
+                            Obj::Num(n) => Ok(n),
+                            e => Err(NErr::type_error(format!("vector_map result not num: {}", e))),
+                        }).collect::<NRes<Vec<NNum>>>()?),
+                    ))),
+                    _ => Err(NErr::type_error("not callable".to_string())),
+                }
+            };
+            ret
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
