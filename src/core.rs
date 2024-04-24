@@ -2763,9 +2763,11 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, body)?,
             )),
             Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
-            Expr::InternalLambda(caps, argc, body) => {
-                Ok(Expr::InternalLambda(Rc::new(vec_box_freeze(env, caps)?), *argc, Rc::new(freeze(env, body)?)))
-            }
+            Expr::InternalLambda(caps, argc, body) => Ok(Expr::InternalLambda(
+                Rc::new(vec_box_freeze(env, caps)?),
+                *argc,
+                Rc::new(freeze(env, body)?),
+            )),
         }?,
     })
 }
@@ -3675,7 +3677,8 @@ impl Parser {
                     let caps = if self.peek() == Some(&Token::LeftBracket) {
                         self.advance();
                         // too lazy to bother supporting empty capture although it'd be more uniform
-                        let (caps, _) = self.annotated_comma_separated(false, "internal lambda captures")?;
+                        let (caps, _) =
+                            self.annotated_comma_separated(false, "internal lambda captures")?;
                         self.require(Token::RightBracket, "internal lambda captures end")?;
                         caps
                     } else {
