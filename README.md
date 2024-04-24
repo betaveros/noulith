@@ -404,7 +404,7 @@ weird things that are faster to evaluate than always making/following chains of 
   - if the expr evaluates to an integer: evaluate the body n times, restoring the stack's length each time, without changing the environment
   - if the expr evaluates to an iterable: for each item, push it, evaluate the body, then restore the stack's length to before the push
 - `__internal_call integer-const expr`: pop the top n elements of the stack, then call the expression with those as arguments (bottom to top)
-- `__internal_lambda body`: makes an internal lambda that, when called, doesn't enter a new environment; but records the stack length, pushes the arguments on, then executes and can return a value as usual, restoring the stack length before returning
+- `__internal_lambda [captures] n body`: makes an internal lambda that, when called, doesn't enter a new environment; but records the stack length, pushes any captures followed by the arguments on, then executes and can return a value as usual, restoring the stack length before returning. n is the number of arguments accepted.
 
 ### web stuff
 

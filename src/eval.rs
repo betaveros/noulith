@@ -1477,10 +1477,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             };
             call(env, val, args)
         }
-        Expr::InternalLambda(n, body) => Ok(Obj::Func(
-            Func::InternalLambda(*n, Rc::clone(body)),
-            Precedence::zero(),
-        )),
+        Expr::InternalLambda(caps, n, body) => {
+            let mut captured = Vec::with_capacity(caps.len());
+            for cap in &**caps {
+                captured.push(evaluate(env, cap)?);
+            }
+            Ok(Obj::Func(
+                Func::InternalLambda(captured, *n, Rc::clone(body)),
+                Precedence::zero(),
+            ))
+        }
     }
 }
 
@@ -2612,13 +2618,14 @@ impl Func {
         match self {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
-            Func::InternalLambda(n, body) => {
+            Func::InternalLambda(caps, n, body) => {
                 if args.len() != *n {
                     return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
                 }
                 let s = {
                     let mut ptr = try_borrow_mut_nres(env, "internal", "lambda call")?;
                     let n = ptr.internal_stack.len();
+                    ptr.internal_stack.extend(caps.iter().map(Obj::clone));
                     ptr.internal_stack.extend(args);
                     n
                 };

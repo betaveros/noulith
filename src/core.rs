@@ -1929,7 +1929,7 @@ pub enum Expr {
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
-    InternalLambda(usize, Rc<LocExpr>),
+    InternalLambda(Rc<Vec<Box<LocExpr>>>, usize, Rc<LocExpr>),
 }
 
 impl Expr {
@@ -2765,8 +2765,8 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, body)?,
             )),
             Expr::InternalCall(argc, e) => Ok(Expr::InternalCall(*argc, box_freeze(env, e)?)),
-            Expr::InternalLambda(argc, body) => {
-                Ok(Expr::InternalLambda(*argc, Rc::new(freeze(env, body)?)))
+            Expr::InternalLambda(caps, argc, body) => {
+                Ok(Expr::InternalLambda(Rc::new(vec_box_freeze(env, caps)?), *argc, Rc::new(freeze(env, body)?)))
             }
         }?,
     })
@@ -3693,12 +3693,21 @@ impl Parser {
                 }
                 Token::InternalLambda => {
                     self.advance();
+                    let caps = if self.peek() == Some(&Token::LeftBracket) {
+                        self.advance();
+                        // too lazy to bother supporting empty capture although it'd be more uniform
+                        let (caps, _) = self.annotated_comma_separated(false, "internal lambda captures")?;
+                        self.require(Token::RightBracket, "internal lambda captures end")?;
+                        caps
+                    } else {
+                        Vec::new()
+                    };
                     if let Some((_end, n)) = self.try_consume_usize("internal lambda")? {
                         let body = self.single("internal lambda body")?;
                         Ok(LocExpr {
                             start,
                             end: body.end,
-                            expr: Expr::InternalLambda(n, Rc::new(body)),
+                            expr: Expr::InternalLambda(Rc::new(caps), n, Rc::new(body)),
                         })
                     } else {
                         Err(self.error_here(format!("internal lambda no n")))?
@@ -4307,7 +4316,7 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
-    InternalLambda(usize, Rc<LocExpr>),
+    InternalLambda(Vec<Obj>, usize, Rc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4638,7 +4647,7 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::InternalLambda(n, ..) => write!(formatter, "InternalLambda({}, ?)", n),
+            Func::InternalLambda(_, n, _) => write!(formatter, "InternalLambda(.., {}, ?)", n),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
             Func::PartialAppLast(f, x) => {
