@@ -1928,7 +1928,7 @@ pub enum Expr {
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
-    InternalLambda(Rc<Vec<Box<LocExpr>>>, usize, Rc<LocExpr>),
+    InternalLambda(Rc<Vec<Box<LocExpr>>>, Option<usize>, Rc<LocExpr>),
 }
 
 impl Expr {
@@ -3689,7 +3689,15 @@ impl Parser {
                         Ok(LocExpr {
                             start,
                             end: body.end,
-                            expr: Expr::InternalLambda(Rc::new(caps), n, Rc::new(body)),
+                            expr: Expr::InternalLambda(Rc::new(caps), Some(n), Rc::new(body)),
+                        })
+                    } else if self.peek() == Some(&Token::Ellipsis) {
+                        self.advance();
+                        let body = self.single("internal lambda body")?;
+                        Ok(LocExpr {
+                            start,
+                            end: body.end,
+                            expr: Expr::InternalLambda(Rc::new(caps), None, Rc::new(body)),
                         })
                     } else {
                         Err(self.error_here(format!("internal lambda no n")))?
@@ -4298,7 +4306,8 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
-    InternalLambda(Vec<Obj>, usize, Rc<LocExpr>),
+    // usize is num args. If None, takes any args as one list.
+    InternalLambda(Vec<Obj>, Option<usize>, Rc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4629,7 +4638,8 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::InternalLambda(_, n, _) => write!(formatter, "InternalLambda(.., {}, ?)", n),
+            Func::InternalLambda(_, Some(n), _) => write!(formatter, "InternalLambda(.., {}, ?)", n),
+            Func::InternalLambda(_, None, _) => write!(formatter, "InternalLambda(.., .., ?)"),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
             Func::PartialAppLast(f, x) => {

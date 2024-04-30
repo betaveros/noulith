@@ -2618,8 +2618,15 @@ impl Func {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
             Func::InternalLambda(caps, n, body) => {
-                if args.len() != *n {
-                    return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
+                match n {
+                    Some(n) => {
+                        if args.len() != *n {
+                            return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
+                        }
+                    }
+                    None => {
+                        args = vec![Obj::list(args)];
+                    }
                 }
                 let s = {
                     let mut ptr = try_borrow_mut_nres(env, "internal", "lambda call")?;
