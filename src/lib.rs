@@ -2597,10 +2597,10 @@ fn grouped_by<T: Clone + Into<Obj>>(
     }
 }
 
-fn grouped_all_with<T: Clone + Into<Obj>>(
+fn classified_with<T: Clone + Into<Obj>>(
     it: impl Iterator<Item = NRes<T>>,
     mut f: impl FnMut(Obj) -> NRes<Obj>,
-) -> NRes<Vec<Vec<T>>> {
+) -> NRes<HashMap<ObjKey, Vec<T>>> {
     let mut map: HashMap<ObjKey, Vec<T>> = HashMap::new();
     for i in it {
         let i = i?;
@@ -2611,7 +2611,14 @@ fn grouped_all_with<T: Clone + Into<Obj>>(
             map.insert(key, vec![i]);
         }
     }
-    Ok(map.into_values().collect())
+    Ok(map)
+}
+
+fn grouped_all_with<T: Clone + Into<Obj>>(
+    it: impl Iterator<Item = NRes<T>>,
+    f: impl FnMut(Obj) -> NRes<Obj>,
+) -> NRes<Vec<Vec<T>>> {
+    Ok(classified_with(it, f)?.into_values().collect())
 }
 
 fn windowed<T: Clone>(mut it: impl Iterator<Item = NRes<T>>, n: usize) -> NRes<Vec<Vec<T>>> {
@@ -2839,71 +2846,74 @@ fn reversed_prefixes<T: Clone>(mut it: impl Iterator<Item = NRes<T>>) -> NRes<Ve
     Ok(acc)
 }
 
+fn multi_vec_map<T>(a: Vec<T>, f: fn(T) -> Obj) -> Vec<Obj> {
+    a.into_iter().map(f).collect()
+}
+
+fn multi_dict_map<T>(a: HashMap<ObjKey, T>, f: fn(T) -> Obj) -> HashMap<ObjKey, Obj> {
+    a.into_iter().map(|(k, v)| (k, f(v))).collect()
+}
+
+
 // just return Vec<Obj>
 macro_rules! multimulti {
-    ($name:ident, $expr:expr) => {
+    ($name:ident, $expr:expr, $mapper:expr) => {
         match $name {
             Seq::List($name) => {
                 let $name = unwrap_or_clone($name).into_iter().map(Ok);
-                Ok($expr?.into_iter().map(|x| Obj::list(x)).collect())
+                Ok($mapper($expr?, Obj::list))
             }
             Seq::String($name) => {
                 let mut $name = unwrap_or_clone($name);
                 let $name = $name.drain(..).map(Ok);
-                Ok($expr?
-                    .into_iter()
-                    .map(|x| Obj::from(x.into_iter().collect::<String>()))
-                    .collect())
+                Ok($mapper($expr?, |x| Obj::from(x.into_iter().collect::<String>())))
             }
             Seq::Dict($name, _def) => {
                 let $name = unwrap_or_clone($name)
                     .into_keys()
                     .map(|k| Ok(key_to_obj(k)));
-                Ok($expr?.into_iter().map(|x| Obj::list(x)).collect())
+                Ok($mapper($expr?, Obj::list))
             }
             Seq::Vector($name) => {
                 let $name = unwrap_or_clone($name).into_iter().map(Ok);
-                Ok($expr?
-                    .into_iter()
-                    .map(|x| Obj::Seq(Seq::Vector(Rc::new(x))))
-                    .collect())
+                Ok($mapper($expr?, |x| Obj::Seq(Seq::Vector(Rc::new(x)))))
             }
             Seq::Bytes($name) => {
                 let $name = unwrap_or_clone($name).into_iter().map(Ok);
-                Ok($expr?
-                    .into_iter()
-                    .map(|x| Obj::Seq(Seq::Bytes(Rc::new(x))))
-                    .collect())
+                Ok($mapper($expr?, |x| Obj::Seq(Seq::Bytes(Rc::new(x)))))
             }
             Seq::Stream($name) => {
                 let $name = $name.clone_box();
-                Ok($expr?.into_iter().map(|x| Obj::list(x)).collect())
+                Ok($mapper($expr?, Obj::list))
             }
         }
     };
 }
 
 fn multi_group(v: Seq, n: usize, strict: bool) -> NRes<Vec<Obj>> {
-    multimulti!(v, grouped(v, n, strict))
+    multimulti!(v, grouped(v, n, strict), multi_vec_map)
 }
 fn multi_group_by_eq(v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, grouped_by(v, |a, b| Ok(a == b)))
+    multimulti!(v, grouped_by(v, |a, b| Ok(a == b)), multi_vec_map)
 }
 fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy())))
+    multimulti!(v, grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy())), multi_vec_map)
 }
 fn multi_group_all_with(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, grouped_all_with(v, |x| f.run1(env, x)))
+    multimulti!(v, grouped_all_with(v, |x| f.run1(env, x)), multi_vec_map)
 }
 fn multi_window(v: Seq, n: usize) -> NRes<Vec<Obj>> {
-    multimulti!(v, windowed(v, n))
+    multimulti!(v, windowed(v, n), multi_vec_map)
 }
 fn multi_prefixes(v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, prefixes(v))
+    multimulti!(v, prefixes(v), multi_vec_map)
 }
 fn multi_suffixes(v: Seq) -> NRes<Vec<Obj>> {
     let v = multi_reverse(v)?;
-    multimulti!(v, reversed_prefixes(v))
+    multimulti!(v, reversed_prefixes(v), multi_vec_map)
+}
+fn multi_classify_with(env: &REnv, f: Func, v: Seq) -> NRes<HashMap<ObjKey, Obj>> {
+    multimulti!(v, classified_with(v, |x| f.run1(env, x)), multi_dict_map)
 }
 
 fn json_encode(x: Obj) -> NRes<serde_json::Value> {
@@ -3975,28 +3985,35 @@ pub fn initialize(env: &mut Env) {
                 0 => Err(NErr::value_error("can't window 0".to_string())),
                 n => Ok(Obj::list(multi_window(s, n)?)),
             },
-            _ => Err(NErr::value_error("not number".to_string())),
+            _ => Err(NErr::value_error("not seq+num".to_string())),
         },
     });
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "group_all".to_string(),
         body: |env, a, b| match (a, b) {
             (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::list(multi_group_all_with(env, f, s)?)),
-            _ => Err(NErr::value_error("not number".to_string())),
+            _ => Err(NErr::value_error("not seq+func".to_string())),
+        },
+    });
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "classify".to_string(),
+        body: |env, a, b| match (a, b) {
+            (Obj::Seq(s), Obj::Func(f, _)) => Ok(Obj::dict(multi_classify_with(env, f, s)?, None)),
+            _ => Err(NErr::value_error("not seq+func".to_string())),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "prefixes".to_string(),
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::list(multi_prefixes(s)?)),
-            _ => Err(NErr::value_error("not number".to_string())),
+            _ => Err(NErr::value_error("not seq".to_string())),
         },
     });
     env.insert_builtin(OneArgBuiltin {
         name: "suffixes".to_string(),
         body: |a| match a {
             Obj::Seq(s) => Ok(Obj::list(multi_suffixes(s)?)),
-            _ => Err(NErr::value_error("not number".to_string())),
+            _ => Err(NErr::value_error("not seq".to_string())),
         },
     });
     env.insert_builtin(OneArgBuiltin {
