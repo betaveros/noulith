@@ -457,7 +457,9 @@ impl<T: Display> Display for WrappedVec<T> {
         )
     }
 }
-impl<T: Clone + Into<Obj> + Display + Debug + 'static> Stream for WrappedVec<T> {
+impl<T: Clone + Into<Obj> + Display + Debug + 'static + MaybeSync + MaybeSend> Stream
+    for WrappedVec<T>
+{
     fn peek(&self) -> Option<NRes<Obj>> {
         if self.1 >= self.0.len() {
             None
