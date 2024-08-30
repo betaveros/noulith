@@ -490,6 +490,30 @@ fn for_loops() {
 }
 
 #[test]
+fn yield_into() {
+    assert_eq!(
+        simple_eval("(for (i <- 1 to 10) yield i: i)[3]"),
+        Obj::from(3)
+    );
+    assert_eq!(
+        simple_eval("(for (i <- 1 to 10) yield i % 2: i into sum)[0]"),
+        Obj::from(30)
+    );
+    assert_eq!(
+        simple_eval("(for (i <- 1 to 10) yield i % 2: i into join ',')[0]"),
+        Obj::from("2,4,6,8,10")
+    );
+    assert_eq!(
+        simple_eval("(for (i <- 1 to 10) yield i % 2: i into first)[0]"),
+        Obj::from(2)
+    );
+    assert_eq!(
+        simple_eval("(for (i <- 1 to 10) yield i % 2: i into last)[0]"),
+        Obj::from(10)
+    );
+}
+
+#[test]
 fn function_stuff() {
     assert_eq!(
         simple_eval("1 to 3 map (*3) >>> (2).subtract >>> (%5) >>> (+1) join '' then ($*2)"),

@@ -451,6 +451,54 @@ impl Builtin for ComparisonOperator {
     }
 }
 
+#[derive(Debug, Clone)]
+struct First;
+
+impl Builtin for First {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(Obj::Seq(s)) => linear_index_isize(s, 0),
+            _ => Err(NErr::type_error("first: exactly 1 arg".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "first"
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataFirst))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Last;
+
+impl Builtin for Last {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::One(Obj::Seq(s)) => linear_index_isize(s, -1),
+            _ => Err(NErr::type_error("last: exactly 1 arg".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "last"
+    }
+
+    fn try_chain(&self, _other: &Func) -> Option<Func> {
+        None
+    }
+
+    fn catamorphism(&self) -> Option<Box<dyn Catamorphism>> {
+        Some(Box::new(CataLast(None)))
+    }
+}
+
 struct CataExtremum(Ordering, Option<Obj>);
 impl Catamorphism for CataExtremum {
     fn give(&mut self, arg: Obj) -> NRes<()> {
@@ -4505,13 +4553,7 @@ pub fn initialize(env: &mut Env) {
             _ => Err(NErr::type_error("not function".to_string())),
         },
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "first".to_string(),
-        body: |a| match a {
-            Obj::Seq(s) => linear_index_isize(s, 0),
-            a => Err(NErr::argument_error_1(&a)),
-        },
-    });
+    env.insert_builtin(First);
     env.insert_builtin(OneArgBuiltin {
         name: "second".to_string(),
         body: |a| match a {
@@ -4526,13 +4568,7 @@ pub fn initialize(env: &mut Env) {
             a => Err(NErr::argument_error_1(&a)),
         },
     });
-    env.insert_builtin(OneArgBuiltin {
-        name: "last".to_string(),
-        body: |a| match a {
-            Obj::Seq(s) => linear_index_isize(s, -1),
-            a => Err(NErr::argument_error_1(&a)),
-        },
-    });
+    env.insert_builtin(Last);
     env.insert_builtin(OneArgBuiltin {
         name: "tail".to_string(),
         body: |a| slice(a, Some(Obj::one()), None),

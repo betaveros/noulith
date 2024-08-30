@@ -1106,59 +1106,126 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         }
                     }
                     ForBody::Yield(body, into) => {
-                        let (cata, into_res) = match into {
+                        // If the `into` has a cata, it will deal with folding; don't have an into_res.
+                        // Otherwise, use a vanilla list cata, and have an into_res to postprocess.
+                        let (mut cata, into_res) = match into {
                             Some(into_body) => {
                                 let f = evaluate(env, into_body)?;
                                 match &f {
-                                    Obj::Func(Func::Builtin(ref b), _) => {
-                                        let cat = b.catamorphism();
-                                        (cat, Some(f))
-                                    }
+                                    Obj::Func(Func::Builtin(ref b), _) => match b.catamorphism() {
+                                        Some(cat) => (cat, None),
+                                        None => (
+                                            Box::new(CataList(Vec::new())) as Box<dyn Catamorphism>,
+                                            Some(f),
+                                        ),
+                                    },
+                                    _ => (
+                                        Box::new(CataList(Vec::new())) as Box<dyn Catamorphism>,
+                                        Some(f),
+                                    ),
+                                }
+                            }
+                            None => (
+                                Box::new(CataList(Vec::new())) as Box<dyn Catamorphism>,
+                                None,
+                            ),
+                        };
+                        let inner = evaluate_for(env, iteratees.as_slice(), &mut |e| {
+                            cata.give(evaluate(e, body)?)
+                        });
+                        let res = match inner {
+                            Ok(()) | Err(NErr::Break(0, None)) => cata.finish(),
+                            Err(NErr::Break(0, Some(e))) => Ok(e),
+                            Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
+                            Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
+                            Err(e) => Err(e),
+                        };
+                        match into_res {
+                            Some(f) => call_or_part_apply(env, f, vec![res?]),
+                            None => res,
+                        }
+                    }
+                    ForBody::YieldItem(key_body, value_body, into) => {
+                        // Assume into will always have a catamorphism or not have one. Seems
+                        // sensible.
+                        let (builtin_for_cata, into_res) = match into {
+                            Some(into_body) => {
+                                let f = evaluate(env, into_body)?;
+                                match &f {
+                                    Obj::Func(Func::Builtin(b), _) => match b.catamorphism() {
+                                        Some(_) => (Some(Rc::clone(b)), None),
+                                        None => (None, Some(f)),
+                                    },
                                     _ => (None, Some(f)),
                                 }
                             }
                             None => (None, None),
                         };
-                        match cata {
-                            Some(mut cata) => {
-                                let inner = evaluate_for(env, iteratees.as_slice(), &mut |e| {
-                                    cata.give(evaluate(e, body)?)
-                                });
-                                match inner {
-                                    Ok(()) | Err(NErr::Break(0, None)) => cata.finish(),
-                                    Err(NErr::Break(0, Some(e))) => Ok(e),
-                                    Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
-                                    Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
-                                    Err(e) => Err(e),
+                        // The semantics of this are stupidly confusing
+                        let mut acc: HashMap<ObjKey, Result<Box<dyn Catamorphism>, Obj>> =
+                            HashMap::new();
+                        match evaluate_for(env, iteratees.as_slice(), &mut |inner| {
+                            match acc.entry(to_key(evaluate(inner, key_body)?)?) {
+                                std::collections::hash_map::Entry::Occupied(mut e) => {
+                                    match e.get_mut() {
+                                        Ok(ee) => match ee.give(evaluate(inner, value_body)?) {
+                                            Err(NErr::Break(0, Some(b))) => {
+                                                *e.get_mut() = Err(b);
+                                                Ok(())
+                                            }
+                                            x => x,
+                                        },
+                                        Err(_) => Ok(()),
+                                    }?
+                                }
+                                std::collections::hash_map::Entry::Vacant(e) => {
+                                    let mut c = match &builtin_for_cata {
+                                        None => {
+                                            if into_res.is_some() {
+                                                Box::new(CataList(Vec::new()))
+                                                    as Box<dyn Catamorphism>
+                                            } else {
+                                                Box::new(CataLast(None)) as Box<dyn Catamorphism>
+                                            }
+                                        }
+                                        Some(x) => {
+                                            x.catamorphism().unwrap_or(Box::new(CataLast(None)))
+                                        }
+                                    };
+                                    match c.give(evaluate(inner, value_body)?) {
+                                        Ok(()) => {
+                                            e.insert(Ok(c));
+                                            Ok(())
+                                        }
+                                        Err(NErr::Break(0, Some(b))) => {
+                                            e.insert(Err(b));
+                                            Ok(())
+                                        }
+                                        Err(err) => Err(err),
+                                    }?;
                                 }
                             }
-                            None => {
-                                let mut acc = Vec::new();
-                                let inner = evaluate_for(env, iteratees.as_slice(), &mut |e| {
-                                    acc.push(evaluate(e, body)?);
-                                    Ok(())
-                                });
-                                let res = match inner {
-                                    Ok(()) | Err(NErr::Break(0, None)) => Ok(Obj::list(acc)),
-                                    Err(NErr::Break(0, Some(e))) => Ok(e),
-                                    Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
-                                    Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),
-                                    Err(e) => Err(e),
-                                }?;
-                                match into_res {
-                                    Some(f) => call_or_part_apply(env, f, vec![res]),
-                                    None => Ok(res),
-                                }
-                            }
-                        }
-                    }
-                    ForBody::YieldItem(key_body, value_body) => {
-                        let mut acc = HashMap::new();
-                        match evaluate_for(env, iteratees.as_slice(), &mut |e| {
-                            acc.insert(to_key(evaluate(e, key_body)?)?, evaluate(e, value_body)?);
                             Ok(())
                         }) {
-                            Ok(()) | Err(NErr::Break(0, None)) => Ok(Obj::dict(acc, None)),
+                            Ok(()) | Err(NErr::Break(0, None)) => Ok(Obj::dict(
+                                acc.drain()
+                                    .map(|(k, v)| {
+                                        Ok((
+                                            k,
+                                            match (&into_res, v) {
+                                                (_, Err(obj)) => obj,
+                                                (None, Ok(mut v)) => v.finish()?,
+                                                (Some(f), Ok(mut v)) => call_or_part_apply(
+                                                    env,
+                                                    f.clone(),
+                                                    vec![v.finish()?],
+                                                )?,
+                                            },
+                                        ))
+                                    })
+                                    .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
+                                None,
+                            )),
                             Err(NErr::Break(0, Some(e))) => Ok(e),
                             Err(NErr::Break(n, e)) => Err(NErr::Break(n - 1, e)),
                             Err(NErr::Continue(n)) if n != 0 => Err(NErr::Continue(n - 1)),

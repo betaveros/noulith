@@ -1836,7 +1836,7 @@ pub enum ForIteration {
 pub enum ForBody {
     Execute(LocExpr),
     Yield(LocExpr, Option<LocExpr>),
-    YieldItem(LocExpr, LocExpr),
+    YieldItem(LocExpr, LocExpr, Option<LocExpr>),
 }
 
 #[derive(Debug)]
@@ -2095,6 +2095,38 @@ pub trait Catamorphism {
     // can return Break
     fn give(&mut self, arg: Obj) -> NRes<()>;
     fn finish(&mut self) -> NRes<Obj>;
+}
+
+pub struct CataList(pub Vec<Obj>);
+impl Catamorphism for CataList {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        self.0.push(arg);
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Ok(Obj::list(std::mem::take(&mut self.0)))
+    }
+}
+
+pub struct CataFirst;
+impl Catamorphism for CataFirst {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        Err(NErr::Break(0, Some(arg)))
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        Err(NErr::empty_error(format!("cata-first: empty")))
+    }
+}
+
+pub struct CataLast(pub Option<Obj>);
+impl Catamorphism for CataLast {
+    fn give(&mut self, arg: Obj) -> NRes<()> {
+        self.0 = Some(arg);
+        Ok(())
+    }
+    fn finish(&mut self) -> NRes<Obj> {
+        std::mem::take(&mut self.0).ok_or(NErr::empty_error(format!("cata-last: empty")))
+    }
 }
 
 #[derive(Debug)]
@@ -2636,9 +2668,14 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         ForBody::Yield(b, Some(s)) => {
                             ForBody::Yield(freeze(&mut env2, b)?, Some(freeze(&mut env2, s)?))
                         }
-                        ForBody::YieldItem(kb, vb) => {
-                            ForBody::YieldItem(freeze(&mut env2, kb)?, freeze(&mut env2, vb)?)
+                        ForBody::YieldItem(kb, vb, None) => {
+                            ForBody::YieldItem(freeze(&mut env2, kb)?, freeze(&mut env2, vb)?, None)
                         }
+                        ForBody::YieldItem(kb, vb, Some(s)) => ForBody::YieldItem(
+                            freeze(&mut env2, kb)?,
+                            freeze(&mut env2, vb)?,
+                            Some(freeze(&mut env2, s)?),
+                        ),
                     }),
                 ))
             }
@@ -3490,14 +3527,23 @@ impl Parser {
                     }
                     let (end, body) = if self.try_consume(&Token::Yield).is_some() {
                         let key_body = self.single("for-yield body")?;
-                        if self.try_consume(&Token::Colon).is_some() {
-                            let value_body = self.single("for-yield value")?;
-                            (value_body.end, ForBody::YieldItem(key_body, value_body))
-                        } else if self.try_consume(&Token::Into).is_some() {
-                            let into_body = self.single("for-yield into")?;
-                            (key_body.end, ForBody::Yield(key_body, Some(into_body)))
+                        let value_body = if self.try_consume(&Token::Colon).is_some() {
+                            Some(self.single("for-yield value")?)
                         } else {
-                            (key_body.end, ForBody::Yield(key_body, None))
+                            None
+                        };
+                        let into_body = if self.try_consume(&Token::Into).is_some() {
+                            Some(self.single("for-yield into")?)
+                        } else {
+                            None
+                        };
+                        match (value_body, into_body) {
+                            (None, None) => (key_body.end, ForBody::Yield(key_body, None)),
+                            (Some(vb), None) => (vb.end, ForBody::YieldItem(key_body, vb, None)),
+                            (None, Some(ib)) => (ib.end, ForBody::Yield(key_body, Some(ib))),
+                            (Some(vb), Some(ib)) => {
+                                (ib.end, ForBody::YieldItem(key_body, vb, Some(ib)))
+                            }
                         }
                     } else {
                         let body = self.assignment()?;
@@ -4638,7 +4684,9 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::InternalLambda(_, Some(n), _) => write!(formatter, "InternalLambda(.., {}, ?)", n),
+            Func::InternalLambda(_, Some(n), _) => {
+                write!(formatter, "InternalLambda(.., {}, ?)", n)
+            }
             Func::InternalLambda(_, None, _) => write!(formatter, "InternalLambda(.., .., ?)"),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
