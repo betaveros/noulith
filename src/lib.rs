@@ -2402,6 +2402,9 @@ fn datetime_to_obj<Tz: TimeZone>(dt: DateTime<Tz>) -> Obj {
     Obj::Seq(Seq::Dict(Rc::new(m), None))
 }
 
+// Macro because the function would be rank-2 type;
+// expr is approximately (for<T> Vec<T> -> Vec<T>)(name)
+// where T can be Obj, Num, char, or u8
 // TODO some of these unwrap_or_clone's should be smarter, you can unwrap or iter
 macro_rules! multi {
     ($name:ident, $expr:expr) => {
@@ -2605,11 +2608,7 @@ fn classified_with<T: Clone + Into<Obj>>(
     for i in it {
         let i = i?;
         let key = to_key(f(i.clone().into())?)?;
-        if map.contains_key(&key) {
-            map.get_mut(&key).unwrap().push(i);
-        } else {
-            map.insert(key, vec![i]);
-        }
+        map.entry(key).or_default().push(i);
     }
     Ok(map)
 }
@@ -2855,7 +2854,10 @@ fn multi_dict_map<T>(a: HashMap<ObjKey, T>, f: fn(T) -> Obj) -> HashMap<ObjKey, 
 }
 
 
-// just return Vec<Obj>
+// Macro because the function would be rank-2 type;
+// expr is approximately (for<T> Vec<T> -> OtherThing<Vec<T>>)(name)
+// where T can be Obj, Num, char, or u8;
+// OtherThing can be Vec or HashMap<ObjKey, _>
 macro_rules! multimulti {
     ($name:ident, $expr:expr, $mapper:expr) => {
         match $name {
