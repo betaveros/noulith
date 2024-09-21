@@ -2337,6 +2337,24 @@ fn obj_in(a: Obj, b: Obj) -> NRes<bool> {
     }
 }
 
+fn plusplus_concatenate(a: Obj, b: Obj) -> NRes<Obj> {
+    match (a, b) {
+        (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
+            Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+            Ok(Obj::Seq(Seq::List(a)))
+        }
+        (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
+            Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+            Ok(Obj::Seq(Seq::Vector(a)))
+        }
+        (Obj::Seq(Seq::Bytes(mut a)), Obj::Seq(Seq::Bytes(mut b))) => {
+            Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
+            Ok(Obj::Seq(Seq::Bytes(a)))
+        }
+        (a, b) => Err(NErr::argument_error_2(&a, &b)),
+    }
+}
+
 pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> LocExpr {
     let mut frenv = FreezeEnv {
         bound: HashSet::new(),
@@ -2853,7 +2871,6 @@ fn multi_dict_map<T>(a: HashMap<ObjKey, T>, f: fn(T) -> Obj) -> HashMap<ObjKey, 
     a.into_iter().map(|(k, v)| (k, f(v))).collect()
 }
 
-
 // Macro because the function would be rank-2 type;
 // expr is approximately (for<T> Vec<T> -> OtherThing<Vec<T>>)(name)
 // where T can be Obj, Num, char, or u8;
@@ -2868,7 +2885,9 @@ macro_rules! multimulti {
             Seq::String($name) => {
                 let mut $name = unwrap_or_clone($name);
                 let $name = $name.drain(..).map(Ok);
-                Ok($mapper($expr?, |x| Obj::from(x.into_iter().collect::<String>())))
+                Ok($mapper($expr?, |x| {
+                    Obj::from(x.into_iter().collect::<String>())
+                }))
             }
             Seq::Dict($name, _def) => {
                 let $name = unwrap_or_clone($name)
@@ -2899,7 +2918,11 @@ fn multi_group_by_eq(v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, grouped_by(v, |a, b| Ok(a == b)), multi_vec_map)
 }
 fn multi_group_by(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
-    multimulti!(v, grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy())), multi_vec_map)
+    multimulti!(
+        v,
+        grouped_by(v, |a, b| Ok(f.run2(env, a, b)?.truthy())),
+        multi_vec_map
+    )
 }
 fn multi_group_all_with(env: &REnv, f: Func, v: Seq) -> NRes<Vec<Obj>> {
     multimulti!(v, grouped_all_with(v, |x| f.run1(env, x)), multi_vec_map)
@@ -3079,6 +3102,16 @@ pub fn initialize(env: &mut Env) {
         .unwrap();
     env.insert("false".to_string(), ObjType::Int, Obj::zero())
         .unwrap();
+    env.insert("E".to_string(), ObjType::Float, Obj::from(std::f64::consts::E))
+        .unwrap();
+    env.insert("PI".to_string(), ObjType::Float, Obj::from(std::f64::consts::PI))
+        .unwrap();
+    env.insert(
+        "TAU".to_string(),
+        ObjType::Float,
+        Obj::from(std::f64::consts::TAU),
+    )
+    .unwrap();
 
     env.insert_builtin(BasicBuiltin {
         name: "L".to_string(),
@@ -3099,6 +3132,10 @@ pub fn initialize(env: &mut Env) {
         },
     });
 
+    env.insert_builtin(OneArgBuiltin {
+        name: "throw'".to_string(),
+        body: |arg| Err(NErr::throw(format!("throw': {}", arg))),
+    });
     env.insert_builtin(TwoArgBuiltin {
         name: "and'".to_string(),
         body: |a, b| Ok(if a.truthy() { b } else { a }),
@@ -4465,21 +4502,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin_with_alias(
         TwoArgBuiltin {
             name: "++".to_string(),
-            body: |a, b| match (a, b) {
-                (Obj::Seq(Seq::List(mut a)), Obj::Seq(Seq::List(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
-                    Ok(Obj::Seq(Seq::List(a)))
-                }
-                (Obj::Seq(Seq::Vector(mut a)), Obj::Seq(Seq::Vector(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
-                    Ok(Obj::Seq(Seq::Vector(a)))
-                }
-                (Obj::Seq(Seq::Bytes(mut a)), Obj::Seq(Seq::Bytes(mut b))) => {
-                    Rc::make_mut(&mut a).append(Rc::make_mut(&mut b));
-                    Ok(Obj::Seq(Seq::Bytes(a)))
-                }
-                (a, b) => Err(NErr::argument_error_2(&a, &b)),
-            },
+            body: plusplus_concatenate,
         },
         "⧺",
     );
@@ -4824,6 +4847,27 @@ pub fn initialize(env: &mut Env) {
                                 v,
                                 "||-",
                             )?
+                        }
+                    }
+                }
+                Ok(Obj::Seq(Seq::Dict(a, d)))
+            }
+            (a, b) => Err(NErr::argument_error_2(&a, &b)),
+        },
+    });
+    env.insert_builtin(TwoArgBuiltin {
+        name: "||++".to_string(),
+        body: |a, b| match (a, b) {
+            (Obj::Seq(Seq::Dict(mut a, d)), Obj::Seq(Seq::Dict(b, _))) => {
+                let m = Rc::make_mut(&mut a);
+                for (k, v) in unwrap_or_clone(b) {
+                    match m.entry(k) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(v);
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            let slot = e.get_mut();
+                            *slot = plusplus_concatenate(std::mem::take(slot), v)?
                         }
                     }
                 }
