@@ -578,7 +578,7 @@ impl ObjType {
             ObjType::Type => "type",
             ObjType::Func => "func",
             ObjType::Any => "anything",
-            ObjType::Struct(s) => (&**s.name).clone(),
+            ObjType::Struct(s) => &**s.name,
             ObjType::StructInstance => "struct_instance",
             ObjType::Satisfying(..) => "satisfying(???)",
         }
