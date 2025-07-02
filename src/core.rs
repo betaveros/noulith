@@ -15,6 +15,7 @@ use num::complex::Complex64;
 use num::BigRational;
 use num::ToPrimitive;
 
+use crate::decimal::*;
 use crate::few::*;
 use crate::iter::*;
 use crate::lex::*;
@@ -630,6 +631,17 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
             _ => Err(NErr::type_error(
                 "int: expected number or string".to_string(),
             )),
+        },
+        ObjType::Rational => match arg {
+            Obj::Num(n) => Ok(Obj::Num(NNum::Rational(Box::new(
+                n.exact_to_rational()
+                    .ok_or(NErr::value_error("can't coerce to rational".to_string()))?,
+            )))),
+            Obj::Seq(Seq::String(s)) => Ok(Obj::Num(NNum::Rational(Box::new(
+                parse_rational_exactly(&**s)
+                    .ok_or(NErr::value_error("can't parse as rational".to_string()))?,
+            )))),
+            _ => Err(NErr::type_error("rational: expected number".to_string())),
         },
         ObjType::Float => match arg {
             Obj::Num(n) => Ok(Obj::from(to_f64_ok(&n)?)),

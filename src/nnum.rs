@@ -265,6 +265,15 @@ impl NNum {
         }
     }
 
+    pub fn exact_to_rational(&self) -> Option<BigRational> {
+        match self {
+            NNum::Int(i) => Some(BigRational::from(i.to_bigint().into_owned())),
+            NNum::Rational(r) => Some(*r.clone()),
+            NNum::Float(f) => BigRational::from_float(*f),
+            NNum::Complex(_) => None,
+        }
+    }
+
     pub fn to_f64(&self) -> Option<f64> {
         match self {
             NNum::Int(i) => i.to_f64(),

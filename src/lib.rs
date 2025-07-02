@@ -53,6 +53,7 @@ use js_sys;
 use wasm_bindgen::prelude::*;
 
 mod core;
+mod decimal;
 mod eval;
 pub mod few;
 mod gamma;
@@ -3102,10 +3103,18 @@ pub fn initialize(env: &mut Env) {
         .unwrap();
     env.insert("false".to_string(), ObjType::Int, Obj::zero())
         .unwrap();
-    env.insert("E".to_string(), ObjType::Float, Obj::from(std::f64::consts::E))
-        .unwrap();
-    env.insert("PI".to_string(), ObjType::Float, Obj::from(std::f64::consts::PI))
-        .unwrap();
+    env.insert(
+        "E".to_string(),
+        ObjType::Float,
+        Obj::from(std::f64::consts::E),
+    )
+    .unwrap();
+    env.insert(
+        "PI".to_string(),
+        ObjType::Float,
+        Obj::from(std::f64::consts::PI),
+    )
+    .unwrap();
     env.insert(
         "TAU".to_string(),
         ObjType::Float,
