@@ -3363,6 +3363,20 @@ pub fn initialize(env: &mut Env) {
         },
     });
     env.insert_builtin(OneNumBuiltin {
+        name: "float_to_bits".to_string(),
+        body: |a| match a.to_f64() {
+            Some(a) => Ok(Obj::u64(f64::to_bits(a))),
+            _ => Err(NErr::value_error("can't convert to float".to_string())),
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
+        name: "bits_to_float".to_string(),
+        body: |a| match a.to_u64() {
+            Some(a) => Ok(Obj::from(f64::from_bits(a))),
+            _ => Err(NErr::value_error("can't convert to u64".to_string())),
+        },
+    });
+    env.insert_builtin(OneNumBuiltin {
         name: "real_part".to_string(),
         body: |a| match a.to_f64_or_inf_or_complex() {
             Ok(f) => Ok(Obj::from(f)),

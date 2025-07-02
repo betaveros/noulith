@@ -43,6 +43,12 @@ impl NInt {
             None => NInt::Big(BigInt::from(x)),
         }
     }
+    pub fn u64(x: u64) -> Self {
+        match x.to_i64() {
+            Some(x) => NInt::Small(x),
+            None => NInt::Big(BigInt::from(x)),
+        }
+    }
 }
 impl<'a> NInt {
     pub fn to_bigint(&'a self) -> Cow<'a, BigInt> {
@@ -58,6 +64,7 @@ impl<'a> NInt {
     forward!(to_u32, Option<u32>);
     forward!(to_u8, Option<u8>);
     forward!(to_usize, Option<usize>);
+    forward!(to_u64, Option<u64>);
     forward!(is_zero, bool);
     forward!(is_positive, bool);
     forward!(is_negative, bool);

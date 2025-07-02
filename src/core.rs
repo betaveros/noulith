@@ -1089,6 +1089,9 @@ impl Obj {
     pub fn usize(n: usize) -> Self {
         Obj::Num(NNum::usize(n))
     }
+    pub fn u64(n: u64) -> Self {
+        Obj::Num(NNum::u64(n))
+    }
     pub fn u8(n: u8) -> Self {
         Obj::Num(NNum::u8(n))
     }

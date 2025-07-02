@@ -89,6 +89,9 @@ impl NNum {
     pub fn usize(x: usize) -> Self {
         NNum::Int(NInt::usize(x))
     }
+    pub fn u64(x: u64) -> Self {
+        NNum::Int(NInt::u64(x))
+    }
     pub fn u8(x: u8) -> Self {
         NNum::Int(NInt::Small(x as i64))
     }
@@ -437,6 +440,13 @@ impl NNum {
     pub fn to_usize(&self) -> Option<usize> {
         match self {
             NNum::Int(n) => n.to_usize(),
+            _ => None,
+        }
+    }
+
+    pub fn to_u64(&self) -> Option<u64> {
+        match self {
+            NNum::Int(n) => n.to_u64(),
             _ => None,
         }
     }
