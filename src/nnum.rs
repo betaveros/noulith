@@ -490,6 +490,24 @@ fn cmp_nint_f64(a: &NInt, b: &f64) -> Option<Ordering> {
 enum NNumReal<'a> {
     Int(&'a NInt),
     Float(f64),
+    Rational(&'a BigRational),
+}
+
+impl<'a> NNumReal<'a> {
+    fn is_nan(&self) -> bool {
+        match self {
+            NNumReal::Float(f) => f.is_nan(),
+            _ => false,
+        }
+    }
+
+    fn exact_to_rational(&self) -> Option<BigRational> {
+        match self {
+            NNumReal::Int(i) => Some(BigRational::from(i.to_bigint().into_owned())),
+            NNumReal::Rational(r) => Some((*r).clone()),
+            NNumReal::Float(f) => BigRational::from_float(*f),
+        }
+    }
 }
 
 fn to_nint_if_int(f: f64) -> Option<NInt> {
@@ -511,6 +529,10 @@ impl<'a> PartialEq for NNumReal<'a> {
                 to_nint_if_int(*a).map_or(false, |x| &x == *b)
             }
             (NNumReal::Float(a), NNumReal::Float(b)) => a == b,
+            (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
+                (Some(a), Some(b)) => a == b,
+                _ => false,
+            }
         }
     }
 }
@@ -522,6 +544,7 @@ impl<'a> PartialOrd for NNumReal<'a> {
             (NNumReal::Int(a), NNumReal::Float(b)) => cmp_nint_f64(a, b),
             (NNumReal::Float(a), NNumReal::Int(b)) => cmp_nint_f64(b, a).map(|ord| ord.reverse()),
             (NNumReal::Float(a), NNumReal::Float(b)) => a.partial_cmp(b),
+            (a, b) => a.exact_to_rational()?.partial_cmp(&b.exact_to_rational()?),
         }
     }
 }
@@ -539,6 +562,10 @@ impl<'a> NNumReal<'a> {
             (NNumReal::Float(a), NNumReal::Float(b)) => {
                 a.partial_cmp(b).unwrap_or(b.is_nan().cmp(&a.is_nan()))
             } // note swap
+            (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => b.is_nan().cmp(&a.is_nan())
+            }
         }
     }
 
@@ -552,6 +579,10 @@ impl<'a> NNumReal<'a> {
             (NNumReal::Float(a), NNumReal::Float(b)) => {
                 a.partial_cmp(b).unwrap_or(a.is_nan().cmp(&b.is_nan()))
             }
+            (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                _ => a.is_nan().cmp(&b.is_nan())
+            }
         }
     }
 }
@@ -560,9 +591,8 @@ impl<'a> NNum {
     fn project_to_reals(&'a self) -> (NNumReal<'a>, NNumReal<'a>) {
         match self {
             NNum::Int(a) => (NNumReal::Int(a), NNumReal::Float(0.0)),
-            // FIXME?
             NNum::Rational(a) => (
-                NNumReal::Float(rational_to_f64_or_inf(a)),
+                NNumReal::Rational(a),
                 NNumReal::Float(0.0),
             ),
             NNum::Float(a) => (NNumReal::Float(*a), NNumReal::Float(0.0)),
