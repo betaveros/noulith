@@ -9,16 +9,24 @@ textarea {
 	width: 100%;
 	font-family: monospace;
 }
-#output, #error {
+.inner-output, #error, #unsafe {
 	background-color: #f8f8f8;
 	border: 1px solid #ddd;
 	padding: 0.5em;
 	font-family: monospace;
 	white-space: pre-wrap;
 }
-#result {
+#error {
+	background-color: #ffe4e4;
+	border-color: #fcc;
+}
+#output {
 	font-family: monospace;
 	white-space: pre-wrap;
+}
+#unsafe {
+	background-color: #ffffe4;
+	border-color: #ffc;
 }
 table {
 	border-collapse: collapse;
@@ -30,33 +38,32 @@ td {
 .default {
 	opacity: 0.5;
 }
-#error {
-	color: #c00;
-}
-#outer-output, #url {
+#mid-output, #mid-error, #mid-unsafe, #url {
 	display: none;
 }
 </style>
 </head>
 <body>
-<h1>noulith</h1>
+	<h1><a href="https://github.com/betaveros/noulith">noulith</a></h1>
 <label for="code">Code:</label>
 <textarea id="code"></textarea>
-<label for="input">Input:</label> <select id="input-select"><option value="">user input</option><option value="file">file</option></select> <input type="file" id="input-file" />
+<label for="input">Input:</label>
+<select id="input-select">
+	<option value="">user input</option>
+	<option value="file">file</option>
+</select>
+<input type="file" id="input-file" />
 <textarea id="input"></textarea>
 <button id="run" type="button" role="button" disabled>Loading...</button>
 <button id="stop" type="button" role="button" disabled>Loading...</button>
 <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
 <label><input type="checkbox" id="auto" /> Auto-rerun</label>
 <label style="display: none"><input type="checkbox" id="sanitize" checked /> Sanitize HTML</label>
-<div id="outer-output">
-	<div id="mid-output">Output: <div id="output"></div></div>
-	<div id="mid-result">Result: <div id="result"></div></div>
-	<div id="mid-error">Error: <div id="error"></div></div>
-</div>
+<div id="mid-output">Output: <div id="output"></div></div>
+<div id="mid-error">Error: <div id="error"></div></div>
+<div id="mid-unsafe">HTML stripped by sanitization: <div id="unsafe"></div></div>
 <button id="gen-url" type="button" role="button">Generate URL</button>
 <textarea id="url"></textarea>
-<script src='pkg/paradoc.js'></script>
 <script type="module">
 // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
 // wasm-pack build --target web
@@ -65,6 +72,10 @@ td {
 // const { encapsulated_eval } = wasm_bindgen;
 
 let myWorker;
+let lastWriteOutput, lastWriteOutputDiv;
+let pendingRun = false;
+let pendingClear = false;
+
 async function prepare() {
 	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
 	const code = document.getElementById('code');
@@ -77,16 +88,23 @@ async function prepare() {
 	function run() {
 		runner.disabled = true;
 		stopper.disabled = false;
+		pendingClear = true;
+
+		const output = document.getElementById('output');
+		const error = document.getElementById('error');
+		const unsafe = document.getElementById('unsafe');
+		const midOutput = document.getElementById('mid-output');
+		const midError = document.getElementById('mid-error');
+		const midUnsafe = document.getElementById('mid-unsafe');
+
 		let sel = document.getElementById('input-select').value;
 		if (sel === 'file') {
 			let file = fileInput.files[0];
-			console.log(file);
 			file.arrayBuffer().then(buf => {
 				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
 			});
 		} else if (sel) {
 			fetch(sel).then(x => x.arrayBuffer().then(buf => {
-				console.log(buf);
 				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
 			}));
 		} else {
@@ -99,21 +117,34 @@ async function prepare() {
 		stopper.disabled = true;
 		init();
 	}
+	function runAsap() {
+		if (stopper.disabled) {
+			run();
+		} else {
+			pendingRun = true;
+			stop();
+		}
+	}
 	runner.addEventListener('click', run);
 	stopper.addEventListener('click', stop);
 	[code, input].forEach(elem => elem.addEventListener('keydown', function(event) {
 		if (event.ctrlKey && event.key == "Enter") {
-			run();
+			runAsap();
 		}
 	}));
 	[code, input].forEach(elem => elem.addEventListener('input', function(event) {
 		if (auto.checked) {
-			run();
+			runAsap();
 		}
 	}));
 	runner.disabled = false;
 	runner.textContent = "Run!";
 	stopper.textContent = "Stop";
+
+	if (pendingRun) {
+		pendingRun = false;
+		run();
+	}
 }
 
 function b64encode(s) {
@@ -141,6 +172,7 @@ function isAttrSafe(tag, attr, value) {
 	if (attr === "style:backgroundColor") return true;
 	if (attr === "style:fontWeight") return true;
 	if (attr === "style:fontStyle") return true;
+	if (attr === "style:display") return true;
 
 	attr = attr.toLowerCase();
 
@@ -155,9 +187,7 @@ function isAttrSafe(tag, attr, value) {
 		return svgAttrs.includes(attr);
 	}
 }
-function renderInto(obj, node) {
-	console.log(obj);
-	console.log(node.tagName);
+function renderInto(obj, node, unsafeOut) {
 	const sanitize = document.getElementById('sanitize');
 	if (Array.isArray(obj) && obj[0] === true && obj[1] === 'HtmlTag') {
 		let tagName = obj[2];
@@ -169,7 +199,7 @@ function renderInto(obj, node) {
 				document.createElementNS("http://www.w3.org/2000/svg", tagName.slice(4)) :
 				document.createElement(tagName);
 			if (!Array.isArray(children) || children[0] === true) children = [children];
-			children.forEach(child => renderInto(child, elem));
+			children.forEach(child => renderInto(child, elem, unsafeOut));
 
 			if (Array.isArray(attributes)) {
 				for (let attr of attributes) {
@@ -182,27 +212,30 @@ function renderInto(obj, node) {
 							} else {
 								elem.setAttributeNS(null, attrKey, attrValue);
 							}
+						} else {
+							unsafeOut.push(`• attr ${attrKey}=${attrValue}`);
 						}
 					}
 				}
 			}
 			node.appendChild(elem);
-
-			return;
+		} else {
+			unsafeOut.push(`• tag ${tagName}`);
 		}
+		return;
 	}
 
 	if (node.tagName === 'TR') {
 		if (Array.isArray(obj)) {
 			if (obj[0] === true) {
 				let th = document.createElement("th");
-				renderInto(obj[1], th);
+				renderInto(obj[1], th, unsafeOut);
 				node.appendChild(th);
 				obj = obj.slice(2);
 			}
 			for (let elt of obj) {
 				let td = document.createElement("td");
-				renderInto(elt, td);
+				renderInto(elt, td, unsafeOut);
 				node.appendChild(td);
 			}
 		} else {
@@ -211,7 +244,7 @@ function renderInto(obj, node) {
 				td.textContent = "default";
 				td.classList.add("default");
 			} else {
-				renderInto(obj, td);
+				renderInto(obj, td, unsafeOut);
 			}
 			node.appendChild(td);
 		}
@@ -221,14 +254,14 @@ function renderInto(obj, node) {
 			if (obj[0] === true) {
 				let tr = document.createElement("tr");
 				let th = document.createElement("th");
-				renderInto(obj[1], th);
+				renderInto(obj[1], th, unsafeOut);
 				tr.appendChild(th);
 				node.appendChild(tr);
 				obj = obj.slice(2);
 			}
 			for (let elt of obj) {
 				let tr = document.createElement("tr");
-				renderInto(elt, tr);
+				renderInto(elt, tr, unsafeOut);
 				table.appendChild(tr);
 			}
 			node.appendChild(table);
@@ -244,32 +277,71 @@ function renderInto(obj, node) {
 }
 
 function init() {
-	const outerOutput = document.getElementById('outer-output');
 	const output = document.getElementById('output');
-	const result = document.getElementById('result');
 	const error = document.getElementById('error');
+	const unsafe = document.getElementById('unsafe');
 	const midOutput = document.getElementById('mid-output');
-	const midResult = document.getElementById('mid-result');
 	const midError = document.getElementById('mid-error');
+	const midUnsafe = document.getElementById('mid-unsafe');
 	const runner = document.getElementById('run');
 	const stopper = document.getElementById('stop');
+
+	function clearIfNeeded() {
+		if (pendingClear) {
+			pendingClear = false;
+			output.innerHTML = '';
+			midError.style.display = 'none';
+			midOutput.style.display = 'none';
+			midUnsafe.style.display = 'none';
+			lastWriteOutput = undefined;
+			lastWriteOutputDiv = undefined;
+		}
+	}
+
 	myWorker = new Worker('worker.js');
 	myWorker.onmessage = function(e) {
 		if (e.data === "ready") {
 			prepare();
-		} else {
+		} else if (e.data?.hasOwnProperty("error")) {
+			clearIfNeeded();
+
 			runner.disabled = false;
 			stopper.disabled = true;
-			outerOutput.style.display = 'block';
-			output.textContent = e.data[0];
-			midOutput.style.display = e.data[0] ? 'block' : 'none';
 
-			error.textContent = e.data[1];
-			midError.style.display = e.data[1] ? 'block' : 'none';
+			if (e.data.error === undefined) {
+				midError.style.display = 'none';
+				error.innerHTML = '';
+			} else {
+				midError.style.display = 'block';
+				error.textContent = e.data.error;
+			}
+		} else {
+			clearIfNeeded();
 
-			result.textContent = '';
-			renderInto(e.data[2], result);
-			midResult.style.display = (e.data[2] === null || e.data[2] === undefined) ? 'none' : 'block';
+			midOutput.style.display = 'block';
+
+			if (e.data?.hasOwnProperty("display")) {
+				lastWriteOutput = undefined;
+				lastWriteOutputDiv = undefined;
+
+				let innerOutput = document.createElement("div");
+				let unsafeOut = [];
+				renderInto(e.data.display, innerOutput, unsafeOut);
+				output.appendChild(innerOutput);
+				if (unsafeOut.length) {
+					midUnsafe.style.display = 'block';
+					unsafe.textContent = `total ${unsafeOut.length}:\n` + unsafeOut.join("\n");
+				}
+			} else {
+				if (!lastWriteOutputDiv) {
+					lastWriteOutput = "";
+					lastWriteOutputDiv = document.createElement("div");
+					lastWriteOutputDiv.className = "inner-output";
+					output.appendChild(lastWriteOutputDiv);
+				}
+				lastWriteOutput += e.data;
+				lastWriteOutputDiv.textContent = lastWriteOutput;
+			}
 		}
 	};
 }

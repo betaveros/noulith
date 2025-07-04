@@ -532,7 +532,7 @@ impl<'a> PartialEq for NNumReal<'a> {
             (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
                 (Some(a), Some(b)) => a == b,
                 _ => false,
-            }
+            },
         }
     }
 }
@@ -564,8 +564,8 @@ impl<'a> NNumReal<'a> {
             } // note swap
             (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
                 (Some(a), Some(b)) => a.cmp(&b),
-                _ => b.is_nan().cmp(&a.is_nan())
-            }
+                _ => b.is_nan().cmp(&a.is_nan()),
+            },
         }
     }
 
@@ -581,8 +581,8 @@ impl<'a> NNumReal<'a> {
             }
             (a, b) => match (a.exact_to_rational(), b.exact_to_rational()) {
                 (Some(a), Some(b)) => a.cmp(&b),
-                _ => a.is_nan().cmp(&b.is_nan())
-            }
+                _ => a.is_nan().cmp(&b.is_nan()),
+            },
         }
     }
 }
@@ -591,10 +591,7 @@ impl<'a> NNum {
     fn project_to_reals(&'a self) -> (NNumReal<'a>, NNumReal<'a>) {
         match self {
             NNum::Int(a) => (NNumReal::Int(a), NNumReal::Float(0.0)),
-            NNum::Rational(a) => (
-                NNumReal::Rational(a),
-                NNumReal::Float(0.0),
-            ),
+            NNum::Rational(a) => (NNumReal::Rational(a), NNumReal::Float(0.0)),
             NNum::Float(a) => (NNumReal::Float(*a), NNumReal::Float(0.0)),
             NNum::Complex(z) => (NNumReal::Float(z.re), NNumReal::Float(z.im)),
         }

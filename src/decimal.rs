@@ -50,10 +50,7 @@ fn parse_decimal_exactly(s: &str) -> Option<Ratio<BigInt>> {
         let base_value =
             integer_digits * BigInt::from(10).pow(decimal_places as u32) + fractional_digits;
 
-        Some(apply_exp10(
-            base_value,
-            exponent - (decimal_places as i32),
-        ))
+        Some(apply_exp10(base_value, exponent - (decimal_places as i32)))
     } else {
         Some(apply_exp10(base_str.parse().ok()?, exponent))
     }

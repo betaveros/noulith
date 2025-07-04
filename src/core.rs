@@ -4413,25 +4413,9 @@ pub enum Func {
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
 
-pub trait WriteMaybeExtractable: Write + MaybeSync + MaybeSend {
-    fn extract(&self) -> Option<&[u8]>;
-}
-
-impl WriteMaybeExtractable for io::Sink {
-    fn extract(&self) -> Option<&[u8]> {
-        None
-    }
-}
-impl WriteMaybeExtractable for io::Stdout {
-    fn extract(&self) -> Option<&[u8]> {
-        None
-    }
-}
-impl WriteMaybeExtractable for Vec<u8> {
-    fn extract(&self) -> Option<&[u8]> {
-        Some(self)
-    }
-}
+pub trait WriteMaybeExtractable: Write + MaybeSync + MaybeSend {}
+impl WriteMaybeExtractable for io::Sink {}
+impl WriteMaybeExtractable for io::Stdout {}
 
 pub struct TopEnv {
     pub backrefs: Vec<Obj>,

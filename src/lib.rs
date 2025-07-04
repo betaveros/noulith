@@ -5989,7 +5989,6 @@ pub fn initialize(env: &mut Env) {
     });
 }
 
-// #[cfg_attr(target_arch = "wasm32")]
 #[cfg(target_arch = "wasm32")]
 pub fn obj_to_js_value(obj: Obj) -> JsValue {
     match obj {
@@ -6043,16 +6042,79 @@ pub fn obj_to_js_value(obj: Obj) -> JsValue {
     }
 }
 
-// Can't be bothered to write the code to create JavaScript objects with nice keys and everything
-// (looks annoying, apparently use js_sys::Reflect)
-// just return an [stdout, error, result] array
 #[cfg(target_arch = "wasm32")]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array {
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn console_log(s: &str);
+}
+
+#[cfg(target_arch = "wasm32")]
+struct JsWriter(js_sys::Function);
+
+#[cfg(target_arch = "wasm32")]
+impl io::Write for JsWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // match self.0.call1(&JsValue::null(), &js_sys::Uint8Array::from(buf).into()) ...
+        match self.0.call1(
+            &JsValue::null(),
+            &JsValue::from(String::from_utf8_lossy(buf).into_owned()),
+        ) {
+            Ok(_) => Ok(buf.len()),
+            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "js write failed")),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<W: io::Write> WriteMaybeExtractable for io::LineWriter<W> {}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone)]
+struct JsDisplay(js_sys::Function);
+
+#[cfg(target_arch = "wasm32")]
+impl Builtin for JsDisplay {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        for arg in args {
+            match self.0.call1(&JsValue::null(), &obj_to_js_value(arg)) {
+                Ok(_) => (),
+                Err(_) => return Err(NErr::io_error("js display failed".to_string())),
+            }
+        }
+        Ok(Obj::Null)
+    }
+    fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
+        match self.0.call1(&JsValue::null(), &obj_to_js_value(arg)) {
+            Ok(_) => Ok(Obj::Null),
+            Err(_) => Err(NErr::io_error("js display failed".to_string()))?,
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "display"
+    }
+}
+
+// Can't be bothered to write the code to create JavaScript objects with nice keys and everything
+// (looks annoying, apparently use js_sys::Reflect)
+// Returns only error.
+#[cfg(target_arch = "wasm32")]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn encapsulated_eval(
+    code: &str,
+    input: &[u8],
+    fancy: bool,
+    js_write: js_sys::Function,
+    js_display: js_sys::Function,
+) -> JsValue {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(io::Cursor::new(input.to_vec())),
-        output: Box::new(Vec::new()),
+        output: Box::new(io::LineWriter::new(JsWriter(js_write.clone()))),
     });
     initialize(&mut env);
 
@@ -6095,36 +6157,41 @@ pub fn encapsulated_eval(code: &str, input: &[u8], fancy: bool) -> js_sys::Array
     )
     .unwrap();
 
+    env.insert_builtin(BasicBuiltin {
+        name: "console_log".to_string(),
+        body: |_env, args| {
+            for arg in args.iter() {
+                console_log(&format!("{}", arg));
+            }
+            Ok(Obj::Null)
+        },
+    });
+
+    env.insert_builtin(JsDisplay(js_display.clone()));
+
     let e = Rc::new(RefCell::new(env));
 
-    let mut output = JsValue::UNDEFINED;
-    let mut error = JsValue::UNDEFINED;
-    let mut result = JsValue::UNDEFINED;
-
     match parse(code) {
-        Err(p) => {
-            error = JsValue::from(p.render(code));
-        }
-        Ok(None) => {}
+        Err(p) => JsValue::from(p.render(code)),
+        Ok(None) => JsValue::UNDEFINED,
         Ok(Some(code)) => match evaluate(&e, &code) {
-            Err(err) => {
-                output = JsValue::from(e.borrow_mut().mut_top_env(|e| {
-                    String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
-                }));
-                error = JsValue::from(format!("{}", err));
-            }
+            Err(err) => JsValue::from(format!("{}", err)),
+            Ok(Obj::Null) => JsValue::UNDEFINED,
             Ok(res) => {
-                let output_s = e.borrow_mut().mut_top_env(|e| {
-                    String::from_utf8_lossy(e.output.extract().unwrap()).into_owned()
-                });
                 if fancy {
-                    output = JsValue::from(output_s);
-                    result = obj_to_js_value(res);
+                    let _ = js_display.call1(&JsValue::null(), &obj_to_js_value(res));
                 } else {
-                    output = JsValue::from(output_s + &format!("{}", res));
-                }
+                    match &cell_borrow(&*e).parent {
+                        Ok(_) => panic!("no way!"),
+                        Err(top) => {
+                            let w = &mut cell_borrow_mut(&*top).output;
+                            let _ = write!(w, "{}", res);
+                            let _ = w.flush();
+                        }
+                    };
+                };
+                JsValue::UNDEFINED
             }
         },
     }
-    js_sys::Array::of3(&output, &error, &result)
 }
