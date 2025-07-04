@@ -50,6 +50,9 @@ td {
 <label for="input">Input:</label>
 <select id="input-select">
 	<option value="">user input</option>
+	<option value="ukacd.gz">UKACD.gz (use read_compressed())</option>
+	<option value="yawl.gz">YAWL.gz (use read_compressed())</option>
+	<option value="ranked-wiki-wikt-90.gz">ranked-wiki-wikt-90.gz (only scores ≥90) (use read_compressed())</option>
 	<option value="file">file</option>
 </select>
 <input type="file" id="input-file" />
@@ -66,6 +69,7 @@ td {
 <button id="gen-url" type="button" role="button">Generate URL</button>
 <textarea id="url"></textarea>
 <script type="module">
+import { AnsiUp } from './ansi_up/ansi_up.js';
 // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
 // wasm-pack build --target web
 // import init, { encapsulated_eval } from './pkg/paradoc.js';
@@ -456,6 +460,7 @@ function init() {
 	const midUnsafe = document.getElementById('mid-unsafe');
 	const runner = document.getElementById('run');
 	const stopper = document.getElementById('stop');
+	const ansi_up = new AnsiUp();
 
 	function clearIfNeeded() {
 		if (pendingClear) {
@@ -493,7 +498,7 @@ function init() {
 				error.innerHTML = '';
 			} else {
 				midError.style.display = 'block';
-				error.textContent = e.data.error;
+				error.innerHTML = ansi_up.ansi_to_html(e.data.error);
 			}
 		} else {
 			clearIfNeeded();
@@ -539,7 +544,7 @@ function init() {
 					output.appendChild(lastWriteOutputDiv);
 				}
 				lastWriteOutput += e.data;
-				lastWriteOutputDiv.textContent = lastWriteOutput;
+				lastWriteOutputDiv.innerHTML = ansi_up.ansi_to_html(lastWriteOutput);
 			}
 		}
 	};
