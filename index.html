@@ -57,6 +57,7 @@ td {
 <button id="run" type="button" role="button" disabled>Loading...</button>
 <button id="stop" type="button" role="button" disabled>Loading...</button>
 <label><input type="checkbox" id="fancy" checked /> Fancy output</label>
+<label><input type="checkbox" id="stateful" /> Stateful</label>
 <label><input type="checkbox" id="auto" /> Auto-rerun</label>
 <label style="display: none"><input type="checkbox" id="sanitize" checked /> Sanitize HTML</label>
 <div id="mid-output">Output: <div id="output"></div></div>
@@ -84,6 +85,7 @@ async function prepare() {
 	const runner = document.getElementById('run');
 	const stopper = document.getElementById('stop');
 	const fancy = document.getElementById('fancy');
+	const stateful = document.getElementById('stateful');
 	const auto = document.getElementById('auto');
 	function run() {
 		runner.disabled = true;
@@ -98,17 +100,18 @@ async function prepare() {
 		const midUnsafe = document.getElementById('mid-unsafe');
 
 		let sel = document.getElementById('input-select').value;
+
+		function post(input) {
+			myWorker.postMessage([code.value, input, fancy.checked, stateful.checked]);
+		}
+
 		if (sel === 'file') {
 			let file = fileInput.files[0];
-			file.arrayBuffer().then(buf => {
-				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
-			});
+			file.arrayBuffer().then(buf => post(new Uint8Array(buf)));
 		} else if (sel) {
-			fetch(sel).then(x => x.arrayBuffer().then(buf => {
-				myWorker.postMessage([code.value, new Uint8Array(buf), fancy.checked]);
-			}));
+			fetch(sel).then(x => x.arrayBuffer().then(buf => post(new Uint8Array(buf))));
 		} else {
-			myWorker.postMessage([code.value, new TextEncoder().encode(input.value), fancy.checked]);
+			post(new TextEncoder().encode(input.value));
 		}
 	}
 	function stop() {

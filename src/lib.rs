@@ -6099,23 +6099,17 @@ impl Builtin for JsDisplay {
     }
 }
 
-// Can't be bothered to write the code to create JavaScript objects with nice keys and everything
-// (looks annoying, apparently use js_sys::Reflect)
-// Returns only error.
 #[cfg(target_arch = "wasm32")]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn encapsulated_eval(
-    code: &str,
+pub fn make_env(
     input: &[u8],
-    fancy: bool,
     js_write: js_sys::Function,
     js_display: js_sys::Function,
-) -> JsValue {
+) -> Rc<RefCell<Env>> {
     let mut env = Env::new(TopEnv {
         backrefs: Vec::new(),
         input: Box::new(io::Cursor::new(input.to_vec())),
-        output: Box::new(io::LineWriter::new(JsWriter(js_write.clone()))),
-    });
+        output: Box::new(io::LineWriter::new(JsWriter(js_write))),
+    }, /* allow_redeclaration */ true);
     initialize(&mut env);
 
     let tag_struct = Struct::new(
@@ -6167,9 +6161,43 @@ pub fn encapsulated_eval(
         },
     });
 
-    env.insert_builtin(JsDisplay(js_display.clone()));
+    env.insert_builtin(JsDisplay(js_display));
 
-    let e = Rc::new(RefCell::new(env));
+    Rc::new(RefCell::new(env))
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    // paranoidly using the non-hacked RefCell on the outside (cf rc.rs)
+    static STATE: std::cell::RefCell<Option<Rc<RefCell<Env>>>> = std::cell::RefCell::new(None);
+}
+
+// Can't be bothered to write the code to create JavaScript objects with nice keys and everything
+// (looks annoying, apparently use js_sys::Reflect)
+// Returns only error.
+#[cfg(target_arch = "wasm32")]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn encapsulated_eval(
+    code: &str,
+    input: &[u8],
+    fancy: bool,
+    stateful: bool,
+    js_write: js_sys::Function,
+    js_display: js_sys::Function,
+) -> JsValue {
+    let e: Rc<RefCell<Env>> = if stateful {
+        STATE.with(|state| {
+            state
+                .borrow_mut()
+                .get_or_insert_with(|| make_env(input, js_write.clone(), js_display.clone()))
+                .clone()
+        })
+    } else {
+        STATE.with(|state| {
+            *state.borrow_mut() = None;
+        });
+        make_env(input, js_write.clone(), js_display.clone())
+    };
 
     match parse(code) {
         Err(p) => JsValue::from(p.render(code)),

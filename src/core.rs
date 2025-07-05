@@ -4438,6 +4438,7 @@ pub struct Env {
     pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
+    pub allow_redeclaration: bool,
 }
 // simple, linear-time, and at least finds when one is a subsequence of the other.
 pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
@@ -4545,11 +4546,12 @@ pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
 }
 
 impl Env {
-    pub fn new(top: TopEnv) -> Env {
+    pub fn new(top: TopEnv, allow_redeclaration: bool) -> Env {
         Env {
             vars: HashMap::new(),
             parent: Err(Rc::new(RefCell::new(top))),
             internal_stack: Vec::new(),
+            allow_redeclaration,
         }
     }
     // ???
@@ -4558,13 +4560,14 @@ impl Env {
             backrefs: Vec::new(),
             input: Box::new(io::empty()),
             output: Box::new(io::sink()),
-        })
+        }, false)
     }
     pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
             vars: HashMap::new(),
             parent: Ok(Rc::clone(&env)),
             internal_stack: Vec::new(),
+            allow_redeclaration: false,
         }))
     }
     pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
@@ -4633,8 +4636,13 @@ impl Env {
 
     pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
         match self.vars.entry(key) {
-            std::collections::hash_map::Entry::Occupied(e) => {
-                Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if self.allow_redeclaration {
+                    e.insert((ty, Box::new(RefCell::new(val))));
+                    Ok(())
+                } else {
+                    Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
+                }
             }
             std::collections::hash_map::Entry::Vacant(e) => {
                 e.insert((ty, Box::new(RefCell::new(val))));
