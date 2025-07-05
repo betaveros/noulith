@@ -76,6 +76,9 @@ let myWorker;
 let lastWriteOutput, lastWriteOutputDiv;
 let pendingRun = false;
 let pendingClear = false;
+let persistedElements = {};
+let persistedGetters = {};
+let runPtr;
 
 async function prepare() {
 	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
@@ -102,7 +105,17 @@ async function prepare() {
 		let sel = document.getElementById('input-select').value;
 
 		function post(input) {
-			myWorker.postMessage([code.value, input, fancy.checked, stateful.checked]);
+			let persistedValues = Object.fromEntries(
+				Object.entries(persistedGetters).map(([key, funcs]) =>
+					[
+						key,
+						funcs.length === 0 ? undefined :
+						funcs.length === 1 ? funcs[0]() :
+						funcs.map(f => f())
+					]
+				)
+			);
+			myWorker.postMessage([code.value, input, fancy.checked, stateful.checked, persistedValues]);
 		}
 
 		if (sel === 'file') {
@@ -128,6 +141,7 @@ async function prepare() {
 			stop();
 		}
 	}
+	runPtr = runAsap;
 	runner.addEventListener('click', run);
 	stopper.addEventListener('click', stop);
 	[code, input].forEach(elem => elem.addEventListener('keydown', function(event) {
@@ -190,19 +204,56 @@ function isAttrSafe(tag, attr, value) {
 		return svgAttrs.includes(attr);
 	}
 }
-function renderInto(obj, node, unsafeOut) {
+function renderInto(obj, node, acc) {
 	const sanitize = document.getElementById('sanitize');
 	if (Array.isArray(obj) && obj[0] === true && obj[1] === 'HtmlTag') {
 		let tagName = obj[2];
 		let children = obj[3];
 		let attributes = obj[4];
-		if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
+
+		if (tagName === "input:text") {
+			let elem = document.createElement("input");
+			elem.type = "text";
+			if (typeof children === "string") elem.value = children;
+			node.appendChild(elem);
+			acc.inputs.push(elem);
+			acc.valueGetters.push(() => elem.value);
+			if (acc.shouldListen) {
+				elem.addEventListener("input", () => {
+					if (runPtr) runPtr();
+				});
+			}
+		} else if (tagName === "input:number") {
+			let elem = document.createElement("input");
+			elem.type = "number";
+			if (typeof children === "number") elem.value = children;
+			node.appendChild(elem);
+			acc.inputs.push(elem);
+			acc.valueGetters.push(() => elem.value);
+			if (acc.shouldListen) {
+				elem.addEventListener("input", () => {
+					if (runPtr) runPtr();
+				});
+			}
+		} else if (tagName === "input:checkbox") {
+			let elem = document.createElement("input");
+			elem.type = "checkbox";
+			elem.checked = Boolean(elem.children);
+			node.appendChild(elem);
+			acc.inputs.push(elem);
+			acc.valueGetters.push(() => elem.checked);
+			if (acc.shouldListen) {
+				elem.addEventListener("input", () => {
+					if (runPtr) runPtr();
+				});
+			}
+		} else if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
 			let elem =
 				tagName.startsWith("svg:") ?
 				document.createElementNS("http://www.w3.org/2000/svg", tagName.slice(4)) :
 				document.createElement(tagName);
 			if (!Array.isArray(children) || children[0] === true) children = [children];
-			children.forEach(child => renderInto(child, elem, unsafeOut));
+			children.forEach(child => renderInto(child, elem, acc));
 
 			if (Array.isArray(attributes)) {
 				for (let attr of attributes) {
@@ -216,14 +267,14 @@ function renderInto(obj, node, unsafeOut) {
 								elem.setAttributeNS(null, attrKey, attrValue);
 							}
 						} else {
-							unsafeOut.push(`• attr ${attrKey}=${attrValue}`);
+							acc.unsafe.push(`• attr ${attrKey}=${attrValue}`);
 						}
 					}
 				}
 			}
 			node.appendChild(elem);
 		} else {
-			unsafeOut.push(`• tag ${tagName}`);
+			acc.unsafe.push(`• tag ${tagName}`);
 		}
 		return;
 	}
@@ -232,13 +283,13 @@ function renderInto(obj, node, unsafeOut) {
 		if (Array.isArray(obj)) {
 			if (obj[0] === true) {
 				let th = document.createElement("th");
-				renderInto(obj[1], th, unsafeOut);
+				renderInto(obj[1], th, acc);
 				node.appendChild(th);
 				obj = obj.slice(2);
 			}
 			for (let elt of obj) {
 				let td = document.createElement("td");
-				renderInto(elt, td, unsafeOut);
+				renderInto(elt, td, acc);
 				node.appendChild(td);
 			}
 		} else {
@@ -247,7 +298,7 @@ function renderInto(obj, node, unsafeOut) {
 				td.textContent = "default";
 				td.classList.add("default");
 			} else {
-				renderInto(obj, td, unsafeOut);
+				renderInto(obj, td, acc);
 			}
 			node.appendChild(td);
 		}
@@ -257,14 +308,14 @@ function renderInto(obj, node, unsafeOut) {
 			if (obj[0] === true) {
 				let tr = document.createElement("tr");
 				let th = document.createElement("th");
-				renderInto(obj[1], th, unsafeOut);
+				renderInto(obj[1], th, acc);
 				tr.appendChild(th);
 				node.appendChild(tr);
 				obj = obj.slice(2);
 			}
 			for (let elt of obj) {
 				let tr = document.createElement("tr");
-				renderInto(elt, tr, unsafeOut);
+				renderInto(elt, tr, acc);
 				table.appendChild(tr);
 			}
 			node.appendChild(table);
@@ -292,9 +343,18 @@ function init() {
 	function clearIfNeeded() {
 		if (pendingClear) {
 			pendingClear = false;
-			output.innerHTML = '';
+			let hasPersisted = false;
+			Array.from(output.children).forEach(child => {
+				if (child.className === "persist") {
+					hasPersisted = true;
+				} else {
+					child.remove();
+				}
+			});
 			midError.style.display = 'none';
-			midOutput.style.display = 'none';
+			if (!hasPersisted) {
+				midOutput.style.display = 'none';
+			}
 			midUnsafe.style.display = 'none';
 			lastWriteOutput = undefined;
 			lastWriteOutputDiv = undefined;
@@ -324,16 +384,36 @@ function init() {
 			midOutput.style.display = 'block';
 
 			if (e.data?.hasOwnProperty("display")) {
-				lastWriteOutput = undefined;
-				lastWriteOutputDiv = undefined;
+				const persist = e.data?.hasOwnProperty("persist");
+				let innerOutput;
+				if (persist && persistedElements[e.data.persist]) {
+					innerOutput = persistedElements[e.data.persist];
+					innerOutput.innerHTML = "";
+				} else {
+					lastWriteOutput = undefined;
+					lastWriteOutputDiv = undefined;
+					innerOutput = document.createElement("div");
+					if (persist) {
+						innerOutput.className = "persist";
+					}
+					output.appendChild(innerOutput);
+				}
 
-				let innerOutput = document.createElement("div");
-				let unsafeOut = [];
-				renderInto(e.data.display, innerOutput, unsafeOut);
-				output.appendChild(innerOutput);
-				if (unsafeOut.length) {
+				let acc = {
+					shouldListen: persist,
+					valueGetters: [],
+					inputs: [],
+					unsafe: [],
+				};
+				renderInto(e.data.display, innerOutput, acc);
+
+				if (persist) {
+					persistedElements[e.data.persist] = innerOutput;
+					persistedGetters[e.data.persist] = acc.valueGetters;
+				}
+				if (acc.unsafe.length) {
 					midUnsafe.style.display = 'block';
-					unsafe.textContent = `total ${unsafeOut.length}:\n` + unsafeOut.join("\n");
+					unsafe.textContent = `total ${acc.unsafe.length}:\n` + acc.unsafe.join("\n");
 				}
 			} else {
 				if (!lastWriteOutputDiv) {

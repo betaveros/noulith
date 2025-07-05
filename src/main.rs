@@ -62,11 +62,14 @@ fn repl() {
 }
 
 fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>, filename: String) {
-    let mut env = Env::new(TopEnv {
-        backrefs: Vec::new(),
-        input: Box::new(BufReader::new(io::stdin())),
-        output: Box::new(io::stdout()),
-    });
+    let mut env = Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(BufReader::new(io::stdin())),
+            output: Box::new(io::stdout()),
+        },
+        false,
+    );
     initialize(&mut env);
     match env.insert(
         "argv".to_string(),

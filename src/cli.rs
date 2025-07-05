@@ -157,11 +157,14 @@ impl rustyline::completion::Completer for NoulithHelper {
 }
 
 pub fn repl() {
-    let mut env = Env::new(TopEnv {
-        backrefs: Vec::new(),
-        input: Box::new(BufReader::new(io::stdin())),
-        output: Box::new(io::stdout()),
-    });
+    let mut env = Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(BufReader::new(io::stdin())),
+            output: Box::new(io::stdout()),
+        },
+        true,
+    );
     initialize(&mut env);
     let e = Rc::new(RefCell::new(env));
 

@@ -6043,6 +6043,43 @@ pub fn obj_to_js_value(obj: Obj) -> JsValue {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn js_value_to_obj(value: &JsValue) -> NRes<Obj> {
+    if value.is_null() || value.is_undefined() {
+        Ok(Obj::Null)
+    } else if value.is_string() {
+        Ok(Obj::from(value.as_string().unwrap()))
+    } else if let Some(num) = value.as_f64() {
+        Ok(Obj::from(num))
+    } else if let Some(bool_val) = value.as_bool() {
+        Ok(Obj::Num(NNum::iverson(bool_val)))
+    } else if js_sys::Array::is_array(value) {
+        let array = js_sys::Array::from(value);
+        let objs = (0..array.length())
+            .map(|i| js_value_to_obj(&array.get(i)))
+            .collect::<NRes<Vec<Obj>>>()?;
+        Ok(Obj::list(objs))
+    } else if value.is_object() {
+        let obj = js_sys::Object::from(value.clone());
+        let keys = js_sys::Object::keys(&obj);
+        let dict = (0..keys.length())
+            .map(|i| {
+                let key_js = keys.get(i);
+
+                // FIXME
+                let key = key_js.as_string().unwrap();
+                let val = js_sys::Reflect::get(&obj, &key_js).unwrap();
+
+                Ok((to_key(Obj::from(key))?, js_value_to_obj(&val)?))
+            })
+            .collect::<NRes<HashMap<ObjKey, Obj>>>()?;
+
+        Ok(Obj::Seq(Seq::Dict(Rc::new(dict), None)))
+    } else {
+        Err(NErr::type_error(format!("Unsupported JsValue type")))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 extern "C" {
     #[wasm_bindgen(js_namespace = console, js_name = log)]
@@ -6073,24 +6110,73 @@ impl io::Write for JsWriter {
 impl<W: io::Write> WriteMaybeExtractable for io::LineWriter<W> {}
 
 #[cfg(target_arch = "wasm32")]
+thread_local! {
+    // paranoidly using the non-hacked RefCell on the outside (cf rc.rs)
+    static STATE: std::cell::RefCell<Option<Rc<RefCell<Env>>>> = std::cell::RefCell::new(None);
+
+    static PERSISTED_OUTPUTS: std::cell::RefCell<HashMap<String, Obj>> = std::cell::RefCell::new(HashMap::new());
+}
+
+#[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone)]
 struct JsDisplay(js_sys::Function);
 
 #[cfg(target_arch = "wasm32")]
 impl Builtin for JsDisplay {
     fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
-        for arg in args {
-            match self.0.call1(&JsValue::null(), &obj_to_js_value(arg)) {
-                Ok(_) => (),
-                Err(_) => return Err(NErr::io_error("js display failed".to_string())),
-            }
+        match few2(args) {
+            Few2::One(a) => self.run1(_env, a),
+            Few2::Two(a, b) => self.run2(_env, a, b),
+            f => Err(NErr::argument_error(format!(
+                "display(obj) or (obj, key), got {}",
+                f.len()
+            ))),
         }
-        Ok(Obj::Null)
     }
     fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
         match self.0.call1(&JsValue::null(), &obj_to_js_value(arg)) {
             Ok(_) => Ok(Obj::Null),
             Err(_) => Err(NErr::io_error("js display failed".to_string()))?,
+        }
+    }
+    fn run2(&self, _env: &REnv, arg: Obj, key: Obj) -> NRes<Obj> {
+        match key {
+            Obj::Seq(Seq::String(s)) => {
+                let s = &*s.to_string();
+                let should_call =
+                    PERSISTED_OUTPUTS.with(|outs| match outs.borrow_mut().entry(s.to_string()) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            console_log("vacant, inserting");
+                            e.insert(arg.clone());
+                            true
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            if e.get() == &arg {
+                                console_log("equals, great!");
+                                false
+                            } else {
+                                console_log(&format!("not equal {} {}", e.get(), &arg));
+                                *e.get_mut() = arg.clone();
+                                true
+                            }
+                        }
+                    });
+                let js_arg = if should_call {
+                    obj_to_js_value(arg)
+                } else {
+                    JsValue::FALSE
+                };
+                match self
+                    .0
+                    .call2(&JsValue::null(), &js_arg, &JsValue::from(&*s.to_string()))
+                {
+                    Ok(v) => js_value_to_obj(&v),
+                    Err(_) => Err(NErr::io_error("js display failed".to_string())),
+                }
+            }
+            _ => Err(NErr::type_error(
+                "js display second arg must be string".to_string(),
+            ))?,
         }
     }
 
@@ -6105,11 +6191,16 @@ pub fn make_env(
     js_write: js_sys::Function,
     js_display: js_sys::Function,
 ) -> Rc<RefCell<Env>> {
-    let mut env = Env::new(TopEnv {
-        backrefs: Vec::new(),
-        input: Box::new(io::Cursor::new(input.to_vec())),
-        output: Box::new(io::LineWriter::new(JsWriter(js_write))),
-    }, /* allow_redeclaration */ true);
+    Struct::reset_counter(); // i knew this was a terrible idea
+
+    let mut env = Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(io::Cursor::new(input.to_vec())),
+            output: Box::new(io::LineWriter::new(JsWriter(js_write))),
+        },
+        /* allow_redeclaration */ true,
+    );
     initialize(&mut env);
 
     let tag_struct = Struct::new(
@@ -6164,12 +6255,6 @@ pub fn make_env(
     env.insert_builtin(JsDisplay(js_display));
 
     Rc::new(RefCell::new(env))
-}
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    // paranoidly using the non-hacked RefCell on the outside (cf rc.rs)
-    static STATE: std::cell::RefCell<Option<Rc<RefCell<Env>>>> = std::cell::RefCell::new(None);
 }
 
 // Can't be bothered to write the code to create JavaScript objects with nice keys and everything

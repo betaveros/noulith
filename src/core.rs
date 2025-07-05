@@ -536,6 +536,10 @@ impl Struct {
             fields,
         }
     }
+
+    pub fn reset_counter() {
+        STRUCT_COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 // more like an arbitrary predicate. want to add subscripted types to this later
@@ -1125,6 +1129,7 @@ impl PartialEq for Obj {
             (Obj::Null, Obj::Null) => true,
             (Obj::Num(a), Obj::Num(b)) => a == b,
             (Obj::Seq(a), Obj::Seq(b)) => a == b,
+            (Obj::Instance(s1, m1), Obj::Instance(s2, m2)) => s1 == s2 && m1 == m2,
             // hmm
             // (Obj::Func(Func::SymbolAccess(a), _), Obj::Func(Func::SymbolAccess(b), _)) => a == b,
             _ => false,
@@ -4556,11 +4561,14 @@ impl Env {
     }
     // ???
     pub fn empty() -> Env {
-        Env::new(TopEnv {
-            backrefs: Vec::new(),
-            input: Box::new(io::empty()),
-            output: Box::new(io::sink()),
-        }, false)
+        Env::new(
+            TopEnv {
+                backrefs: Vec::new(),
+                input: Box::new(io::empty()),
+                output: Box::new(io::sink()),
+            },
+            false,
+        )
     }
     pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
