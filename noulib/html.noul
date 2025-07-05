@@ -48,10 +48,18 @@ tableOf := freeze \data -> table(
 );
 
 colored := freeze \tag, color -> (
-	tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:color" = color};
-	tag
+	if (tag is HtmlTag) (
+		tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:color" = color};
+		tag
+	) else (
+		span(tag, {"style:color": color})
+	)
 );
 bgColored := freeze \tag, color -> (
-	tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:backgroundColor" = color};
-	tag
+	if (tag is HtmlTag) (
+		tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:backgroundColor" = color};
+		tag
+	) else (
+		span(tag, {"style:backgroundColor": color})
+	)
 );
