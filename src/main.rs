@@ -29,7 +29,7 @@ fn repl() {
         backrefs: Vec::new(),
         input: Box::new(BufReader::new(io::stdin())),
         output: Box::new(io::stdout()),
-    });
+    }, true);
     initialize(&mut env);
     let e = Rc::new(RefCell::new(env));
 
