@@ -1,5 +1,7 @@
 // TODO: isolate
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+
 use std::io;
 use std::io::{BufRead, Write};
 
@@ -2460,6 +2462,23 @@ fn freeze_ios(env: &mut FreezeEnv, ios: &IndexOrSlice) -> NRes<IndexOrSlice> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_import_to_string(s: &str) -> io::Result<String> {
+    fs::read_to_string(s)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn read_import_to_string(s: &str) -> io::Result<String> {
+    if s == "html" {
+        Ok(include_str!("../noulib/html.noul").to_string())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Only hardcoded files in wasm",
+        ))
+    }
+}
+
 // OK what's the actual contract of this function
 //
 // Given an expression, go through it and resolve all free variables (those not bound by
@@ -2770,7 +2789,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     match &e.expr {
                         // FIXME refactor out with freeze
                         Expr::StringLit(s) => {
-                            match fs::read_to_string(&**s) {
+                            match read_import_to_string(&**s) {
                                 Ok(c) => match parse(&c) {
                                     Ok(Some(code)) => match freeze(env, &code) {
                                         Ok(_) => {}

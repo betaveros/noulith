@@ -213,11 +213,31 @@ function renderInto(obj, node, acc) {
 		let attributes = obj[4];
 		let elem;
 
+		let attributesObj = {};
+		if (Array.isArray(attributes)) {
+			for (let attr of attributes) {
+				if (Array.isArray(attr)) {
+					let attrKey = attr[0];
+					let attrValue = attr[1];
+					if (typeof attrKey === "string") {
+						attributesObj[attrKey] = attrValue;
+					}
+				}
+			}
+		}
+
 		if (tagName === "input:text") {
 			elem = document.createElement("input");
 			elem.type = "text";
 			if (typeof children === "string") elem.value = children;
-			node.appendChild(elem);
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
+			if (typeof attributesObj.placeholder === "string") {
+				elem.placeholder = attributesObj.placeholder;
+				delete attributesObj.placeholder;
+			}
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
 				elem.addEventListener("input", () => {
@@ -228,7 +248,21 @@ function renderInto(obj, node, acc) {
 			elem = document.createElement("input");
 			elem.type = "number";
 			if (typeof children === "number") elem.value = children;
-			acc.valueGetters.push(() => elem.value);
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
+			if (typeof attributesObj.placeholder === "string") {
+				elem.placeholder = attributesObj.placeholder;
+				delete attributesObj.placeholder;
+			}
+			acc.valueGetters.push(() => {
+				if (!isNaN(elem.value) && !isNaN(parseFloat(elem.value))) {
+					return Number(elem.value);
+				} else {
+					return elem.value;
+				}
+			});
 			if (acc.shouldListen) {
 				elem.addEventListener("input", () => {
 					if (runPtr) runPtr();
@@ -246,6 +280,10 @@ function renderInto(obj, node, acc) {
 			});
 			if (!Array.isArray(children) || children[0] === true) children = [children];
 			children.forEach(child => renderInto(child, elem, acc));
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
 			if (acc.shouldListen) {
 				elem.addEventListener("click", () => {
 					lastClicked = elem;
@@ -253,13 +291,80 @@ function renderInto(obj, node, acc) {
 				});
 			}
 		} else if (tagName === "input:checkbox") {
+			elem = document.createElement("button");
 			elem.type = "checkbox";
 			elem.checked = Boolean(elem.children);
-			node.appendChild(elem);
 			acc.valueGetters.push(() => elem.checked);
 			if (acc.shouldListen) {
-				elem.addEventListener("click", function() {
+				elem.addEventListener("change", function() {
 					lastClicked = elem;
+					if (runPtr) runPtr();
+				});
+			}
+		} else if (tagName === "input:range") {
+			elem = document.createElement("input");
+			elem.type = "range";
+			if (typeof children === "number") elem.value = children;
+			if (typeof attributesObj.max === "number") {
+				elem.max = attributesObj.max;
+				delete attributesObj.max;
+			}
+			if (typeof attributesObj.min === "number") {
+				elem.min = attributesObj.min;
+				delete attributesObj.min;
+			}
+			if (typeof attributesObj.step === "number") {
+				elem.step = attributesObj.step;
+				delete attributesObj.step;
+			}
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
+			acc.valueGetters.push(() => elem.value);
+			if (acc.shouldListen) {
+				elem.addEventListener("change", function() {
+					if (runPtr) runPtr();
+				});
+			}
+		} else if (tagName === "select") {
+			elem = document.createElement("select");
+			acc.valueGetters.push(() => elem.value);
+			if (acc.shouldListen) {
+				elem.addEventListener("change", function() {
+					if (runPtr) runPtr();
+				});
+			}
+
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
+
+			if (Array.isArray(children) && children[0] !== true) {
+				children.forEach(child => {
+					if (typeof child === "string") {
+						const option = document.createElement('option');
+						option.value = child;
+						option.textContent = child;
+						elem.appendChild(option);
+					}
+				});
+			}
+		} else if (tagName === "textarea") {
+			elem = document.createElement("textarea");
+			if (typeof children === "string") elem.value = children;
+			if (attributesObj.disabled !== undefined) {
+				elem.disabled = true;
+				delete attributesObj.disabled;
+			}
+			if (typeof attributesObj.placeholder === "string") {
+				elem.placeholder = attributesObj.placeholder;
+				delete attributesObj.placeholder;
+			}
+			acc.valueGetters.push(() => elem.value);
+			if (acc.shouldListen) {
+				elem.addEventListener("input", () => {
 					if (runPtr) runPtr();
 				});
 			}
@@ -275,21 +380,15 @@ function renderInto(obj, node, acc) {
 		}
 
 		if (elem) {
-			if (Array.isArray(attributes)) {
-				for (let attr of attributes) {
-					if (Array.isArray(attr)) {
-						let attrKey = attr[0];
-						let attrValue = attr[1];
-						if ((!sanitize.checked || isAttrSafe(tagName, attrKey, attrValue))) {
-							if (typeof attrKey === "string" && attrKey.startsWith("style:")) {
-								elem.style[attrKey.slice(6)] = attrValue;
-							} else {
-								elem.setAttributeNS(null, attrKey, attrValue);
-							}
-						} else {
-							acc.unsafe.push(`• attr ${attrKey}=${attrValue}`);
-						}
+			for (let [attrKey, attrValue] of Object.entries(attributesObj)) {
+				if ((!sanitize.checked || isAttrSafe(tagName, attrKey, attrValue))) {
+					if (typeof attrKey === "string" && attrKey.startsWith("style:")) {
+						elem.style[attrKey.slice(6)] = attrValue;
+					} else {
+						elem.setAttributeNS(null, attrKey, attrValue);
 					}
+				} else {
+					acc.unsafe.push(`• attr ${attrKey}=${attrValue}`);
 				}
 			}
 			node.appendChild(elem);

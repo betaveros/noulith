@@ -9,7 +9,6 @@ use num::complex::Complex64;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Display;
-use std::fs;
 
 #[derive(Debug)]
 pub enum EvaluatedIndexOrSlice {
@@ -1399,7 +1398,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             add_trace(
                 match evaluate(&env, arg)? {
                     // FIXME refactor out with freeze
-                    Obj::Seq(Seq::String(f)) => match fs::read_to_string(&*f) {
+                    Obj::Seq(Seq::String(f)) => match read_import_to_string(&*f) {
                         Ok(c) => match match parse(&c) {
                             Ok(Some(code)) => evaluate(env, &code),
                             Ok(None) => Err(NErr::value_error("empty file".to_string())),

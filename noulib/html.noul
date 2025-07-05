@@ -1,0 +1,57 @@
+h1 := freeze \...args -> HtmlTag("h1", ...args);
+h2 := freeze \...args -> HtmlTag("h2", ...args);
+h3 := freeze \...args -> HtmlTag("h3", ...args);
+h4 := freeze \...args -> HtmlTag("h4", ...args);
+h5 := freeze \...args -> HtmlTag("h5", ...args);
+h6 := freeze \...args -> HtmlTag("h6", ...args);
+em := freeze \...args -> HtmlTag("em", ...args);
+strong := freeze \...args -> HtmlTag("strong", ...args);
+hr := freeze \...args -> HtmlTag("hr", ...args);
+code := freeze \...args -> HtmlTag("code", ...args);
+div := freeze \...args -> HtmlTag("div", ...args);
+span := freeze \...args -> HtmlTag("span", ...args);
+p := freeze \...args -> HtmlTag("p", ...args);
+
+table := freeze \...args -> HtmlTag("table", ...args);
+td := freeze \...args -> HtmlTag("td", ...args);
+th := freeze \...args -> HtmlTag("th", ...args);
+tr := freeze \...args -> HtmlTag("tr", ...args);
+button := freeze \...args -> HtmlTag("button", ...args);
+input_text := freeze \...args -> HtmlTag("input:text", ...args);
+input_number := freeze \...args -> HtmlTag("input:number", ...args);
+input_range := freeze \...args -> HtmlTag("input:range", ...args);
+input_checkbox := freeze \...args -> HtmlTag("input:checkbox", ...args);
+checkbox := input_checkbox;
+slider := input_range;
+select := freeze \...args -> HtmlTag("select", ...args);
+
+simple_counter := 0;
+display_simple := \displayable -> (
+	simple_counter += 1;
+	display(displayable, F"simple-{simple_counter}")
+);
+empty_to_null := \x -> switch (x) case "" -> null case x -> x;
+simple_button := \...args -> display_simple(button(...args)) coalesce false;
+simple_text := \...args -> display_simple(input_text(...args)) coalesce args !? 0 coalesce "";
+simple_number := \...args -> empty_to_null(display_simple(input_number(...args))) coalesce args !? 0 coalesce 0.0;
+simple_int := \...args -> int(simple_number(...args));
+simple_range := \...args -> display_simple(input_range(...args)) coalesce args !? 0 coalesce 0;
+simple_slider := simple_range;
+simple_checkbox := \...args -> display_simple(input_checkbox(...args)) coalesce args !? 0 coalesce false;
+simple_select := \...args -> display_simple(select(...args)) coalesce args !? 0 !? 0;
+
+tableOf := freeze \data -> table(
+	for (row <- data) yield tr(
+		for (cell <- row) yield
+			if (cell is list) td(...cell) else td(cell)
+	)
+);
+
+colored := freeze \tag, color -> (
+	tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:color" = color};
+	tag
+);
+bgColored := freeze \tag, color -> (
+	tag[html_tag_attributes] = (tag[html_tag_attributes] or {}){"style:backgroundColor" = color};
+	tag
+);
