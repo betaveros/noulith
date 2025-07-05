@@ -14,9 +14,7 @@ addEventListener('message', async function(e) {
       data.persist = pkey;
     }
     if (e === false) { // special value for cache hit
-      console.log("cache hit");
     } else {
-      console.log("cache miss");
       postMessage(data);
     }
     return pkey === undefined ? undefined : pdata[pkey];

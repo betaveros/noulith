@@ -6146,16 +6146,13 @@ impl Builtin for JsDisplay {
                 let should_call =
                     PERSISTED_OUTPUTS.with(|outs| match outs.borrow_mut().entry(s.to_string()) {
                         std::collections::hash_map::Entry::Vacant(e) => {
-                            console_log("vacant, inserting");
                             e.insert(arg.clone());
                             true
                         }
                         std::collections::hash_map::Entry::Occupied(mut e) => {
                             if e.get() == &arg {
-                                console_log("equals, great!");
                                 false
                             } else {
-                                console_log(&format!("not equal {} {}", e.get(), &arg));
                                 *e.get_mut() = arg.clone();
                                 true
                             }

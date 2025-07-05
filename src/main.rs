@@ -25,11 +25,14 @@ fn prompt(input: &mut String) -> bool {
 }
 #[cfg(not(feature = "cli"))]
 fn repl() {
-    let mut env = Env::new(TopEnv {
-        backrefs: Vec::new(),
-        input: Box::new(BufReader::new(io::stdin())),
-        output: Box::new(io::stdout()),
-    }, true);
+    let mut env = Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(BufReader::new(io::stdin())),
+            output: Box::new(io::stdout()),
+        },
+        true,
+    );
     initialize(&mut env);
     let e = Rc::new(RefCell::new(env));
 

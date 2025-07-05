@@ -78,6 +78,7 @@ let pendingRun = false;
 let pendingClear = false;
 let persistedElements = {};
 let persistedGetters = {};
+let lastClicked;
 let runPtr;
 
 async function prepare() {
@@ -210,13 +211,13 @@ function renderInto(obj, node, acc) {
 		let tagName = obj[2];
 		let children = obj[3];
 		let attributes = obj[4];
+		let elem;
 
 		if (tagName === "input:text") {
-			let elem = document.createElement("input");
+			elem = document.createElement("input");
 			elem.type = "text";
 			if (typeof children === "string") elem.value = children;
 			node.appendChild(elem);
-			acc.inputs.push(elem);
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
 				elem.addEventListener("input", () => {
@@ -224,37 +225,56 @@ function renderInto(obj, node, acc) {
 				});
 			}
 		} else if (tagName === "input:number") {
-			let elem = document.createElement("input");
+			elem = document.createElement("input");
 			elem.type = "number";
 			if (typeof children === "number") elem.value = children;
-			node.appendChild(elem);
-			acc.inputs.push(elem);
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
 				elem.addEventListener("input", () => {
 					if (runPtr) runPtr();
 				});
 			}
+		} else if (tagName === "button") {
+			elem = document.createElement("button");
+			elem.type = "button";
+			acc.valueGetters.push(() => {
+				if (lastClicked === elem) {
+					lastClicked = undefined;
+					return true;
+				}
+				return false;
+			});
+			if (!Array.isArray(children) || children[0] === true) children = [children];
+			children.forEach(child => renderInto(child, elem, acc));
+			if (acc.shouldListen) {
+				elem.addEventListener("click", () => {
+					lastClicked = elem;
+					if (runPtr) runPtr();
+				});
+			}
 		} else if (tagName === "input:checkbox") {
-			let elem = document.createElement("input");
 			elem.type = "checkbox";
 			elem.checked = Boolean(elem.children);
 			node.appendChild(elem);
-			acc.inputs.push(elem);
 			acc.valueGetters.push(() => elem.checked);
 			if (acc.shouldListen) {
-				elem.addEventListener("input", () => {
+				elem.addEventListener("click", function() {
+					lastClicked = elem;
 					if (runPtr) runPtr();
 				});
 			}
 		} else if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
-			let elem =
+			elem =
 				tagName.startsWith("svg:") ?
 				document.createElementNS("http://www.w3.org/2000/svg", tagName.slice(4)) :
 				document.createElement(tagName);
 			if (!Array.isArray(children) || children[0] === true) children = [children];
 			children.forEach(child => renderInto(child, elem, acc));
+		} else {
+			acc.unsafe.push(`• tag ${tagName}`);
+		}
 
+		if (elem) {
 			if (Array.isArray(attributes)) {
 				for (let attr of attributes) {
 					if (Array.isArray(attr)) {
@@ -273,8 +293,6 @@ function renderInto(obj, node, acc) {
 				}
 			}
 			node.appendChild(elem);
-		} else {
-			acc.unsafe.push(`• tag ${tagName}`);
 		}
 		return;
 	}
@@ -402,7 +420,6 @@ function init() {
 				let acc = {
 					shouldListen: persist,
 					valueGetters: [],
-					inputs: [],
 					unsafe: [],
 				};
 				renderInto(e.data.display, innerOutput, acc);
