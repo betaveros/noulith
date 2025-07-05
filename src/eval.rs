@@ -21,6 +21,7 @@ pub enum EvaluatedLvalue {
     Underscore,
     IndexedIdent(String, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
+    WithDefault(Box<EvaluatedLvalue>, Rc<LocExpr>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
@@ -47,6 +48,9 @@ impl Display for EvaluatedLvalue {
             }
             EvaluatedLvalue::Annotation(s, None) => {
                 write!(formatter, "({}:)", s)
+            }
+            EvaluatedLvalue::WithDefault(s, e) => {
+                write!(formatter, "({}={:?})", s, e)
             }
             EvaluatedLvalue::CommaSeq(vs) => {
                 write!(formatter, "(")?;
@@ -313,6 +317,10 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
                 Some(e) => Some(evaluate(env, e)?),
                 None => None,
             },
+        )),
+        Lvalue::WithDefault(s, def) => Ok(EvaluatedLvalue::WithDefault(
+            Box::new(eval_lvalue(env, s)?),
+            Rc::clone(def),
         )),
         Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
             v.iter()
@@ -1761,6 +1769,10 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             Ok(sr)
         }
         EvaluatedLvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
+        EvaluatedLvalue::WithDefault(s, _) => {
+            // FIXME: hmm sometimes
+            eval_lvalue_as_obj(env, s)
+        }
         EvaluatedLvalue::CommaSeq(v) => Ok(Obj::list(
             v.iter()
                 .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
@@ -1888,6 +1900,7 @@ pub fn assign_all(
     err_msg: &str,
 ) -> NRes<()> {
     let mut splat = None;
+    let mut defaults_in_play = Vec::new();
     for (i, lhs1) in lhs.iter().enumerate() {
         match &**lhs1 {
             EvaluatedLvalue::Splat(inner) => match splat {
@@ -1912,16 +1925,39 @@ pub fn assign_all(
                         splat = Some((i, Err((inner, anno))));
                     }
                 },
-                _ => {}
+                _ => {
+                    if !defaults_in_play.is_empty() {
+                        return Err(NErr::syntax_error(format!(
+                            "Can't have no-default after default"
+                        )));
+                    }
+                }
             },
-            _ => {}
+            EvaluatedLvalue::WithDefault(_, def) => {
+                let prev_non_splat_args = if splat.is_some() { i - 1 } else { i };
+                if rhs_len <= prev_non_splat_args {
+                    defaults_in_play.push(def);
+                }
+            }
+            _ => {
+                if !defaults_in_play.is_empty() {
+                    return Err(NErr::syntax_error(format!(
+                        "Can't have no-default after default"
+                    )));
+                }
+            }
         }
     }
+    // FIXME: defaults_in_play
     match splat {
         Some((si, inner)) => {
             // mmm we could compare against rhs len eagerly to not call it, but the bad cases don't
             // involve a splat
             let mut rhs = lazy_rhs()?;
+            for e in defaults_in_play {
+                rhs.push(evaluate(env, e)?);
+            }
+
             let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, err_msg)?;
@@ -1938,8 +1974,12 @@ pub fn assign_all(
             assign_all_basic(env, &lhs[si + 1..], rt, rrhs, err_msg)
         }
         None => {
-            if lhs.len() == rhs_len {
-                assign_all_basic(env, lhs, rt, lazy_rhs()?, err_msg)
+            if lhs.len() == rhs_len + defaults_in_play.len() {
+                let mut rhs = lazy_rhs()?;
+                for e in defaults_in_play {
+                    rhs.push(evaluate(env, e)?);
+                }
+                assign_all_basic(env, lhs, rt, rhs, err_msg)
             } else if rhs_len <= 8 {
                 Err(NErr::value_error(format!(
                     "{}: expected {} ({}), got {} ({})",
@@ -2419,6 +2459,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
             None => assign(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
         },
+        EvaluatedLvalue::WithDefault(s, _) => assign(env, s, rt, rhs),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
@@ -2520,6 +2561,7 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::Annotation(..) => Err(NErr::syntax_error(
             "can't drop LHS with annotations in it for op-assign??".to_string(),
         )),
+        EvaluatedLvalue::WithDefault(s, _) => drop_lhs(env, s),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign to raw splat {:?}",
             lhs
@@ -2561,6 +2603,10 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             None => assign_every(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign_every(env, s, Some(&to_type(t, "annotation")?), rhs),
         },
+        EvaluatedLvalue::WithDefault(..) => Err(NErr::type_error(format!(
+            "Can't assign-every to withdefault {:?}",
+            lhs
+        ))),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(
             "Can't assign-every to raw splat {:?}",
             lhs
@@ -2663,6 +2709,10 @@ pub fn modify_every(
         }
         EvaluatedLvalue::Annotation(..) => Err(NErr::type_error(format!(
             "No annotations in modify every: {:?}",
+            lhs
+        ))),
+        EvaluatedLvalue::WithDefault(..) => Err(NErr::type_error(format!(
+            "No withdefault in modify every: {:?}",
             lhs
         ))),
         EvaluatedLvalue::Splat(_) => Err(NErr::type_error(format!(

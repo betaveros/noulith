@@ -1980,6 +1980,7 @@ pub enum Lvalue {
     Literal(Obj),
     IndexedIdent(String, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
+    WithDefault(Box<Lvalue>, Rc<LocExpr>),
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
@@ -1996,6 +1997,7 @@ impl Lvalue {
             Lvalue::Literal(_) => true,
             Lvalue::IndexedIdent(..) => false,
             Lvalue::Annotation(x, _) => x.any_literals(),
+            Lvalue::WithDefault(x, _) => x.any_literals(),
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
@@ -2020,6 +2022,7 @@ impl Lvalue {
                 }
             }
             Lvalue::Annotation(x, _) => x.collect_identifiers(false),
+            Lvalue::WithDefault(x, _) => x.collect_identifiers(declared_only),
             Lvalue::CommaSeq(x) => x
                 .iter()
                 .flat_map(|e| e.collect_identifiers(declared_only))
@@ -2369,6 +2372,9 @@ fn box_freeze_underscore_ok(env: &mut FreezeEnv, expr: &Box<LocExpr>) -> NRes<Bo
         _ => box_freeze(env, expr),
     }
 }
+fn rc_freeze(env: &mut FreezeEnv, expr: &Rc<LocExpr>) -> NRes<Rc<LocExpr>> {
+    Ok(Rc::new(freeze(env, expr)?))
+}
 fn opt_box_freeze(env: &mut FreezeEnv, expr: &Option<Box<LocExpr>>) -> NRes<Option<Box<LocExpr>>> {
     match expr {
         Some(x) => Ok(Some(Box::new(freeze(env, x)?))),
@@ -2423,6 +2429,10 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
         Lvalue::Annotation(x, e) => Ok(Lvalue::Annotation(
             box_freeze_lvalue(env, x)?,
             opt_rc_freeze(env, e)?,
+        )),
+        Lvalue::WithDefault(x, d) => Ok(Lvalue::WithDefault(
+            box_freeze_lvalue(env, x)?,
+            rc_freeze(env, d)?,
         )),
         Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
             x.iter()
@@ -3511,21 +3521,7 @@ impl Parser {
                                 }
                             }
                             _ => {
-                                let params = if self.try_consume(&Token::RightArrow).is_some() {
-                                    Vec::new()
-                                } else {
-                                    // Hmm. In a lambda, `a` and `a,` are the same, but on the LHS of an
-                                    // assignment the second unpacks.
-                                    let params0 =
-                                        self.annotated_comma_separated(true, "lambda params")?;
-                                    let ps = params0
-                                        .0
-                                        .into_iter()
-                                        .map(|p| Ok(Box::new(to_lvalue_no_literals(*p)?)))
-                                        .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?;
-                                    self.require(Token::RightArrow, "lambda start: ->")?;
-                                    ps
-                                };
+                                let params = self.parameter_list()?;
                                 let body = self.single("body of lambda")?;
                                 Ok(LocExpr {
                                     start,
@@ -4149,6 +4145,7 @@ impl Parser {
         Ok(op1)
     }
 
+    // one expression (or lvalue); no : or , or =
     fn single(&mut self, ctx: &str) -> Result<LocExpr, ParseError> {
         let start = self.peek_loc();
         let mut op1 = err_add_context(self.logic_and(), ctx, start)?;
@@ -4343,6 +4340,52 @@ impl Parser {
                         Ok(pat)
                     }
                 }
+            }
+        }
+    }
+
+    // Param list for a lambda, including the right arrow. Can be empty. unlike
+    // annotated_comma_separated I am deciding that colon annotations DON'T cover multiple
+    // expressions and also CANNOT be empty.
+    fn parameter_list(&mut self) -> Result<Vec<Box<Lvalue>>, ParseError> {
+        if self.peek() == Some(&Token::RightArrow) {
+            self.advance();
+            return Ok(Vec::new());
+        }
+        let mut params = Vec::new();
+        loop {
+            let mut core_param = self.single("param")?;
+
+            if self.peek() == Some(&Token::Colon) {
+                self.advance();
+
+                let anno = self.single("param annotation")?;
+                core_param = LocExpr {
+                    start: core_param.start,
+                    end: anno.end,
+                    expr: Expr::Annotation(Box::new(core_param), Some(Rc::new(anno))),
+                };
+            }
+
+            let mut core_lvalue = to_lvalue_no_literals(core_param)?;
+
+            if self.peek() == Some(&Token::Assign) {
+                self.advance();
+                core_lvalue = Lvalue::WithDefault(
+                    Box::new(core_lvalue),
+                    Rc::new(self.single("param default")?),
+                );
+            }
+
+            params.push(Box::new(core_lvalue));
+
+            match self.peek() {
+                Some(Token::Comma) => self.advance(),
+                Some(Token::RightArrow) => {
+                    self.advance();
+                    return Ok(params);
+                }
+                _ => return Err(self.error_here(format!("param list: unexpected end"))),
             }
         }
     }
