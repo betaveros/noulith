@@ -1457,6 +1457,19 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             r
         }
         Expr::InternalPeek(i) => Env::try_borrow_peek(env, *i),
+        Expr::InternalWhile(cond, body) => loop {
+            if !((evaluate(&env, cond))?.truthy()) {
+                return Ok(Obj::Null);
+            }
+            match evaluate(&env, body) {
+                Ok(_) => (),
+                Err(NErr::Break(0, e)) => return Ok(e.unwrap_or(Obj::Null)),
+                Err(NErr::Continue(0)) => continue,
+                Err(NErr::Break(n, e)) => return Err(NErr::Break(n - 1, e)),
+                Err(NErr::Continue(n)) => return Err(NErr::Continue(n - 1)),
+                Err(e) => return Err(e),
+            }
+        },
         Expr::InternalFor(iteratee, body) => {
             match evaluate(env, iteratee)? {
                 Obj::Seq(mut s) => {

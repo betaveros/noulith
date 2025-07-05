@@ -1947,6 +1947,8 @@ pub enum Expr {
     InternalPush(Box<LocExpr>),
     InternalPop,
     InternalPeek(usize), // from rear
+
+    InternalWhile(Box<LocExpr>, Box<LocExpr>),
     // for each element, push it, run the body, then restore stack length
     InternalFor(Box<LocExpr>, Box<LocExpr>),
     InternalCall(usize, Box<LocExpr>),
@@ -2817,6 +2819,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::InternalPush(e) => Ok(Expr::InternalPush(box_freeze(env, e)?)),
             Expr::InternalPop => Ok(Expr::InternalPop),
             Expr::InternalPeek(n) => Ok(Expr::InternalPeek(*n)),
+            Expr::InternalWhile(cond, body) => Ok(Expr::InternalWhile(
+                box_freeze(env, cond)?,
+                box_freeze(env, body)?,
+            )),
             Expr::InternalFor(iteratee, body) => Ok(Expr::InternalFor(
                 box_freeze(env, iteratee)?,
                 box_freeze(env, body)?,
@@ -3713,6 +3719,18 @@ impl Parser {
                         start,
                         end,
                         expr: Expr::InternalPeek(n),
+                    })
+                }
+                Token::InternalWhile => {
+                    self.advance();
+                    self.require(Token::LeftParen, "internal while start")?;
+                    let cond = self.single("internal while cond")?;
+                    self.require(Token::RightParen, "internal while end")?;
+                    let body = self.single("internal while body")?;
+                    Ok(LocExpr {
+                        start,
+                        end: body.end,
+                        expr: Expr::InternalWhile(Box::new(cond), Box::new(body)),
                     })
                 }
                 Token::InternalFor => {
