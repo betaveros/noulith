@@ -25,6 +25,11 @@ checkbox := input_checkbox;
 slider := input_range;
 select := freeze \...args -> HtmlTag("select", ...args);
 
+svg := freeze \...args -> HtmlTag("svg:svg", args);
+circle := freeze \arg -> HtmlTag("svg:circle", [], arg);
+line := freeze \arg -> HtmlTag("svg:line", [], arg);
+rect := freeze \arg -> HtmlTag("svg:rect", [], arg);
+
 simple_counter := 0;
 display_simple := \displayable -> (
 	simple_counter += 1;
