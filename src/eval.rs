@@ -16,6 +16,24 @@ pub enum EvaluatedIndexOrSlice {
     Slice(Option<Obj>, Option<Obj>),
 }
 
+impl Display for EvaluatedIndexOrSlice {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            EvaluatedIndexOrSlice::Index(o) => write!(formatter, "{}", o),
+            EvaluatedIndexOrSlice::Slice(a, b) => {
+                if let Some(x) = a {
+                    write!(formatter, "{}", x)?;
+                }
+                write!(formatter, ":")?;
+                if let Some(x) = b {
+                    write!(formatter, "{}", x)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum EvaluatedLvalue {
     Underscore,
@@ -37,8 +55,7 @@ impl Display for EvaluatedLvalue {
             EvaluatedLvalue::IndexedIdent(s, ixs) => {
                 write!(formatter, "{}", s)?;
                 for ix in ixs {
-                    // FIXME
-                    write!(formatter, "[{:?}]", ix)?;
+                    write!(formatter, "[{}]", ix)?;
                 }
                 Ok(())
             }
@@ -1722,10 +1739,37 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             Ok(sr)
         }
         EvaluatedLvalue::Annotation(s, _) => eval_lvalue_as_obj(env, s),
-        EvaluatedLvalue::WithDefault(s, _) => {
-            // FIXME: hmm sometimes
-            eval_lvalue_as_obj(env, s)
-        }
+        EvaluatedLvalue::WithDefault(s, d) => match &**s {
+            // There's only one incredibly specific scenario where a default could make sense.
+            // I guess it's fine! Ban others though.
+            EvaluatedLvalue::IndexedIdent(s, v) => {
+                let mut sr = match s {
+                    Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
+                    Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+                };
+                match v.split_last() {
+                    None => Ok(sr),
+                    Some((vlast, vp)) => {
+                        for ix in vp {
+                            sr = index_or_slice(sr, ix)?.clone();
+                        }
+                        match (sr, vlast) {
+                            (Obj::Seq(Seq::Dict(dc, None)), EvaluatedIndexOrSlice::Index(ii)) => {
+                                match dc.get(&to_key(ii.clone())?) {
+                                    Some(dv) => Ok(dv.clone()),
+                                    None => evaluate(env, &**d),
+                                }
+                            }
+                            (Obj::Seq(Seq::Dict(_, Some(_))), _) => Err(NErr::type_error("Can't eval with default on LHS of assignment with defaulted dict. Too confusing".to_string())),
+                            _ => Err(NErr::type_error("Can't eval with default on LHS of assignment, got non-dict or non-index".to_string())),
+                        }
+                    }
+                }
+            }
+            _ => Err(NErr::syntax_error(
+                "Usually can't eval with default on LHS of assignment".to_string(),
+            )),
+        },
         EvaluatedLvalue::CommaSeq(v) => Ok(Obj::list(
             v.iter()
                 .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
@@ -1900,7 +1944,6 @@ pub fn assign_all(
             }
         }
     }
-    // FIXME: defaults_in_play
     match splat {
         Some((si, inner)) => {
             // mmm we could compare against rhs len eagerly to not call it, but the bad cases don't

@@ -2287,6 +2287,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
             )),
         },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
+        Expr::Assign(false, e, t) => Ok(Lvalue::WithDefault(e, Rc::new(*t))),
         Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
             es.into_iter()
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
