@@ -19,7 +19,7 @@ pub enum EvaluatedIndexOrSlice {
 #[derive(Debug)]
 pub enum EvaluatedLvalue {
     Underscore,
-    IndexedIdent(String, Vec<EvaluatedIndexOrSlice>),
+    IndexedIdent(Ident, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
     WithDefault(Box<EvaluatedLvalue>, Rc<LocExpr>),
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
@@ -28,7 +28,6 @@ pub enum EvaluatedLvalue {
     Literal(Obj),
     Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
     DestructureStruct(Struct, Vec<Box<EvaluatedLvalue>>),
-    InternalPeek(usize),
 }
 
 impl Display for EvaluatedLvalue {
@@ -81,9 +80,6 @@ impl Display for EvaluatedLvalue {
                     write!(formatter, "{},", v)?;
                 }
                 write!(formatter, ")")
-            }
-            EvaluatedLvalue::InternalPeek(i) => {
-                write!(formatter, "__internal_peek({})", i)
             }
         }
     }
@@ -306,7 +302,7 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
     match expr {
         Lvalue::Underscore => Ok(EvaluatedLvalue::Underscore),
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
-            s.to_string(),
+            s.clone(),
             v.iter()
                 .map(|e| Ok(eval_index_or_slice(env, e)?))
                 .collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?,
@@ -368,7 +364,6 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
             ce.finish()
         }
         Lvalue::Literally(e) => Ok(EvaluatedLvalue::Literal(evaluate(env, e)?)),
-        Lvalue::InternalPeek(e) => Ok(EvaluatedLvalue::InternalPeek(*e)),
     }
 }
 
@@ -787,41 +782,22 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         }
         Expr::Annotation(s, _) => evaluate(env, s),
         Expr::Consume(pat) => match eval_lvalue(env, pat)? {
-            EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for consume", &s)?
-                .modify_existing_var(&s, |(_type, vv)| {
-                    modify_existing_index(
-                        &mut *try_borrow_mut_nres(vv, "var for consume", &s)?,
-                        &ixs,
-                        |x| Ok(std::mem::take(x)),
-                    )
-                })
-                .ok_or(NErr::type_error("failed to consume??".to_string()))?,
-            EvaluatedLvalue::InternalPeek(i) => {
-                let mut ptr = try_borrow_mut_nres(env, "env for consume", "peek")?;
-                let s = &mut ptr.internal_stack;
-                let n = s.len();
-                let r = std::mem::take(&mut s[n - 1 - i]);
-                std::mem::drop(ptr);
-                Ok(r)
-            }
+            EvaluatedLvalue::IndexedIdent(id, ixs) => Env::modify_ident(
+                env,
+                &id,
+                |_ty, ptr| modify_existing_index(ptr, &ixs, |x| Ok(std::mem::take(x))),
+                "consume",
+            ),
             _ => Err(NErr::type_error("can't consume, weird pattern".to_string())),
         },
         Expr::Pop(pat) => add_trace(
             match eval_lvalue(env, pat)? {
-                EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for pop", &s)?
-                    .modify_existing_var(&s, |(_type, vv)| {
-                        modify_existing_index(
-                            &mut *try_borrow_mut_nres(vv, "var for pop", &s)?,
-                            &ixs,
-                            |x| match x {
-                                Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
-                                    .pop()
-                                    .ok_or(NErr::empty_error("can't pop empty".to_string())),
-                                _ => Err(NErr::type_error("can't pop".to_string())),
-                            },
-                        )
-                    })
-                    .unwrap_or(Err(NErr::type_error("failed to pop??".to_string()))),
+                EvaluatedLvalue::IndexedIdent(id, ixs) => Env::modify_ident(
+                    env,
+                    &id,
+                    |_ty, ptr| modify_existing_index(ptr, &ixs, Obj::try_pop),
+                    "pop",
+                ),
                 _ => Err(NErr::type_error_loc(
                     "can't pop, weird pattern".to_string(),
                     "pop".to_string(),
@@ -835,52 +811,23 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
         ),
         Expr::Remove(pat) => add_trace(
             match eval_lvalue(env, pat)? {
-                EvaluatedLvalue::IndexedIdent(s, ixs) => match ixs.as_slice() {
+                EvaluatedLvalue::IndexedIdent(id, ixs) => match ixs.as_slice() {
                     [] => Err(NErr::value_error(
                         "can't remove flat identifier".to_string(),
                     )),
-                    [rest @ .., last_i] => {
-                        try_borrow_nres(env, "env for remove", &s)?
-                            .modify_existing_var(&s, |(_type, vv)| {
-                                modify_existing_index(
-                                    &mut *try_borrow_mut_nres(vv, "var for remove", &s)?,
-                                    &rest,
-                                    |x| {
-                                        match (x, last_i) {
-                                            (
-                                                Obj::Seq(Seq::List(xs)),
-                                                EvaluatedIndexOrSlice::Index(i),
-                                            ) => {
-                                                let ii = pythonic_index(xs, i)?;
-                                                Ok(Rc::make_mut(xs).remove(ii))
-                                            }
-                                            (
-                                                Obj::Seq(Seq::List(xs)),
-                                                EvaluatedIndexOrSlice::Slice(i, j),
-                                            ) => {
-                                                let (lo, hi) =
-                                                    pythonic_slice_obj(xs, i.as_ref(), j.as_ref())?;
-                                                Ok(Obj::list(
-                                                    Rc::make_mut(xs).drain(lo..hi).collect(),
-                                                ))
-                                            }
-                                            (
-                                                Obj::Seq(Seq::Dict(xs, _)),
-                                                EvaluatedIndexOrSlice::Index(i),
-                                            ) => Rc::make_mut(xs)
-                                                .remove(&to_key(i.clone())?)
-                                                .ok_or(NErr::key_error(
-                                                    "key not found in dict".to_string(),
-                                                )),
-                                            // TODO: remove parts of strings...
-                                            // TODO: vecs, bytes...
-                                            _ => Err(NErr::type_error("can't remove".to_string())),
-                                        }
-                                    },
-                                )
+                    [rest @ .., last_i] => Env::modify_ident(
+                        env,
+                        &id,
+                        |_ty, x| {
+                            modify_existing_index(x, &rest, |x| match last_i {
+                                EvaluatedIndexOrSlice::Index(i) => x.try_remove_index(i),
+                                EvaluatedIndexOrSlice::Slice(i, j) => {
+                                    x.try_remove_slice(i.as_ref(), j.as_ref())
+                                }
                             })
-                            .unwrap_or(Err(NErr::name_error("var not found to remove".to_string())))
-                    }
+                        },
+                        "remove",
+                    ),
                 },
                 _ => Err(NErr::type_error("can't pop, weird pattern".to_string())),
             },
@@ -1375,14 +1322,17 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             );
             assign(
                 &env,
-                &EvaluatedLvalue::IndexedIdent((&**name).clone(), Vec::new()),
+                &EvaluatedLvalue::IndexedIdent(Ident::Ident((&**name).clone()), Vec::new()),
                 Some(&ObjType::Func),
                 Obj::Func(Func::Type(ObjType::Struct(s.clone())), Precedence::zero()),
             )?;
             for (i, field) in field_names.iter().enumerate() {
                 assign(
                     &env,
-                    &EvaluatedLvalue::IndexedIdent((&*(*field).0).clone(), Vec::new()),
+                    &EvaluatedLvalue::IndexedIdent(
+                        Ident::Ident((&*(*field).0).clone()),
+                        Vec::new(),
+                    ),
                     Some(&ObjType::Func),
                     Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
                 )?;
@@ -1762,7 +1712,10 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             "Can't evaluate underscore on LHS of assignment??".to_string(),
         )),
         EvaluatedLvalue::IndexedIdent(s, v) => {
-            let mut sr = Env::try_borrow_get_var(env, s)?;
+            let mut sr = match s {
+                Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
+                Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+            };
             for ix in v {
                 sr = index_or_slice(sr, ix)?.clone();
             }
@@ -1809,7 +1762,6 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 )))
             }
         }
-        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_peek(env, *i),
     }
 }
 
@@ -2415,20 +2367,29 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
             }
             Ok(())
         }
-        EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
-            Some(ty) => {
-                // declaration
-                if ixs.is_empty() {
-                    insert_declare(env, s, ty.clone(), rhs.clone())
-                } else {
-                    return Err(NErr::name_error(format!(
-                        "Can't declare new value into index expression: {:?} {:?}",
-                        s, ixs
-                    )));
-                }
+        EvaluatedLvalue::IndexedIdent(id, ixs) => {
+            match id {
+                Ident::Ident(s) => match rt {
+                    Some(ty) => {
+                        // declaration
+                        if ixs.is_empty() {
+                            insert_declare(env, s, ty.clone(), rhs.clone())
+                        } else {
+                            return Err(NErr::name_error(format!(
+                                "Can't declare new value into index expression: {:?} {:?}",
+                                s, ixs
+                            )));
+                        }
+                    }
+                    None => assign_respecting_type(env, s, ixs, rhs, /* every */ false),
+                },
+                Ident::InternalPeek(i) => match rt {
+                    Some(_) => Err(NErr::name_error(format!("Can't declare into peek"))),
+                    None => try_borrow_mut_nres(env, &format!("peek {}", i), "peek")?
+                        .modify_peek(*i, |x| set_index(x, ixs, Some(rhs), false)),
+                },
             }
-            None => assign_respecting_type(env, s, ixs, rhs, /* every */ false),
-        },
+        }
         EvaluatedLvalue::CommaSeq(ss) => match rhs {
             Obj::Seq(Seq::List(ls)) => assign_all(
                 env,
@@ -2519,7 +2480,6 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 "Destructuring structure failed: not type".to_string(),
             )),
         },
-        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, rhs),
     }
 }
 
@@ -2536,27 +2496,15 @@ pub fn drop_lhs_all(env: &REnv, lhs: &[Box<EvaluatedLvalue>]) -> NRes<()> {
 pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
-        EvaluatedLvalue::IndexedIdent(s, ixs) => try_borrow_nres(env, "env for dropping lhs", s)?
-            .modify_existing_var(s, |(_ty, v)| {
+        EvaluatedLvalue::IndexedIdent(s, ixs) => Env::modify_ident(
+            env,
+            s,
+            |_ty, ptr| {
                 // overriding type!!
-                set_index(
-                    &mut *try_borrow_mut_nres(v, "var for dropping lhs", s)?,
-                    ixs,
-                    None,
-                    true,
-                )?;
-                Ok(())
-            })
-            .ok_or_else(|| {
-                NErr::name_error(if ixs.is_empty() {
-                    format!("Variable {:?} not found (use := to declare)", s)
-                } else {
-                    format!(
-                        "Variable {:?} not found, couldn't set into index {:?}",
-                        s, ixs
-                    )
-                })
-            })?,
+                set_index(ptr, ixs, None, true)
+            },
+            "drop",
+        ),
         EvaluatedLvalue::CommaSeq(ss) => drop_lhs_all(env, ss),
         EvaluatedLvalue::Annotation(..) => Err(NErr::syntax_error(
             "can't drop LHS with annotations in it for op-assign??".to_string(),
@@ -2572,14 +2520,13 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
         EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
         EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
-        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, Obj::Null),
     }
 }
 
 pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
-        EvaluatedLvalue::IndexedIdent(s, ixs) => match rt {
+        EvaluatedLvalue::IndexedIdent(Ident::Ident(s), ixs) => match rt {
             Some(ty) => {
                 // declaration
                 if ixs.is_empty() {
@@ -2593,6 +2540,17 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             }
             None => assign_respecting_type(env, s, ixs, rhs, /* every */ true),
         },
+        EvaluatedLvalue::IndexedIdent(Ident::InternalPeek(i), ixs) => {
+            if rt.is_some() {
+                Err(NErr::name_error(format!(
+                    "Can't declare new value into peek: {:?} {:?}",
+                    i, ixs
+                )))
+            } else {
+                try_borrow_mut_nres(env, "peek", "drop")?
+                    .modify_peek(*i, |x| set_index(x, ixs, None, true))
+            }
+        }
         EvaluatedLvalue::CommaSeq(ss) => {
             for v in ss {
                 assign_every(env, v, rt, rhs.clone())?;
@@ -2656,7 +2614,6 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             "Can't assign-every to struct {:?}",
             lhs
         ))),
-        EvaluatedLvalue::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, rhs),
     }
 }
 
@@ -2671,15 +2628,20 @@ pub fn modify_every(
         EvaluatedLvalue::Underscore => Err(NErr::type_error(format!("Can't modify underscore"))),
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             // drop borrow immediately
-            let mut old: Obj = Env::try_borrow_get_var(env, s)?;
+            let mut old: Obj = match s {
+                Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
+                Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+            };
 
             if ixs.is_empty() {
                 let new = rhs(old)?;
-                try_borrow_nres(env, "env for modify every", s)?
-                    .modify_existing_var(s, |(ty, old)| {
+                Env::modify_ident(
+                    env,
+                    s,
+                    |ty, ptr| {
                         // FIXME is there possibly another double borrow here?
                         if is_type(ty, &new) {
-                            *try_borrow_mut_nres(old, "var for modify every", s)? = new.clone();
+                            *ptr = new.clone();
                             Ok(())
                         } else {
                             Err(NErr::name_error(format!(
@@ -2689,16 +2651,21 @@ pub fn modify_every(
                                 ty.name()
                             )))
                         }
-                    })
-                    .ok_or_else(|| {
-                        NErr::name_error(format!("Variable {:?} not found in modify every", s))
-                    })?
+                    },
+                    "modify every",
+                )
             } else {
                 modify_every_existing_index(&mut old, ixs, &mut |x: &mut Obj| {
                     *x = rhs(std::mem::take(x))?;
                     Ok(())
                 })?;
-                assign_respecting_type(env, s, &[], old, false /* every */)
+
+                match s {
+                    Ident::Ident(s) => {
+                        assign_respecting_type(env, s, &[], old, false /* every */)
+                    }
+                    Ident::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, old),
+                }
             }
         }
         EvaluatedLvalue::CommaSeq(ss) => {
@@ -2732,12 +2699,6 @@ pub fn modify_every(
             "Can't modify destructure struct {:?}",
             lhs
         ))),
-        EvaluatedLvalue::InternalPeek(i) => {
-            let old = Env::try_borrow_peek(env, *i)?;
-            let new = rhs(old)?;
-            Env::try_borrow_set_peek(env, *i, new)?;
-            Ok(())
-        }
     }
 }
 

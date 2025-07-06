@@ -758,3 +758,15 @@ fn breaking() {
         i(40)
     );
 }
+
+#[test]
+fn internal_stuff() {
+    assert_eq!(simple_eval("🐉push 1234; 🐉pop"), i(1234));
+    assert_eq!(simple_eval("🐉push 7; 🐉push 4; 🐉call 2 -"), i(3));
+    assert_eq!(
+        simple_eval("🐉push 100; 🐉for (1 to 10) 🐉push 🐉call 2 +; 🐉pop"),
+        i(155)
+    );
+    assert_eq!(simple_eval("🐉push 7; 🐉0 -= 4; 🐉pop"), i(3));
+    assert_eq!(simple_eval("🐉push 7; 🐉for (3) (🐉0 -= 1); 🐉pop"), i(4));
+}

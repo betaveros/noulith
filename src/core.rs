@@ -486,6 +486,42 @@ impl<T: Clone + Into<Obj> + Display + Debug + 'static + MaybeSync + MaybeSend> S
     // fn reversed...
 }
 
+impl Obj {
+    pub fn try_pop(&mut self) -> NRes<Obj> {
+        match self {
+            Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
+                .pop()
+                .ok_or(NErr::empty_error("can't pop empty".to_string())),
+            _ => Err(NErr::type_error("can't pop".to_string())),
+        }
+    }
+    pub fn try_remove_index(&mut self, index: &Obj) -> NRes<Obj> {
+        match self {
+            Obj::Seq(Seq::List(xs)) => {
+                let ii = pythonic_index(xs, index)?;
+                Ok(Rc::make_mut(xs).remove(ii))
+            }
+            Obj::Seq(Seq::Dict(xs, _)) => Rc::make_mut(xs)
+                .remove(&to_key(index.clone())?)
+                .ok_or(NErr::key_error("key not found in dict".to_string())),
+            // TODO: remove parts of strings...
+            // TODO: vecs, bytes...
+            _ => Err(NErr::type_error("can't remove".to_string())),
+        }
+    }
+    pub fn try_remove_slice(&mut self, lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<Obj> {
+        match self {
+            Obj::Seq(Seq::List(xs)) => {
+                let (lo, hi) = pythonic_slice_obj(xs, lo, hi)?;
+                Ok(Obj::list(Rc::make_mut(xs).drain(lo..hi).collect()))
+            }
+            // TODO: remove parts of strings...
+            // TODO: vecs, bytes...
+            _ => Err(NErr::type_error("can't remove".to_string())),
+        }
+    }
+}
+
 // Functions
 
 #[derive(Debug, Clone, Copy)]
@@ -1974,11 +2010,26 @@ impl Expr {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum Ident {
+    Ident(String),
+    InternalPeek(usize),
+}
+
+impl Display for Ident {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Ident::Ident(x) => write!(formatter, "{}", x),
+            Ident::InternalPeek(x) => write!(formatter, "🐉{}", x),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Lvalue {
     Underscore,
     Literal(Obj),
-    IndexedIdent(String, Vec<IndexOrSlice>),
+    IndexedIdent(Ident, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
     WithDefault(Box<Lvalue>, Rc<LocExpr>),
     CommaSeq(Vec<Box<Lvalue>>),
@@ -1987,7 +2038,6 @@ pub enum Lvalue {
     Destructure(Box<LocExpr>, Vec<Box<Lvalue>>),
     ChainDestructure(Box<Lvalue>, Vec<(Box<LocExpr>, Box<Lvalue>)>),
     Literally(Box<LocExpr>),
-    InternalPeek(usize),
 }
 
 impl Lvalue {
@@ -2006,7 +2056,6 @@ impl Lvalue {
                 lv.any_literals() || vs.iter().any(|e| e.1.any_literals())
             }
             Lvalue::Literally(_) => true,
-            Lvalue::InternalPeek(_) => false,
         }
     }
 
@@ -2014,13 +2063,14 @@ impl Lvalue {
         match self {
             Lvalue::Underscore => HashSet::new(),
             Lvalue::Literal(_) => HashSet::new(),
-            Lvalue::IndexedIdent(x, _) => {
+            Lvalue::IndexedIdent(Ident::Ident(x), _) => {
                 if declared_only {
                     HashSet::new()
                 } else {
                     HashSet::from([x.clone()])
                 }
             }
+            Lvalue::IndexedIdent(Ident::InternalPeek(_), _) => HashSet::new(),
             Lvalue::Annotation(x, _) => x.collect_identifiers(false),
             Lvalue::WithDefault(x, _) => x.collect_identifiers(declared_only),
             Lvalue::CommaSeq(x) => x
@@ -2046,7 +2096,6 @@ impl Lvalue {
                 s
             }
             Lvalue::Literally(_) => HashSet::new(),
-            Lvalue::InternalPeek(_) => HashSet::new(),
         }
     }
 }
@@ -2213,7 +2262,7 @@ impl ParseError {
 pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
     match expr.expr {
         Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
-        Expr::Ident(s) => Ok(Lvalue::IndexedIdent(s, Vec::new())),
+        Expr::Ident(s) => Ok(Lvalue::IndexedIdent(Ident::Ident(s), Vec::new())),
         Expr::Underscore => Ok(Lvalue::Underscore),
         Expr::Index(e, i) => match to_lvalue(*e)? {
             Lvalue::IndexedIdent(idn, mut ixs) => {
@@ -2265,7 +2314,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
                 .collect::<Result<Vec<(Box<LocExpr>, Box<Lvalue>)>, ParseError>>()?,
         )),
         Expr::Literally(e) => Ok(Lvalue::Literally(e)),
-        Expr::InternalPeek(i) => Ok(Lvalue::InternalPeek(i)),
+        Expr::InternalPeek(i) => Ok(Lvalue::IndexedIdent(Ident::InternalPeek(i), Vec::new())),
         _ => Err(ParseError::expr(
             format!("can't to_lvalue"),
             expr.start,
@@ -2398,33 +2447,29 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
         Lvalue::Underscore => Ok(Lvalue::Underscore),
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
         Lvalue::IndexedIdent(s, ioses) => {
-            if env.bound.contains(s) {
-                Ok(Lvalue::IndexedIdent(
-                    s.clone(),
-                    ioses
-                        .iter()
-                        .map(|ios| freeze_ios(env, ios))
-                        .collect::<NRes<Vec<IndexOrSlice>>>()?,
-                ))
-            } else if env.warn {
-                eprintln!(
-                    "\x1b[1;33mWARNING\x1b[0;33m: ident in lvalue not bound: {}\x1b[0m",
-                    s
-                );
-                env.bound.insert(s.clone());
-                Ok(Lvalue::IndexedIdent(
-                    s.clone(),
-                    ioses
-                        .iter()
-                        .map(|ios| freeze_ios(env, ios))
-                        .collect::<NRes<Vec<IndexOrSlice>>>()?,
-                ))
-            } else {
-                Err(NErr::name_error(format!(
-                    "ident in lvalue not bound: {}",
-                    s
-                )))
+            if let Ident::Ident(id) = s {
+                if env.bound.contains(id) {
+                    // fine
+                } else if env.warn {
+                    eprintln!(
+                        "\x1b[1;33mWARNING\x1b[0;33m: ident in lvalue not bound: {}\x1b[0m",
+                        id
+                    );
+                    env.bound.insert(id.clone());
+                } else {
+                    return Err(NErr::name_error(format!(
+                        "ident in lvalue not bound: {}",
+                        id
+                    )));
+                }
             }
+            Ok(Lvalue::IndexedIdent(
+                s.clone(),
+                ioses
+                    .iter()
+                    .map(|ios| freeze_ios(env, ios))
+                    .collect::<NRes<Vec<IndexOrSlice>>>()?,
+            ))
         }
         Lvalue::Annotation(x, e) => Ok(Lvalue::Annotation(
             box_freeze_lvalue(env, x)?,
@@ -2457,7 +2502,6 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
                 .collect::<NRes<Vec<(Box<LocExpr>, Box<Lvalue>)>>>()?,
         )),
         Lvalue::Literally(e) => Ok(Lvalue::Literally(box_freeze(env, e)?)),
-        Lvalue::InternalPeek(e) => Ok(Lvalue::InternalPeek(*e)),
     }
 }
 
@@ -3481,7 +3525,10 @@ impl Parser {
                                 end: switch_end,
                             }) => {
                                 // "magic" variable normally inexpressible
-                                let param = Lvalue::IndexedIdent("switch".to_string(), Vec::new());
+                                let param = Lvalue::IndexedIdent(
+                                    Ident::Ident("switch".to_string()),
+                                    Vec::new(),
+                                );
                                 let scrutinee = LocExpr {
                                     expr: Expr::Ident("switch".to_string()),
                                     start: *switch_start,
@@ -4719,6 +4766,28 @@ impl Env {
                 Ok(p) => cell_borrow(p).modify_existing_var(key, f),
                 Err(_) => None,
             },
+        }
+    }
+
+    pub fn modify_peek<T>(&mut self, i: usize, f: impl FnOnce(&mut Obj) -> NRes<T>) -> NRes<T> {
+        let s = &mut self.internal_stack;
+        let n = s.len();
+        f(&mut s[n - 1 - i])
+    }
+
+    pub fn modify_ident<T>(
+        env: &Rc<RefCell<Env>>,
+        ident: &Ident,
+        f: impl FnOnce(&ObjType, &mut Obj) -> NRes<T>,
+        op: &str,
+    ) -> NRes<T> {
+        match ident {
+            Ident::Ident(s) => try_borrow_nres(env, op, &s)?
+                .modify_existing_var(&s, |(ty, vv)| f(ty, &mut *try_borrow_mut_nres(vv, op, &s)?))
+                .ok_or_else(|| NErr::name_error(format!("Variable {} not found", op)))?,
+            Ident::InternalPeek(i) => {
+                try_borrow_mut_nres(env, op, "peek")?.modify_peek(*i, |x| f(&ObjType::Any, x))
+            }
         }
     }
 
