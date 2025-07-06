@@ -4230,7 +4230,7 @@ pub fn initialize(env: &mut Env) {
     });
     env.insert_builtin(TwoArgBuiltin {
         name: "is".to_string(),
-        body: |a, b| Ok(Obj::from(is_type(&to_type(&b, "builtin 'is'")?, &a))),
+        body: |a, b| Ok(Obj::from(is_type(&to_type(&b, "builtin 'is'")?, &a)?)),
     });
     env.insert_type(ObjType::Null);
     env.insert_type(ObjType::Int);

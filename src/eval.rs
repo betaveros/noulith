@@ -2308,7 +2308,7 @@ pub fn modify_every_existing_index(
 }
 
 pub fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
-    if !is_type(&ty, &rhs) {
+    if !is_type(&ty, &rhs)? {
         Err(NErr::name_error(format!(
             "Declaring, type mismatch: {} is not of type {}",
             rhs,
@@ -2332,13 +2332,13 @@ pub fn assign_respecting_type(
         // FIXME is there possibly a double borrow here? maybe not because we only use immutable
         // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
         // constructed to mutably borrow the variable it's for?
-        if ixs.is_empty() && !is_type(ty, &rhs) {
+        if ixs.is_empty() && !is_type(ty, &rhs)? {
             Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, FmtObj::debug(&rhs), ty.name())))?
         }
         set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, Some(rhs), every)?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
-        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?) {
+        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?)? {
             Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): not {}", s, ty.name())))
         } else {
             Ok(())
@@ -2355,7 +2355,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
         EvaluatedLvalue::Underscore => {
             match rt {
                 Some(ty) => {
-                    if !is_type(&ty, &rhs) {
+                    if !is_type(&ty, &rhs)? {
                         return Err(NErr::type_error(format!(
                             "Assigning to underscore type mismatch: {} is not of type {}",
                             rhs,
@@ -2640,7 +2640,7 @@ pub fn modify_every(
                     s,
                     |ty, ptr| {
                         // FIXME is there possibly another double borrow here?
-                        if is_type(ty, &new) {
+                        if is_type(ty, &new)? {
                             *ptr = new.clone();
                             Ok(())
                         } else {
@@ -2965,8 +2965,8 @@ impl Func {
     }
 }
 
-pub fn is_type(ty: &ObjType, arg: &Obj) -> bool {
-    match (ty, arg) {
+pub fn is_type(ty: &ObjType, arg: &Obj) -> NRes<bool> {
+    Ok(match (ty, arg) {
         (ObjType::Null, Obj::Null) => true,
         (ObjType::Int, Obj::Num(NNum::Int(_))) => true,
         (ObjType::Float, Obj::Num(NNum::Float(_))) => true,
@@ -2982,15 +2982,9 @@ pub fn is_type(ty: &ObjType, arg: &Obj) -> bool {
         (ObjType::Type, Obj::Func(Func::Type(_), _)) => true,
         (ObjType::Any, _) => true,
         (ObjType::Struct(s1), Obj::Instance(s2, _)) => s1.id == s2.id,
-        (ObjType::Satisfying(renv, func), x) => match func.run1(renv, x.clone()) {
-            Ok(res) => res.truthy(),
-            Err(e) => {
-                eprintln!("INTERNAL ERROR: running the predicate for a 'satisfying'-type-check failed with; {}! trudging on...", e);
-                false // FIXME yikes
-            }
-        },
+        (ObjType::Satisfying(renv, func), x) => func.run1(renv, x.clone())?.truthy(),
         _ => false,
-    }
+    })
 }
 
 /*
