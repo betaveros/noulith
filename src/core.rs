@@ -1895,7 +1895,7 @@ pub enum ForIteration {
 #[derive(Debug)]
 pub enum ForBody {
     Execute(LocExpr),
-    Yield(LocExpr, Option<LocExpr>),
+    Yield(LocExpr, /*into*/ Option<LocExpr>),
     YieldItem(LocExpr, LocExpr, Option<LocExpr>),
 }
 
@@ -2376,8 +2376,13 @@ pub struct Parser {
 // point. Some constant optimizations occur.
 #[derive(Clone)]
 pub struct FreezeEnv {
+    // bound variables
     pub bound: HashSet<String>,
-    pub env: Rc<RefCell<Env>>,
+
+    pub env: REnv,
+
+    // if true, just static pass to warn about issues that are easy to detect;
+    // if false, actually freeze
     pub warn: bool,
 }
 
@@ -2443,6 +2448,7 @@ fn box_freeze_lvalue(env: &mut FreezeEnv, lvalue: &Box<Lvalue>) -> NRes<Box<Lval
 }
 
 fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
+    // (in an expression that writes to it)
     match lvalue {
         Lvalue::Underscore => Ok(Lvalue::Underscore),
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
@@ -2457,6 +2463,7 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
                     );
                     env.bound.insert(id.clone());
                 } else {
+                    // frozen code can't write to an outside lvalue
                     return Err(NErr::name_error(format!(
                         "ident in lvalue not bound: {}",
                         id
