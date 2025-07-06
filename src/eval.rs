@@ -539,6 +539,17 @@ fn symbol_access(obj: Obj, sym: &str) -> NRes<Obj> {
     }
 }
 
+fn destructure_top_level_ands(lvalue: EvaluatedLvalue) -> Vec<EvaluatedLvalue> {
+    match lvalue {
+        EvaluatedLvalue::And(a, b) => {
+            let mut aa = destructure_top_level_ands(*a);
+            aa.extend(destructure_top_level_ands(*b));
+            aa
+        }
+        lvalue => vec![lvalue]
+    }
+}
+
 pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
     match &expr.expr {
         Expr::Null => Ok(Obj::Null),
@@ -896,33 +907,40 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             } else {
                 let p = eval_lvalue(env, pat)?;
-                let pv = eval_lvalue_as_obj(env, &p)?;
+                let lhs_items = destructure_top_level_ands(p).into_iter().map(|p| {
+                    Ok((eval_lvalue_as_obj(env, &p)?, p))
+                }).collect::<NRes<Vec<(Obj, EvaluatedLvalue)>>>()?;
+
                 match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
-                        let res = match &**rhs {
+                        let mut rhs_value = match &**rhs {
                             LocExpr {
                                 expr: Expr::CommaSeq(xs),
                                 ..
                             } => Ok(Obj::list(eval_seq(env, xs)?)),
                             _ => evaluate(env, rhs),
                         }?;
-                        // Drop the Rc from the lvalue so that functions can try to consume it. We
-                        // used to only do this when the function was pure, but that required a
-                        // stupid amount of code to bookkeep and prevents users from writing
-                        // consuming modifiers. Instead it's now enshrined into the semantics.
-                        add_trace(
-                            drop_lhs(&env, &p),
-                            || format!("null-assign"),
-                            expr.start,
-                            expr.end,
-                        )?;
-                        let fres = ff.run2(env, pv, res)?;
-                        add_trace(
-                            assign(&env, &p, None, fres),
-                            || format!("op({})-assign", ff),
-                            expr.start,
-                            expr.end,
-                        )?;
+                        let ps_len = lhs_items.len();
+                        for (i, (lhs_value, lvalue)) in lhs_items.into_iter().enumerate() {
+                            // Drop the Rc from the lvalue so that functions can try to consume it. We
+                            // used to only do this when the function was pure, but that required a
+                            // stupid amount of code to bookkeep and prevents users from writing
+                            // consuming modifiers. Instead it's now enshrined into the semantics.
+                            add_trace(
+                                drop_lhs(&env, &lvalue),
+                                || format!("null-assign"),
+                                expr.start,
+                                expr.end,
+                            )?;
+                            let rhs_value_clone = if i + 1 == ps_len { std::mem::take(&mut rhs_value) } else { rhs_value.clone() };
+                            let combined = ff.run2(env, lhs_value, rhs_value_clone)?;
+                            add_trace(
+                                assign(&env, &lvalue, None, combined),
+                                || format!("op({})-assign", ff),
+                                expr.start,
+                                expr.end,
+                            )?;
+                        }
                         Ok(Obj::Null)
                     }
                     opv => Err(NErr::type_error(format!(
