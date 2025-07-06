@@ -2035,6 +2035,7 @@ pub enum Lvalue {
     CommaSeq(Vec<Box<Lvalue>>),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
+    And(Box<Lvalue>, Box<Lvalue>),
     Destructure(Box<LocExpr>, Vec<Box<Lvalue>>),
     ChainDestructure(Box<Lvalue>, Vec<(Box<LocExpr>, Box<Lvalue>)>),
     Literally(Box<LocExpr>),
@@ -2051,6 +2052,7 @@ impl Lvalue {
             Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
+            Lvalue::And(a, b) => a.any_literals() || b.any_literals(),
             Lvalue::Destructure(_, vs) => vs.iter().any(|e| e.any_literals()),
             Lvalue::ChainDestructure(lv, vs) => {
                 lv.any_literals() || vs.iter().any(|e| e.1.any_literals())
@@ -2080,6 +2082,11 @@ impl Lvalue {
             Lvalue::Splat(x) => x.collect_identifiers(declared_only),
             Lvalue::Or(a, b) => {
                 // sus
+                let mut s = a.collect_identifiers(declared_only);
+                s.extend(b.collect_identifiers(declared_only));
+                s
+            }
+            Lvalue::And(a, b) => {
                 let mut s = a.collect_identifiers(declared_only);
                 s.extend(b.collect_identifiers(declared_only));
                 s
@@ -2298,6 +2305,10 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
         Expr::IntLit(n) => Ok(Lvalue::Literal(Obj::from(n))),
         Expr::StringLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::String(n)))),
         Expr::BytesLit(n) => Ok(Lvalue::Literal(Obj::Seq(Seq::Bytes(n)))),
+        Expr::And(a, b) => Ok(Lvalue::And(
+            Box::new(to_lvalue(*a)?),
+            Box::new(to_lvalue(*b)?),
+        )),
         Expr::Or(a, b) => Ok(Lvalue::Or(
             Box::new(to_lvalue(*a)?),
             Box::new(to_lvalue(*b)?),
@@ -2494,6 +2505,10 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
         )),
         Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(env, x)?)),
         Lvalue::Or(a, b) => Ok(Lvalue::Or(
+            box_freeze_lvalue(env, a)?,
+            box_freeze_lvalue(env, b)?,
+        )),
+        Lvalue::And(a, b) => Ok(Lvalue::And(
             box_freeze_lvalue(env, a)?,
             box_freeze_lvalue(env, b)?,
         )),

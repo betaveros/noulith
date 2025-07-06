@@ -43,6 +43,7 @@ pub enum EvaluatedLvalue {
     CommaSeq(Vec<Box<EvaluatedLvalue>>),
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
+    And(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     Literal(Obj),
     Destructure(Rc<dyn Builtin>, Vec<Box<EvaluatedLvalue>>),
     DestructureStruct(Struct, Vec<Box<EvaluatedLvalue>>),
@@ -80,6 +81,9 @@ impl Display for EvaluatedLvalue {
             }
             EvaluatedLvalue::Or(a, b) => {
                 write!(formatter, "({} or {})", a, b)
+            }
+            EvaluatedLvalue::And(a, b) => {
+                write!(formatter, "({} and {})", a, b)
             }
             EvaluatedLvalue::Literal(a) => {
                 write!(formatter, "literal({})", a)
@@ -342,6 +346,10 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
         Lvalue::Or(a, b) => Ok(EvaluatedLvalue::Or(
+            Box::new(eval_lvalue(env, a)?),
+            Box::new(eval_lvalue(env, b)?),
+        )),
+        Lvalue::And(a, b) => Ok(EvaluatedLvalue::And(
             Box::new(eval_lvalue(env, a)?),
             Box::new(eval_lvalue(env, b)?),
         )),
@@ -1782,6 +1790,9 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
         EvaluatedLvalue::Or(..) => Err(NErr::syntax_error(
             "Can't evaluate or on LHS of assignment??".to_string(),
         )),
+        EvaluatedLvalue::And(..) => Err(NErr::syntax_error(
+            "Can't evaluate and on LHS of assignment??".to_string(),
+        )),
         // seems questionable
         EvaluatedLvalue::Literal(x) => Ok(x.clone()),
         // very cursed, but there's only one reasonable definition
@@ -2472,6 +2483,10 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
             Ok(()) => Ok(()),
             Err(_) => assign(env, b, rt, rhs),
         },
+        EvaluatedLvalue::And(a, b) => {
+            assign(env, a, rt, rhs.clone())?;
+            assign(env, b, rt, rhs)
+        },
         EvaluatedLvalue::Literal(obj) => {
             if obj == &rhs {
                 Ok(())
@@ -2560,6 +2575,10 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::Or(..) => Err(NErr::syntax_error(
             "can't drop LHS with or for op-assign??".to_string(),
         )),
+        EvaluatedLvalue::And(a, b) => {
+            drop_lhs(env, &**a)?;
+            drop_lhs(env, &**b)
+        },
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
         EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
         EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
@@ -2616,6 +2635,10 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             "Can't assign-every to or {:?}",
             lhs
         ))),
+        EvaluatedLvalue::And(a, b) => {
+            assign_every(env, a, rt, rhs.clone())?;
+            assign_every(env, b, rt, rhs)
+        }
         EvaluatedLvalue::Literal(obj) => {
             if obj == &rhs {
                 Ok(())
@@ -2730,6 +2753,10 @@ pub fn modify_every(
             lhs
         ))),
         EvaluatedLvalue::Or(..) => Err(NErr::type_error(format!("Can't modify or {:?}", lhs))),
+        EvaluatedLvalue::And(a, b) => {
+            modify_every(env, a, rhs)?;
+            modify_every(env, b, rhs)
+        }
         EvaluatedLvalue::Literal(x) => Err(NErr::type_error(format!(
             "Can't modify literal {}",
             FmtObj::debug(x)
