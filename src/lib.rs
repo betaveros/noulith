@@ -3726,7 +3726,7 @@ pub fn initialize(env: &mut Env) {
                             b.run1(env, e?)?;
                             Ok(())
                         })
-                        .collect::<NRes<_>>()?;
+                        .collect::<NRes<()>>()?;
                     Ok(Obj::Null)
                 }
                 _ => Err(NErr::type_error("not callable".to_string())),
