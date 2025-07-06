@@ -3807,7 +3807,7 @@ impl Parser {
                     self.require(Token::LeftParen, "internal for start")?;
                     let iteratee = self.single("internal for iteratee")?;
                     self.require(Token::RightParen, "internal for end")?;
-                    let body = self.single("internal for body")?;
+                    let body = self.assignment()?;
                     Ok(LocExpr {
                         start,
                         end: body.end,

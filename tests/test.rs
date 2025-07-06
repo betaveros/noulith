@@ -768,5 +768,5 @@ fn internal_stuff() {
         i(155)
     );
     assert_eq!(simple_eval("🐉push 7; 🐉0 -= 4; 🐉pop"), i(3));
-    assert_eq!(simple_eval("🐉push 7; 🐉for (3) (🐉0 -= 1); 🐉pop"), i(4));
+    assert_eq!(simple_eval("🐉push 7; 🐉for (3) 🐉0 -= 1; 🐉pop"), i(4));
 }
