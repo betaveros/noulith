@@ -80,6 +80,7 @@ let persistedElements = {};
 let persistedGetters = {};
 let lastClicked;
 let runPtr;
+let queuedRun = undefined;
 
 async function prepare() {
 	// await wasm_bindgen('./pkg/paradoc_bg.wasm');
@@ -92,6 +93,11 @@ async function prepare() {
 	const stateful = document.getElementById('stateful');
 	const auto = document.getElementById('auto');
 	function run() {
+		if (queuedRun !== undefined) {
+			window.clearTimeout(queuedRun);
+			queuedRun = undefined;
+		}
+
 		runner.disabled = true;
 		stopper.disabled = false;
 		pendingClear = true;
@@ -129,6 +135,11 @@ async function prepare() {
 		}
 	}
 	function stop() {
+		if (queuedRun !== undefined) {
+			window.clearTimeout(queuedRun);
+			queuedRun = undefined;
+		}
+
 		myWorker.terminate();
 		runner.disabled = true;
 		stopper.disabled = true;
@@ -152,7 +163,7 @@ async function prepare() {
 	}));
 	[code, input].forEach(elem => elem.addEventListener('input', function(event) {
 		if (auto.checked) {
-			runAsap();
+			tryRunSoon();
 		}
 	}));
 	runner.disabled = false;
@@ -162,6 +173,13 @@ async function prepare() {
 	if (pendingRun) {
 		pendingRun = false;
 		run();
+	}
+}
+function tryRunSoon() {
+	if (document.getElementById('stop').disabled && runPtr) {
+		runPtr();
+	} else if (queuedRun === undefined) {
+		queuedRun = window.setTimeout(tryRunSoon, 50);
 	}
 }
 
@@ -205,6 +223,13 @@ function isAttrSafe(tag, attr, value) {
 		return svgAttrs.includes(attr);
 	}
 }
+function softToNumber(value) {
+	if (!isNaN(value) && !isNaN(parseFloat(value))) {
+		return Number(value);
+	} else {
+		return value;
+	}
+}
 function renderInto(obj, node, acc) {
 	const sanitize = document.getElementById('sanitize');
 	if (Array.isArray(obj) && obj[0] === true && obj[1] === 'HtmlTag') {
@@ -240,9 +265,7 @@ function renderInto(obj, node, acc) {
 			}
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
-				elem.addEventListener("input", () => {
-					if (runPtr) runPtr();
-				});
+				elem.addEventListener("input", tryRunSoon);
 			}
 		} else if (tagName === "input:number") {
 			elem = document.createElement("input");
@@ -256,17 +279,9 @@ function renderInto(obj, node, acc) {
 				elem.placeholder = attributesObj.placeholder;
 				delete attributesObj.placeholder;
 			}
-			acc.valueGetters.push(() => {
-				if (!isNaN(elem.value) && !isNaN(parseFloat(elem.value))) {
-					return Number(elem.value);
-				} else {
-					return elem.value;
-				}
-			});
+			acc.valueGetters.push(() => softToNumber(elem.value));
 			if (acc.shouldListen) {
-				elem.addEventListener("input", () => {
-					if (runPtr) runPtr();
-				});
+				elem.addEventListener("input", tryRunSoon);
 			}
 		} else if (tagName === "button") {
 			elem = document.createElement("button");
@@ -287,19 +302,16 @@ function renderInto(obj, node, acc) {
 			if (acc.shouldListen) {
 				elem.addEventListener("click", () => {
 					lastClicked = elem;
-					if (runPtr) runPtr();
+					tryRunSoon();
 				});
 			}
 		} else if (tagName === "input:checkbox") {
-			elem = document.createElement("button");
+			elem = document.createElement("input");
 			elem.type = "checkbox";
 			elem.checked = Boolean(elem.children);
 			acc.valueGetters.push(() => elem.checked);
 			if (acc.shouldListen) {
-				elem.addEventListener("change", function() {
-					lastClicked = elem;
-					if (runPtr) runPtr();
-				});
+				elem.addEventListener("change", tryRunSoon);
 			}
 		} else if (tagName === "input:range") {
 			elem = document.createElement("input");
@@ -321,19 +333,26 @@ function renderInto(obj, node, acc) {
 				elem.disabled = true;
 				delete attributesObj.disabled;
 			}
-			acc.valueGetters.push(() => elem.value);
+			// why is a slider's value a string?? that's crazy
+			acc.valueGetters.push(() => softToNumber(elem.value));
 			if (acc.shouldListen) {
-				elem.addEventListener("change", function() {
-					if (runPtr) runPtr();
+				// expanded from https://stackoverflow.com/a/37623959 ??
+				let everInput = false, oldValue;
+				elem.addEventListener("input", function(e) {
+					everInput = true;
+					let value = e.target.value;
+					if (value != oldValue) tryRunSoon();
+					oldValue = value;
+				});
+				elem.addEventListener("change", function(e) {
+					if (!everInput) tryRunSoon();
 				});
 			}
 		} else if (tagName === "select") {
 			elem = document.createElement("select");
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
-				elem.addEventListener("change", function() {
-					if (runPtr) runPtr();
-				});
+				elem.addEventListener("change", tryRunSoon());
 			}
 
 			if (attributesObj.disabled !== undefined) {
@@ -364,9 +383,7 @@ function renderInto(obj, node, acc) {
 			}
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
-				elem.addEventListener("input", () => {
-					if (runPtr) runPtr();
-				});
+				elem.addEventListener("input", tryRunSoon());
 			}
 		} else if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
 			elem =
