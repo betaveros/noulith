@@ -546,7 +546,7 @@ fn destructure_top_level_ands(lvalue: EvaluatedLvalue) -> Vec<EvaluatedLvalue> {
             aa.extend(destructure_top_level_ands(*b));
             aa
         }
-        lvalue => vec![lvalue]
+        lvalue => vec![lvalue],
     }
 }
 
@@ -907,9 +907,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             } else {
                 let p = eval_lvalue(env, pat)?;
-                let lhs_items = destructure_top_level_ands(p).into_iter().map(|p| {
-                    Ok((eval_lvalue_as_obj(env, &p)?, p))
-                }).collect::<NRes<Vec<(Obj, EvaluatedLvalue)>>>()?;
+                let lhs_items = destructure_top_level_ands(p)
+                    .into_iter()
+                    .map(|p| Ok((eval_lvalue_as_obj(env, &p)?, p)))
+                    .collect::<NRes<Vec<(Obj, EvaluatedLvalue)>>>()?;
 
                 match evaluate(env, op)? {
                     Obj::Func(ff, _) => {
@@ -932,7 +933,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                                 expr.start,
                                 expr.end,
                             )?;
-                            let rhs_value_clone = if i + 1 == ps_len { std::mem::take(&mut rhs_value) } else { rhs_value.clone() };
+                            let rhs_value_clone = if i + 1 == ps_len {
+                                std::mem::take(&mut rhs_value)
+                            } else {
+                                rhs_value.clone()
+                            };
                             let combined = ff.run2(env, lhs_value, rhs_value_clone)?;
                             add_trace(
                                 assign(&env, &lvalue, None, combined),
@@ -2504,7 +2509,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
         EvaluatedLvalue::And(a, b) => {
             assign(env, a, rt, rhs.clone())?;
             assign(env, b, rt, rhs)
-        },
+        }
         EvaluatedLvalue::Literal(obj) => {
             if obj == &rhs {
                 Ok(())
@@ -2596,7 +2601,7 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
         EvaluatedLvalue::And(a, b) => {
             drop_lhs(env, &**a)?;
             drop_lhs(env, &**b)
-        },
+        }
         EvaluatedLvalue::Literal(_) => Ok(()), // assigning to it probably will fail later...
         EvaluatedLvalue::Destructure(_, vs) => drop_lhs_all(env, vs),
         EvaluatedLvalue::DestructureStruct(_, vs) => drop_lhs_all(env, vs),
