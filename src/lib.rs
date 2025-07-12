@@ -3444,6 +3444,63 @@ pub fn initialize(env: &mut Env) {
     // forward_f64!(exp_m1);
     // forward_f64!(ln_1p);
 
+    env.insert_builtin(TwoArgBuiltin {
+        name: "b_spline".to_string(),
+        body: |t, mut vals| {
+            let t = match t {
+                Obj::Num(n) => n.to_f64().ok_or_else(|| {
+                    NErr::value_error("b_spline first must be convertible to float".to_string())
+                }),
+                _ => Err(NErr::value_error("b_spline first must be num".to_string())),
+            }?
+            .clamp(0.0, 1.0);
+
+            let vals = mut_obj_into_iter(&mut vals, "b_spline")?
+                .map(|e| match e? {
+                    Obj::Num(n) => n.to_f64().ok_or_else(|| {
+                        NErr::value_error(
+                            "b_spline second each must be convertible to float".to_string(),
+                        )
+                    }),
+                    _ => Err(NErr::value_error(
+                        "b_spline second each must be num".to_string(),
+                    )),
+                })
+                .collect::<NRes<Vec<f64>>>()?;
+
+            let len = vals.len();
+            if len == 0 {
+                return Err(NErr::value_error(
+                    "b_spline second must be nonempty".to_string(),
+                ));
+            }
+            let n = len - 1;
+            let i = (t * (n as f64)).floor() as usize;
+            if i >= n {
+                return Ok(Obj::from(vals[n]));
+            }
+            let v1 = vals[i];
+            let v2 = vals[i + 1];
+            let v0 = if i > 0 { vals[i - 1] } else { 2.0 * v1 - v2 };
+            let v3 = if i + 2 < len {
+                vals[i + 2]
+            } else {
+                2.0 * v2 - v1
+            };
+
+            let t1 = t * (n as f64) - (i as f64);
+            let t2 = t1 * t1;
+            let t3 = t2 * t1;
+            let r = ((1.0 - 3.0 * t1 + 3.0 * t2 - t3) * v0
+                + (4.0 - 6.0 * t2 + 3.0 * t3) * v1
+                + (1.0 + 3.0 * t1 + 3.0 * t2 - 3.0 * t3) * v2
+                + t3 * v3)
+                / 6.0;
+
+            Ok(Obj::from(r))
+        },
+    });
+
     env.insert_builtin(OneNumBuiltin {
         name: "is_prime".to_string(),
         body: |a| Ok(Obj::Num(NNum::iverson(into_nint_ok(a)?.lazy_is_prime()))),

@@ -195,6 +195,59 @@ impl<'a> Lexer<'a> {
                             break;
                         }
                     }
+                    Some('u') => {
+                        // References:
+                        // Python takes \uxxxx (4 hexits) or \UXXXXXXXX (8 hexits) exactly;
+                        // Rust requires braces always, \u{...}
+                        let expected = match self.peek() {
+                            Some(&'{') => {
+                                self.next();
+                                Some('}')
+                            }
+                            Some(&'(') => {
+                                self.next();
+                                Some(')')
+                            }
+                            Some(&'[') => {
+                                self.next();
+                                Some(']')
+                            }
+                            Some(&'<') => {
+                                self.next();
+                                Some('>')
+                            }
+                            _ => None,
+                        };
+                        let mut x: u32 = 0;
+                        while let Some(cc) = self.peek().and_then(|d| d.to_digit(16)) {
+                            self.next();
+                            x = 16 * x + cc;
+                        }
+                        match expected {
+                            Some(c) => {
+                                if self.peek() == Some(&c) {
+                                    self.next();
+                                } else {
+                                    self.emit(Token::Invalid(format!(
+                                        "lexing: string literal: bad u escape end: {}",
+                                        c
+                                    )));
+                                    break;
+                                }
+                            }
+                            None => {}
+                        }
+                        match char::from_u32(x) {
+                            Some(c) => acc.push(c),
+                            None => {
+                                self.emit(Token::Invalid(format!(
+                                    "lexing: string literal: u result too big: {}",
+                                    x
+                                )));
+                                break;
+                            }
+                        }
+                    }
                     Some(c) => {
                         self.emit(Token::Invalid(format!(
                             "lexing: string literal: unknown escape {}",

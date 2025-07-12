@@ -40,7 +40,7 @@ pub enum EvaluatedLvalue {
     IndexedIdent(Ident, Vec<EvaluatedIndexOrSlice>),
     Annotation(Box<EvaluatedLvalue>, Option<Obj>),
     WithDefault(Box<EvaluatedLvalue>, Rc<LocExpr>),
-    CommaSeq(Vec<Box<EvaluatedLvalue>>),
+    CommaSeq(Vec<Box<EvaluatedLvalue>>, bool /* delimited */),
     Splat(Box<EvaluatedLvalue>),
     Or(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
     And(Box<EvaluatedLvalue>, Box<EvaluatedLvalue>),
@@ -69,12 +69,20 @@ impl Display for EvaluatedLvalue {
             EvaluatedLvalue::WithDefault(s, e) => {
                 write!(formatter, "({}={:?})", s, e)
             }
-            EvaluatedLvalue::CommaSeq(vs) => {
-                write!(formatter, "(")?;
+            EvaluatedLvalue::CommaSeq(vs, d) => {
+                if *d {
+                    write!(formatter, "[")?;
+                } else {
+                    write!(formatter, "(")?;
+                }
                 for v in vs {
                     write!(formatter, "{},", v)?;
                 }
-                write!(formatter, ")")
+                if *d {
+                    write!(formatter, "]")
+                } else {
+                    write!(formatter, ")")
+                }
             }
             EvaluatedLvalue::Splat(s) => {
                 write!(formatter, "(...{})", s)
@@ -339,10 +347,11 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
             Box::new(eval_lvalue(env, s)?),
             Rc::clone(def),
         )),
-        Lvalue::CommaSeq(v) => Ok(EvaluatedLvalue::CommaSeq(
+        Lvalue::CommaSeq(v, d) => Ok(EvaluatedLvalue::CommaSeq(
             v.iter()
                 .map(|e| Ok(Box::new(eval_lvalue(env, e)?)))
                 .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?,
+            *d,
         )),
         Lvalue::Splat(v) => Ok(EvaluatedLvalue::Splat(Box::new(eval_lvalue(env, v)?))),
         Lvalue::Or(a, b) => Ok(EvaluatedLvalue::Or(
@@ -1801,7 +1810,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 "Usually can't eval with default on LHS of assignment".to_string(),
             )),
         },
-        EvaluatedLvalue::CommaSeq(v) => Ok(Obj::list(
+        EvaluatedLvalue::CommaSeq(v, _d) => Ok(Obj::list(
             v.iter()
                 .map(|e| Ok(eval_lvalue_as_obj(env, e)?))
                 .collect::<NRes<Vec<Obj>>>()?,
@@ -2467,32 +2476,52 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 },
             }
         }
-        EvaluatedLvalue::CommaSeq(ss) => match rhs {
-            Obj::Seq(Seq::List(ls)) => assign_all(
-                env,
-                ss,
-                rt,
-                ls.len(),
-                || Ok(unwrap_or_clone(ls)),
-                "Can't unpack into mismatched length",
-            ),
-            Obj::Seq(seq) => match seq.len() {
-                Some(len) => assign_all(
+        EvaluatedLvalue::CommaSeq(ss, d) => {
+            // assigning [1, 2] to [a, b]: vector doesn't mean a and b are vectors
+            let rt = if *d {
+                match rt {
+                    Some(outer_t) => {
+                        if !is_type(&outer_t, &rhs)? {
+                            return Err(NErr::type_error(format!(
+                                "Assigning to seq outside type mismatch: {} is not of type {}",
+                                rhs,
+                                outer_t.name()
+                            )));
+                        }
+                        Some(&ObjType::Any)
+                    }
+                    None => None,
+                }
+            } else {
+                rt
+            };
+            match rhs {
+                Obj::Seq(Seq::List(ls)) => assign_all(
                     env,
                     ss,
                     rt,
-                    len,
-                    || seq_to_cloning_iter(&seq).collect::<NRes<Vec<Obj>>>(),
+                    ls.len(),
+                    || Ok(unwrap_or_clone(ls)),
                     "Can't unpack into mismatched length",
                 ),
-                None => Err(NErr::type_error(
-                    "Can't unpack from infinite sequence".to_string(),
+                Obj::Seq(seq) => match seq.len() {
+                    Some(len) => assign_all(
+                        env,
+                        ss,
+                        rt,
+                        len,
+                        || seq_to_cloning_iter(&seq).collect::<NRes<Vec<Obj>>>(),
+                        "Can't unpack into mismatched length",
+                    ),
+                    None => Err(NErr::type_error(
+                        "Can't unpack from infinite sequence".to_string(),
+                    )),
+                },
+                _ => Err(NErr::type_error(
+                    "Unpacking failed: not iterable".to_string(),
                 )),
-            },
-            _ => Err(NErr::type_error(
-                "Unpacking failed: not iterable".to_string(),
-            )),
-        },
+            }
+        }
         EvaluatedLvalue::Annotation(s, ann) => match ann {
             None => assign(env, s, Some(&ObjType::Any), rhs),
             Some(t) => assign(env, s, Some(&to_type(t, "annotation")?), rhs),
@@ -2586,7 +2615,7 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
             },
             "drop",
         ),
-        EvaluatedLvalue::CommaSeq(ss) => drop_lhs_all(env, ss),
+        EvaluatedLvalue::CommaSeq(ss, _) => drop_lhs_all(env, ss),
         EvaluatedLvalue::Annotation(..) => Err(NErr::syntax_error(
             "can't drop LHS with annotations in it for op-assign??".to_string(),
         )),
@@ -2636,7 +2665,9 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
                     .modify_peek(*i, |x| set_index(x, ixs, None, true))
             }
         }
-        EvaluatedLvalue::CommaSeq(ss) => {
+        EvaluatedLvalue::CommaSeq(ss, _d) => {
+            // contrast this with how assigning [1, 2] to [a, b]: vector doesn't mean a and b are
+            // vectors. i think this was a dumb idea
             for v in ss {
                 assign_every(env, v, rt, rhs.clone())?;
             }
@@ -2757,7 +2788,7 @@ pub fn modify_every(
                 }
             }
         }
-        EvaluatedLvalue::CommaSeq(ss) => {
+        EvaluatedLvalue::CommaSeq(ss, _) => {
             for v in ss {
                 modify_every(env, v, rhs)?;
             }

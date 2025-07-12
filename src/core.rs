@@ -2032,7 +2032,7 @@ pub enum Lvalue {
     IndexedIdent(Ident, Vec<IndexOrSlice>),
     Annotation(Box<Lvalue>, Option<Rc<LocExpr>>), // FIXME Rc? :(
     WithDefault(Box<Lvalue>, Rc<LocExpr>),
-    CommaSeq(Vec<Box<Lvalue>>),
+    CommaSeq(Vec<Box<Lvalue>>, bool /* delimited */),
     Splat(Box<Lvalue>),
     Or(Box<Lvalue>, Box<Lvalue>),
     And(Box<Lvalue>, Box<Lvalue>),
@@ -2049,7 +2049,7 @@ impl Lvalue {
             Lvalue::IndexedIdent(..) => false,
             Lvalue::Annotation(x, _) => x.any_literals(),
             Lvalue::WithDefault(x, _) => x.any_literals(),
-            Lvalue::CommaSeq(x) => x.iter().any(|e| e.any_literals()),
+            Lvalue::CommaSeq(x, _) => x.iter().any(|e| e.any_literals()),
             Lvalue::Splat(x) => x.any_literals(),
             Lvalue::Or(a, b) => a.any_literals() || b.any_literals(),
             Lvalue::And(a, b) => a.any_literals() || b.any_literals(),
@@ -2075,7 +2075,7 @@ impl Lvalue {
             Lvalue::IndexedIdent(Ident::InternalPeek(_), _) => HashSet::new(),
             Lvalue::Annotation(x, _) => x.collect_identifiers(false),
             Lvalue::WithDefault(x, _) => x.collect_identifiers(declared_only),
-            Lvalue::CommaSeq(x) => x
+            Lvalue::CommaSeq(x, _) => x
                 .iter()
                 .flat_map(|e| e.collect_identifiers(declared_only))
                 .collect(),
@@ -2121,7 +2121,7 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     match lvalue {
         Lvalue::Underscore => vec![LvalueArchetype::Anything],
         Lvalue::IndexedIdent(_, ixs) if ixs.is_empty() => vec![LvalueArchetype::Anything],
-        Lvalue::CommaSeq(x) => {
+        Lvalue::CommaSeq(x, _) => {
             if x.iter()
                 .map(|e| to_archetypes(e))
                 .all(|e| e.contains(&LvalueArchetype::Anything))
@@ -2295,10 +2295,17 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
         },
         Expr::Annotation(e, t) => Ok(Lvalue::Annotation(Box::new(to_lvalue(*e)?), t)),
         Expr::Assign(false, e, t) => Ok(Lvalue::WithDefault(e, Rc::new(*t))),
-        Expr::CommaSeq(es) | Expr::List(es) => Ok(Lvalue::CommaSeq(
+        Expr::CommaSeq(es) => Ok(Lvalue::CommaSeq(
             es.into_iter()
                 .map(|e| Ok(Box::new(to_lvalue(*e)?)))
                 .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?,
+            false,
+        )),
+        Expr::List(es) => Ok(Lvalue::CommaSeq(
+            es.into_iter()
+                .map(|e| Ok(Box::new(to_lvalue(*e)?)))
+                .collect::<Result<Vec<Box<Lvalue>>, ParseError>>()?,
+            true,
         )),
         Expr::Splat(x) => Ok(Lvalue::Splat(Box::new(to_lvalue(*x)?))),
         Expr::IntLit64(n) => Ok(Lvalue::Literal(Obj::from(NInt::Small(n)))),
@@ -2498,10 +2505,11 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
             box_freeze_lvalue(env, x)?,
             rc_freeze(env, d)?,
         )),
-        Lvalue::CommaSeq(x) => Ok(Lvalue::CommaSeq(
+        Lvalue::CommaSeq(x, d) => Ok(Lvalue::CommaSeq(
             x.iter()
                 .map(|e| box_freeze_lvalue(env, e))
                 .collect::<NRes<Vec<Box<Lvalue>>>>()?,
+            *d,
         )),
         Lvalue::Splat(x) => Ok(Lvalue::Splat(box_freeze_lvalue(env, x)?)),
         Lvalue::Or(a, b) => Ok(Lvalue::Or(
@@ -2548,6 +2556,8 @@ pub fn read_import_to_string(s: &str) -> io::Result<String> {
 pub fn read_import_to_string(s: &str) -> io::Result<String> {
     if s == "html" {
         Ok(include_str!("../noulib/html.noul").to_string())
+    } else if s == "colors" {
+        Ok(include_str!("../noulib/colors.noul").to_string())
     } else {
         Err(io::Error::new(
             io::ErrorKind::Other,

@@ -81,6 +81,8 @@ fn weird_assignments() {
     assert_eq!(simple_eval("x, := 2,; x"), i(2));
     assert_eq!(simple_eval("x, := [2]; x"), i(2));
     assert_eq!(simple_eval("[x] := 2,; x"), i(2));
+    assert_eq!(simple_eval("x, : int = [2]; x"), i(2));
+    assert_eq!(simple_eval("[x]: list = [2]; x"), i(2));
 }
 
 #[test]
