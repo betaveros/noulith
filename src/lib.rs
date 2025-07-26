@@ -1566,6 +1566,29 @@ impl Builtin for Fanout {
 }
 
 #[derive(Debug, Clone)]
+struct Lift;
+
+impl Builtin for Lift {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few(args) {
+            Few::Zero => Err(NErr::type_error(format!("lift: at least 1 arg"))),
+            Few::One(a) => Ok(clone_and_part_app_last(self, a)),
+            Few::Many(mut xs) => {
+                let last = xs.pop().unwrap();
+                match last {
+                    Obj::Func(f, p) => Ok(Obj::Func(Func::OnFanoutConst(Box::new(f), xs), p)),
+                    _ => Err(NErr::type_error(format!("lift: not func"))),
+                }
+            }
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "lift"
+    }
+}
+
+#[derive(Debug, Clone)]
 struct LiftedEquals;
 
 impl Builtin for LiftedEquals {
@@ -4001,6 +4024,7 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(LazyZip);
     env.insert_builtin(Parallel);
     env.insert_builtin(Fanout);
+    env.insert_builtin(Lift);
     env.insert_builtin(LiftedEquals);
     env.insert_builtin(EnvOneArgBuiltin {
         name: "transpose".to_string(),
