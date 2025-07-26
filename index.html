@@ -352,7 +352,7 @@ function renderInto(obj, node, acc) {
 			elem = document.createElement("select");
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
-				elem.addEventListener("change", tryRunSoon());
+				elem.addEventListener("change", tryRunSoon);
 			}
 
 			if (attributesObj.disabled !== undefined) {
@@ -383,7 +383,7 @@ function renderInto(obj, node, acc) {
 			}
 			acc.valueGetters.push(() => elem.value);
 			if (acc.shouldListen) {
-				elem.addEventListener("input", tryRunSoon());
+				elem.addEventListener("input", tryRunSoon);
 			}
 		} else if (typeof tagName === "string" && (!sanitize.checked || htmlAllowList.includes(tagName.toLowerCase()))) {
 			elem =
