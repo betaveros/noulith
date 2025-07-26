@@ -4103,7 +4103,7 @@ impl Parser {
             }
     }
 
-    fn peek_chain_stopper(&self) -> bool {
+    fn peek_chain_stopper(&self, allow_backtick: bool) -> bool {
         self.peek_csc_stopper()
             || match self.peek() {
                 Some(Token::Comma) => true,
@@ -4111,27 +4111,40 @@ impl Parser {
                 Some(Token::And) => true,
                 Some(Token::Or) => true,
                 Some(Token::Coalesce) => true,
+                Some(Token::Backtick) => !allow_backtick,
                 _ => false,
             }
     }
 
-    fn chain(&mut self) -> Result<LocExpr, ParseError> {
+    fn operator(&mut self, allow_backtick: bool) -> Result<(bool, LocExpr), ParseError> {
+        if allow_backtick && self.peek() == Some(&Token::Backtick) {
+            self.advance();
+            let ret = self.chain(false)?;
+            self.require(Token::Backtick, "operator requires backtick")?;
+            Ok((true, ret))
+        } else {
+            let expr = self.atom()?;
+            let is_ident = match expr.expr {
+                Expr::Ident(_) => true,
+                _ => false,
+            };
+            Ok((is_ident, expr))
+        }
+    }
+
+    fn chain(&mut self, allow_backtick: bool) -> Result<LocExpr, ParseError> {
         let start = self.peek_loc();
         let op1 = self.operand()?;
-        if self.peek_chain_stopper() {
+        if self.peek_chain_stopper(allow_backtick) {
             Ok(op1)
         } else {
             // We'll specially allow some two-chains, (a b), as calls, so that negative number
             // literals and just writing an expression like "-x" works. But we will be
             // aggressive-ish about checking that the chain ends afterwards so we don't get runaway
             // syntax errors.
-            let mut second = self.atom()?;
-            let is_ident = match second.expr {
-                Expr::Ident(_) => true,
-                _ => false,
-            };
+            let (is_operator, mut second) = self.operator(allow_backtick)?;
             second = self.attach_symbol_accesses(second)?;
-            if is_ident {
+            if is_operator {
                 if let Some(bang_end) = self.try_consume(&Token::Bang) {
                     let ret = LocExpr {
                         expr: Expr::Chain(
@@ -4149,7 +4162,7 @@ impl Parser {
                     } else {
                         Ok(ret)
                     }
-                } else if self.peek_chain_stopper() {
+                } else if self.peek_chain_stopper(allow_backtick) {
                     let end = second.end;
                     Ok(LocExpr {
                         expr: Expr::Call(
@@ -4163,22 +4176,19 @@ impl Parser {
                 } else {
                     let mut ops = vec![(Box::new(second), Box::new(self.operand()?))];
 
-                    while let Some(LocToken {
-                        token: Token::Ident(op),
-                        start: op_start,
-                        end: op_end,
-                    }) = self.peek_loc_token()
-                    {
-                        let op = op.to_string();
-                        let op_start = *op_start;
-                        let op_end = *op_end;
-                        self.advance();
+                    while match self.peek() {
+                        Some(&Token::Ident(_)) => true,
+                        Some(&Token::Backtick) => true,
+                        _ => false,
+                    } {
+                        let (is_op, op) = self.operator(allow_backtick)?;
+                        if !is_op {
+                            return Err(self.error_here(
+                                "Parsed non-operator in operator position".to_string(),
+                            ));
+                        }
                         ops.push((
-                            Box::new(LocExpr {
-                                start: op_start,
-                                end: op_end,
-                                expr: Expr::Ident(op),
-                            }),
+                            Box::new(op),
                             Box::new(if self.try_consume(&Token::Bang).is_some() {
                                 self.single("operator-bang operand")?
                             } else {
@@ -4200,7 +4210,7 @@ impl Parser {
                     end: second.end,
                     expr: Expr::Call(Box::new(op1), vec![Box::new(second)], CallSyntax::Juxtapose),
                 };
-                if !self.peek_chain_stopper() {
+                if !self.peek_chain_stopper(allow_backtick) {
                     Err(self.error_here(format!(
                         "saw non-identifier in operator position: these chains must be short"
                     )))
@@ -4213,9 +4223,9 @@ impl Parser {
 
     fn logic_and(&mut self) -> Result<LocExpr, ParseError> {
         let start = self.peek_loc();
-        let mut op1 = self.chain()?;
+        let mut op1 = self.chain(true)?;
         while self.try_consume(&Token::And).is_some() {
-            let rhs = self.chain()?;
+            let rhs = self.chain(true)?;
             op1 = LocExpr {
                 start,
                 end: rhs.end,
