@@ -549,6 +549,14 @@ fn more_hofs() {
         simple_eval("1 to 3 `zip*` (4 to 6) then unwords"),
         Obj::from("4 10 18")
     );
+    assert_eq!(
+        simple_eval("1 `+ >>> -` 2"),
+        i(-3)
+    );
+    assert_eq!(
+        simple_eval("1 `- <<< +` 2"),
+        i(-3)
+    );
 }
 
 #[test]

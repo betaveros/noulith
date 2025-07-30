@@ -4178,7 +4178,7 @@ impl Parser {
 
                     while match self.peek() {
                         Some(&Token::Ident(_)) => true,
-                        Some(&Token::Backtick) => true,
+                        Some(&Token::Backtick) => allow_backtick,
                         _ => false,
                     } {
                         let (is_op, op) = self.operator(allow_backtick)?;
