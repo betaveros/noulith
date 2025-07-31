@@ -63,6 +63,9 @@ td {
 <div id="mid-output">Output: <div id="output"></div></div>
 <div id="mid-error">Error: <div id="error"></div></div>
 <div id="mid-unsafe">HTML stripped by sanitization: <div id="unsafe"></div></div>
+<button id="copy-output" type="button" role="button">Copy output</button>
+<canvas id="canvas" style="display: none"></canvas>
+<button id="open-svg" type="button" role="button">Open SVG as PNG (jank)</button>
 <button id="gen-url" type="button" role="button">Generate URL</button>
 <textarea id="url"></textarea>
 <script type="module">
@@ -578,6 +581,51 @@ document.addEventListener('DOMContentLoaded', function() {
 	if (base64.length) {
 		code.value = b64decode(base64);
 	}
+	document.getElementById('copy-output').addEventListener('click', function() {
+		window.getSelection().removeAllRanges();
+		const range = document.createRange();
+		range.selectNode(document.getElementById('output'));
+		window.getSelection().addRange(range);
+		document.execCommand("copy");
+		window.getSelection().removeAllRanges();
+	});
+	let DOMURL = window.URL || window.webkitURL || window;
+	document.getElementById('open-svg').addEventListener('click', function() {
+		let svg = document.querySelector('#output svg');
+		let data = (new XMLSerializer()).serializeToString(svg);
+		let width = Number(svg.getAttribute("width"));
+		let height = Number(svg.getAttribute("width"));
+		let img = new Image(width, height);
+		let svgBlob = new Blob([data], {type: 'image/svg+xml;charset=utf-8'});
+		let url = DOMURL.createObjectURL(svgBlob);
+
+		img.onload = function () {
+			let canvas = document.getElementById('canvas');
+			canvas.width = width;
+			canvas.height = height;
+
+			let ctx = canvas.getContext('2d');
+			ctx.clearRect(0, 0, width, height);
+			ctx.drawImage(img, 0, 0, width, height);
+			canvas.toBlob(blob => {
+				let innerUrl = DOMURL.createObjectURL(blob);
+				window.open(innerUrl, "_blank");
+
+				// let a = document.createElement("a");
+				// a.href = innerUrl;
+				// a.download = "out.png";
+				// document.body.appendChild(a);
+				// a.click();
+				setTimeout(function() {
+					// document.body.removeChild(a);
+					DOMURL.revokeObjectURL(innerUrl);
+				}, 0);
+				DOMURL.revokeObjectURL(url);
+			});
+		};
+
+		img.src = url;
+	});
 	document.getElementById('gen-url').addEventListener('click', function() {
 		urlElem.value = location.protocol + '//' + location.host + location.pathname + '#' + b64encode(code.value);
 		if (inputSelect.value) {
