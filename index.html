@@ -599,7 +599,7 @@ document.addEventListener('DOMContentLoaded', function() {
 		let svg = document.querySelector('#output svg');
 		let data = (new XMLSerializer()).serializeToString(svg);
 		let width = Number(svg.getAttribute("width"));
-		let height = Number(svg.getAttribute("width"));
+		let height = Number(svg.getAttribute("height"));
 		let img = new Image(width, height);
 		let svgBlob = new Blob([data], {type: 'image/svg+xml;charset=utf-8'});
 		let url = DOMURL.createObjectURL(svgBlob);
