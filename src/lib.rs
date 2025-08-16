@@ -770,15 +770,21 @@ impl Catamorphism for CataCountDistinct {
 #[derive(Debug, Clone)]
 struct CountDistinct;
 impl Builtin for CountDistinct {
-    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
-        match few(args) {
-            Few::One(Obj::Seq(mut s)) => Ok(Obj::usize(
+    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(Obj::Seq(mut s)) => Ok(Obj::usize(
                 mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
                     .map(|e| to_key(e?))
                     .collect::<NRes<HashSet<ObjKey>>>()?
                     .len(),
             )),
-            f => err_add_name(Err(NErr::argument_error_few(&f)), "count_distinct"),
+            Few2::One(a @ Obj::Func(..)) => Ok(clone_and_part_app_last(self, a)),
+            Few2::Two(Obj::Seq(mut s), Obj::Func(b, _)) => Ok(Obj::usize(
+                mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
+                    .map(|e| to_key(b.run1(env, e?)?))
+                    .collect::<NRes<HashSet<ObjKey>>>()?
+                    .len())),
+            f => err_add_name(Err(NErr::argument_error_few2(&f)), "count_distinct"),
         }
     }
 

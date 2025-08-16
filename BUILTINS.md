@@ -73,7 +73,7 @@ These functions don't vectorize. Sequences are compared lexicographically.
 | `transpose` | 2 | Transpose a sequence of sequences
 | `set` | 1 | Convert to a "set" (dictionary with elements as keys, `null` as every value)
 | `dict` | 1 | Convert sequence of key-value pairs to a dictionary
-| `count_distinct` | 1 | Count distinct elements. It's just `len(set(...))` really.
+| `count_distinct` | 1 or 2 | Count distinct elements. It's just `len(set(...))` really. (Or count distinct elements after mapping)
 | `items` | 1 | Sequence of key-value pairs in a dictionary.
 | `keys` | 1 | Sequence of keys in a dictionary.
 | `values` | 1 | Sequence of values in a dictionary.
@@ -218,6 +218,7 @@ Functions are usually the last argument.
 | `any` | 1 or 2 | Whether any element is truthy / satisfies the predicate
 | `all` | 1 or 2 | Whether all elements are truthy / satisfy the predicate
 | `count` | 1 or 2 | Number of elements that are truthy / satisfy the predicate
+| `count_distinct` | 1 or 2 | Count distinct results after mapping
 | `group` | 1 or 2 | Split up sequence into same-type sequences of adjacent elements that are equal / satisfy a binary relation with the previous/next item in the group. Second argument can also be a positive integer to just make the same-type sequences the same size (the last group may be short).
 | `group'` | 1 or 2 | Same, but errors if the sequence's length isn't evenly divisible.
 | `group_all` | 1 or 2 | Split up sequence into subsequences of elements that satisfy a binary relation with each other (`group` where elements don't have to be adjacent)
