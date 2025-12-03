@@ -500,6 +500,108 @@ impl Builtin for Last {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Append; // destructures as unsnoc
+
+impl Builtin for Append {
+    // copypasta
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(a) => self.run1(_env, a),
+            Few2::Two(a, b) => self.run2(_env, a, b),
+            f => Err(NErr::argument_error(format!(
+                "append only accepts two args, got {}",
+                f.len()
+            ))),
+        }
+    }
+    fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
+        Ok(clone_and_part_app_2(self, arg))
+    }
+    fn run2(&self, _env: &REnv, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+        match arg1 {
+            Obj::Seq(Seq::List(mut a)) => {
+                Rc::make_mut(&mut a).push(arg2);
+                Ok(Obj::Seq(Seq::List(a)))
+            }
+            Obj::Seq(Seq::Vector(mut a)) => {
+                Rc::make_mut(&mut a).push(to_nnum(arg2, "append to vector")?);
+                Ok(Obj::Seq(Seq::Vector(a)))
+            }
+            Obj::Seq(Seq::Bytes(mut a)) => {
+                Rc::make_mut(&mut a).push(to_byte(arg2, "append to bytes")?);
+                Ok(Obj::Seq(Seq::Bytes(a)))
+            }
+            arg1 => Err(NErr::argument_error_2(&arg1, &arg2)),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "append"
+    }
+
+    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
+        match rvalue {
+            Obj::Seq(seq) => match unsnoc(seq)? {
+                Some((butlast, last)) => Ok(vec![Obj::Seq(butlast), last]),
+                None => Err(NErr::value_error("append destructured empty".to_string())),
+            },
+            _ => Err(NErr::type_error("append destructured non-seq".to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Prepend; // destructures as uncons
+
+impl Builtin for Prepend {
+    // copypasta
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few2(args) {
+            Few2::One(a) => self.run1(_env, a),
+            Few2::Two(a, b) => self.run2(_env, a, b),
+            f => Err(NErr::argument_error(format!(
+                "prepend only accepts two args, got {}",
+                f.len()
+            ))),
+        }
+    }
+    fn run1(&self, _env: &REnv, arg: Obj) -> NRes<Obj> {
+        Ok(clone_and_part_app_2(self, arg))
+    }
+    fn run2(&self, _env: &REnv, arg1: Obj, arg2: Obj) -> NRes<Obj> {
+        match arg2 {
+            Obj::Seq(Seq::List(mut b)) => {
+                Rc::make_mut(&mut b).insert(0, arg1);
+                Ok(Obj::Seq(Seq::List(b)))
+            }
+            Obj::Seq(Seq::Vector(mut b)) => {
+                Rc::make_mut(&mut b).insert(0, to_nnum(arg1, "prepend to vector")?);
+                Ok(Obj::Seq(Seq::Vector(b)))
+            }
+            Obj::Seq(Seq::Bytes(mut b)) => {
+                Rc::make_mut(&mut b).insert(0, to_byte(arg1, "prepend to bytes")?);
+                Ok(Obj::Seq(Seq::Bytes(b)))
+            }
+            arg2 => Err(NErr::argument_error_2(&arg1, &arg2)),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "prepend"
+    }
+
+    fn destructure(&self, rvalue: Obj, _lhs: Vec<Option<Obj>>) -> NRes<Vec<Obj>> {
+        match rvalue {
+            Obj::Seq(seq) => match uncons(seq)? {
+                Some((head, tail)) => Ok(vec![head, Obj::Seq(tail)]),
+                None => Err(NErr::value_error("prepend destructured empty".to_string())),
+            },
+            _ => Err(NErr::type_error("prepend destructured non-seq".to_string())),
+        }
+    }
+}
+
 struct CataExtremum(Ordering, Option<Obj>);
 impl Catamorphism for CataExtremum {
     fn give(&mut self, arg: Obj) -> NRes<()> {
@@ -4617,45 +4719,8 @@ pub fn initialize(env: &mut Env) {
         },
         "⧺",
     );
-    env.insert_rassoc_builtin(TwoArgBuiltin {
-        name: ".+".to_string(),
-        body: |a, b| match b {
-            Obj::Seq(Seq::List(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, a);
-                Ok(Obj::Seq(Seq::List(b)))
-            }
-            Obj::Seq(Seq::Vector(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, to_nnum(a, "prepend to vector")?);
-                Ok(Obj::Seq(Seq::Vector(b)))
-            }
-            Obj::Seq(Seq::Bytes(mut b)) => {
-                Rc::make_mut(&mut b).insert(0, to_byte(a, "prepend to bytes")?);
-                Ok(Obj::Seq(Seq::Bytes(b)))
-            }
-            b => Err(NErr::argument_error_2(&a, &b)),
-        },
-    });
-    env.insert_builtin_with_alias(
-        TwoArgBuiltin {
-            name: "append".to_string(),
-            body: |a, b| match a {
-                Obj::Seq(Seq::List(mut a)) => {
-                    Rc::make_mut(&mut a).push(b);
-                    Ok(Obj::Seq(Seq::List(a)))
-                }
-                Obj::Seq(Seq::Vector(mut a)) => {
-                    Rc::make_mut(&mut a).push(to_nnum(b, "append to vector")?);
-                    Ok(Obj::Seq(Seq::Vector(a)))
-                }
-                Obj::Seq(Seq::Bytes(mut a)) => {
-                    Rc::make_mut(&mut a).push(to_byte(b, "append to bytes")?);
-                    Ok(Obj::Seq(Seq::Bytes(a)))
-                }
-                a => Err(NErr::argument_error_2(&a, &b)),
-            },
-        },
-        "+.",
-    );
+    env.insert_rassoc_builtin_with_alias(Prepend, ".+");
+    env.insert_builtin_with_alias(Append, "+.");
     env.insert_builtin(TwoArgBuiltin {
         name: "..".to_string(),
         body: |a, b| Ok(Obj::list(vec![a, b])),

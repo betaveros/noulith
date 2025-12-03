@@ -4889,6 +4889,20 @@ impl Env {
         )
         .unwrap()
     }
+    pub fn insert_rassoc_builtin_with_alias(
+        &mut self,
+        b: impl Builtin + 'static + Clone,
+        alias: &str,
+    ) {
+        let p = Precedence(default_precedence(b.builtin_name()), Assoc::Right);
+        self.insert_builtin_with_precedence(b.clone(), p);
+        self.insert(
+            alias.to_string(),
+            ObjType::Any,
+            Obj::Func(Func::Builtin(Rc::new(b)), p),
+        )
+        .unwrap()
+    }
 }
 
 pub type REnv = Rc<RefCell<Env>>;
