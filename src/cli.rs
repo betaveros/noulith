@@ -64,6 +64,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
                 | Token::Return
                 | Token::Throw
                 | Token::Lambda
+                | Token::LambdaEnd
                 | Token::Bang
                 | Token::QuestionMark
                 | Token::Colon

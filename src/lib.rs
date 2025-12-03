@@ -783,7 +783,8 @@ impl Builtin for CountDistinct {
                 mut_seq_into_finite_iter(&mut s, "count_distinct conversion")?
                     .map(|e| to_key(b.run1(env, e?)?))
                     .collect::<NRes<HashSet<ObjKey>>>()?
-                    .len())),
+                    .len(),
+            )),
             f => err_add_name(Err(NErr::argument_error_few2(&f)), "count_distinct"),
         }
     }

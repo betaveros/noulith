@@ -50,6 +50,7 @@ pub enum Token {
     Semicolon,
     Ellipsis,
     Lambda,
+    LambdaEnd,
     Comma,
     Assign,
     Consume,
@@ -333,7 +334,14 @@ impl<'a> Lexer<'a> {
                 '{' => self.emit(Token::LeftBrace),
                 '}' => self.emit(Token::RightBrace),
                 '`' => self.emit(Token::Backtick),
-                '\\' => self.emit(Token::Lambda),
+                '\\' => {
+                    if self.peek() == Some(&'\\') {
+                        self.next();
+                        self.emit(Token::LambdaEnd);
+                    } else {
+                        self.emit(Token::Lambda);
+                    }
+                }
                 ',' => self.emit(Token::Comma),
                 ';' => self.emit(Token::Semicolon),
                 ':' => {

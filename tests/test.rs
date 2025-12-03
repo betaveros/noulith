@@ -229,6 +229,17 @@ fn more_lists() {
 }
 
 #[test]
+fn lambdas() {
+    assert_eq!(simple_eval("(\\x -> x $ x)('make')"), Obj::from("makemake"));
+    assert_eq!(
+        simple_eval("\\x -> x $ x\\\\ 'make'"),
+        Obj::from("makemake")
+    );
+    assert_eq!(simple_eval("1 to 10 map (\\x -> x + x) then sum"), i(110));
+    assert_eq!(simple_eval("1 to 10 map \\x -> x + x\\\\ then sum"), i(110));
+}
+
+#[test]
 fn strings() {
     assert_eq!(simple_eval("'1234'[2]"), Obj::from("3"));
     assert_eq!(simple_eval("ord('β')"), i(946));
@@ -549,14 +560,8 @@ fn more_hofs() {
         simple_eval("1 to 3 `zip*` (4 to 6) then unwords"),
         Obj::from("4 10 18")
     );
-    assert_eq!(
-        simple_eval("1 `+ >>> -` 2"),
-        i(-3)
-    );
-    assert_eq!(
-        simple_eval("1 `- <<< +` 2"),
-        i(-3)
-    );
+    assert_eq!(simple_eval("1 `+ >>> -` 2"), i(-3));
+    assert_eq!(simple_eval("1 `- <<< +` 2"), i(-3));
 }
 
 #[test]

@@ -3544,7 +3544,7 @@ impl Parser {
                 Token::RightParen => Err(self.error_here(format!("atom: unexpected"))),
                 Token::Lambda => {
                     self.advance();
-                    if let Some((end, us)) = self.try_consume_usize("backref")? {
+                    let main = if let Some((end, us)) = self.try_consume_usize("backref")? {
                         Ok(LocExpr {
                             start,
                             end,
@@ -3610,7 +3610,11 @@ impl Parser {
                                 })
                             }
                         }
+                    };
+                    if let Some(Token::LambdaEnd) = self.peek() {
+                        self.advance();
                     }
+                    main
                 }
                 Token::If => {
                     self.advance();
@@ -4081,6 +4085,7 @@ impl Parser {
             Some(Token::RightParen) => true,
             Some(Token::RightBracket) => true,
             Some(Token::RightBrace) => true,
+            Some(Token::LambdaEnd) => true,
             Some(Token::Else) => true,
             Some(Token::Case) => true,
             Some(Token::Catch) => true,
