@@ -54,6 +54,7 @@ use wasm_bindgen::prelude::*;
 
 mod core;
 mod decimal;
+mod ein;
 mod eval;
 pub mod few;
 mod gamma;
@@ -69,6 +70,7 @@ use crate::iter::*;
 use crate::streams::*;
 
 pub use crate::core::*;
+use crate::ein::*;
 pub use crate::eval::*;
 pub use crate::lex::Token;
 use crate::nint::NInt;
@@ -1774,6 +1776,46 @@ impl Builtin for Sort {
 
     fn builtin_name(&self) -> &str {
         "sort"
+    }
+}
+
+// just "with"...
+#[derive(Debug, Clone)]
+struct Rearrange;
+
+impl Builtin for Rearrange {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+        match few3(args) {
+            Few3::One(arg @ Obj::Seq(Seq::String(_))) => Ok(clone_and_part_app_2(self, arg)),
+            Few3::Two(a, Obj::Seq(Seq::String(s))) => rearrange(a, &**s, HashMap::new()),
+            Few3::Three(a, Obj::Seq(Seq::String(s)), Obj::Seq(Seq::Dict(d, _))) => {
+                let constraints = d
+                    .iter()
+                    .flat_map(|(k, v)| match (key_to_obj(k.clone()), v) {
+                        (Obj::Seq(Seq::String(s)), Obj::Num(n)) => {
+                            Some(((&**s).to_string(), n.to_usize()?))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                rearrange(a, &**s, constraints)
+            }
+            _ => Err(NErr::type_error("rearrange: bad type".to_string())),
+        }
+    }
+
+    fn builtin_name(&self) -> &str {
+        "rearrange"
+    }
+
+    fn try_chain(&self, other: &Func) -> Option<Func> {
+        match other {
+            Func::Builtin(b) => match b.builtin_name() {
+                "with" => Some(Func::Builtin(Rc::new(self.clone()))),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 }
 
@@ -4196,6 +4238,7 @@ pub fn initialize(env: &mut Env) {
             }
         },
     });
+    env.insert_builtin(Rearrange);
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "filter".to_string(),
         body: |env, a, b| match (a, b) {
