@@ -3925,16 +3925,55 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(EnvTwoArgBuiltin {
         name: "map".to_string(),
         body: |env, mut a, b| {
-            let ret = {
-                let it = mut_obj_into_iter(&mut a, "map")?;
+            let it = mut_obj_into_iter(&mut a, "map")?;
+            match b {
+                Obj::Func(b, _) => Ok(Obj::list(
+                    it.map(|e| b.run1(env, e?)).collect::<NRes<Vec<Obj>>>()?,
+                )),
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
+        },
+    });
+    // really should just be like a prelude of junk or sth
+    env.insert_builtin_with_alias(
+        EnvTwoArgBuiltin {
+            name: "mapmap".to_string(),
+            body: |env, mut a, b| {
+                let it = mut_obj_into_iter(&mut a, "mapmap outer")?;
                 match b {
                     Obj::Func(b, _) => Ok(Obj::list(
-                        it.map(|e| b.run1(env, e?)).collect::<NRes<Vec<Obj>>>()?,
+                        it.map(|e| {
+                            Ok(Obj::list(
+                                mut_obj_into_iter(&mut e?, "mapmap inner")?
+                                    .map(|ee| b.run1(env, ee?))
+                                    .collect::<NRes<Vec<Obj>>>()?,
+                            ))
+                        })
+                        .collect::<NRes<Vec<Obj>>>()?,
                     )),
                     _ => Err(NErr::type_error("not callable".to_string())),
                 }
-            };
-            ret
+            },
+        },
+        "map2",
+    );
+    env.insert_builtin(EnvTwoArgBuiltin {
+        name: "mapply".to_string(),
+        body: |env, mut a, b| {
+            let it = mut_obj_into_iter(&mut a, "mapply map")?;
+            match b {
+                Obj::Func(b, _) => Ok(Obj::list(
+                    it.map(|e| {
+                        b.run(
+                            env,
+                            mut_obj_into_iter(&mut e?, "mapply apply")?
+                                .collect::<NRes<Vec<Obj>>>()?,
+                        )
+                    })
+                    .collect::<NRes<Vec<Obj>>>()?,
+                )),
+                _ => Err(NErr::type_error("not callable".to_string())),
+            }
         },
     });
     #[cfg(feature = "parallel")]
