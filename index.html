@@ -27,7 +27,6 @@ h1 span {
 }
 textarea {
 	width: 100%;
-	height: 4em;
 	box-sizing: border-box;
 	font-family: monospace;
 	resize: vertical;
@@ -151,6 +150,7 @@ td {
 <textarea id="url"></textarea>
 <canvas id="canvas" style="display: none"></canvas>
 <script type="module">
+import { AnsiUp } from './ansi_up/ansi_up.js';
 // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
 // wasm-pack build --target web
 // import init, { encapsulated_eval } from './pkg/paradoc.js';
@@ -558,6 +558,7 @@ function init() {
 	const midUnsafe = document.getElementById('mid-unsafe');
 	const runner = document.getElementById('run');
 	const stopper = document.getElementById('stop');
+	const ansi_up = new AnsiUp();
 
 	function clearIfNeeded() {
 		if (pendingClear) {
@@ -595,7 +596,7 @@ function init() {
 				error.innerHTML = '';
 			} else {
 				midError.style.display = 'block';
-				error.textContent = e.data.error;
+				error.innerHTML = ansi_up.ansi_to_html(e.data.error);
 			}
 		} else {
 			clearIfNeeded();
@@ -641,7 +642,7 @@ function init() {
 					output.appendChild(lastWriteOutputDiv);
 				}
 				lastWriteOutput += e.data;
-				lastWriteOutputDiv.textContent = lastWriteOutput;
+				lastWriteOutputDiv.innerHTML = ansi_up.ansi_to_html(lastWriteOutput);
 			}
 		}
 	};
