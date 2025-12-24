@@ -1,0 +1,11 @@
+{
+  "name": "noulith",
+  "version": "0.1.0",
+  "files": [
+    "noulith_bg.wasm",
+    "noulith.js",
+    "noulith.d.ts"
+  ],
+  "browser": "noulith.js",
+  "types": "noulith.d.ts"
+}
