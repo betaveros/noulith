@@ -1,4 +1,4 @@
-const CACHE_NAME = 'noulith-v1';
+const CACHE_NAME = 'noulith-v1-0-1';
 const urlsToCache = [
   './',
   './index.html',

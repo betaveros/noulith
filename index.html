@@ -23,6 +23,7 @@ h1 {
 h1 span {
 	font-weight: normal;
 	margin-left: auto;
+	font-size: 70%;
 }
 textarea {
 	width: 100%;
@@ -46,6 +47,9 @@ textarea {
 }
 .input-section, .controls {
 	margin-bottom: 1em;
+}
+#input-select {
+	max-width: 100%;
 }
 .controls {
 	display: flex;
@@ -106,7 +110,7 @@ td {
 </head>
 <body>
 	<h1>noulith
-		<span>v1 · <a href="https://github.com/betaveros/noulith">source</a> · <a href="readme.html">readme</a> · <a href="builtins.html">builtins</a></span>
+		<span>v1.0.1 · <a href="https://github.com/betaveros/noulith">source</a> · <a href="readme.html">readme</a> · <a href="builtins.html">builtins</a></span>
 	</h1>
 
 <div class="input-section">
@@ -139,7 +143,8 @@ td {
 	</div>
 </div>
 
-<div id="mid-output">Output: <div id="output"></div></div>
+<!-- if #output is a div, copying it seems to produce an extra newline at the start in chrome? -->
+<div id="mid-output">Output: <span id="output"></span></div>
 <div id="mid-error">Error: <div id="error"></div></div>
 <div id="mid-unsafe">HTML stripped by sanitization: <div id="unsafe"></div></div>
 
