@@ -1,13 +1,74 @@
 <html>
 <head>
 <meta content="text/html;charset=utf-8" http-equiv="Content-Type"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#337722">
+<meta name="description" content="this bad boy can fit so much syntax sugar into it">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+<link rel="apple-touch-icon" sizes="192x192" href="./icon-192.png">
+<title>noulith</title>
 <style>
 body {
 	font-family: sans-serif;
+	margin: 0 auto;
+	padding: 1em;
+	box-sizing: border-box;
+	background-color: #f8faf8;
+}
+h1 {
+	font-size: 150%;
+	display: flex;
+}
+h1 span {
+	font-weight: normal;
+	margin-left: auto;
 }
 textarea {
 	width: 100%;
+	height: 4em;
+	box-sizing: border-box;
 	font-family: monospace;
+	resize: vertical;
+	font-size: 14px;
+	background-color: #fafdfa;
+	border: 1px solid #aaa;
+}
+#code {
+	min-height: 8em;
+}
+#input {
+	min-height: 6em;
+}
+#url {
+	min-height: 4em;
+	font-size: 12px;
+}
+.input-section, .controls {
+	margin-bottom: 1em;
+}
+.controls {
+	display: flex;
+	gap: 0.5em;
+	flex-wrap: wrap;
+	align-items: center;
+}
+.out-controls {
+	margin-left: auto;
+	display: flex;
+	gap: 0.5em;
+}
+button {
+	padding: 0.2em 0.4em;
+}
+label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25em;
+	user-select: none;
+}
+#input-file {
+	display: none;
 }
 .inner-output, #error, #unsafe {
 	background-color: #f8f8f8;
@@ -44,30 +105,46 @@ td {
 </style>
 </head>
 <body>
-	<h1><a href="https://github.com/betaveros/noulith">noulith</a></h1>
-<label for="code">Code:</label>
-<textarea id="code"></textarea>
-<label for="input">Input:</label>
-<select id="input-select">
-	<option value="">user input</option>
-	<option value="file">file</option>
-</select>
-<input type="file" id="input-file" />
-<textarea id="input"></textarea>
-<button id="run" type="button" role="button" disabled>Loading...</button>
-<button id="stop" type="button" role="button" disabled>Loading...</button>
-<label><input type="checkbox" id="fancy" checked /> Fancy output</label>
-<label><input type="checkbox" id="stateful" /> Stateful</label>
-<label><input type="checkbox" id="auto" /> Auto-rerun</label>
-<label style="display: none"><input type="checkbox" id="sanitize" checked /> Sanitize HTML</label>
+	<h1>noulith
+		<span>v1 · <a href="https://github.com/betaveros/noulith">source</a> · <a href="readme.html">readme</a> · <a href="builtins.html">builtins</a></span>
+	</h1>
+
+<div class="input-section">
+	<textarea id="code"></textarea>
+</div>
+
+<div class="input-section">
+	<select id="input-select">
+		<option value="">user input</option>
+		<option value="ukacd.gz">UKACD.gz (use read_compressed())</option>
+		<option value="yawl.gz">YAWL.gz (use read_compressed())</option>
+		<option value="ranked-wiki-wikt-90.gz">ranked-wiki-wikt-90.gz (only scores ≥90) (use read_compressed())</option>
+		<option value="file">file</option>
+	</select>
+	<input type="file" id="input-file" />
+	<textarea id="input"></textarea>
+</div>
+
+<div class="controls">
+	<button id="run" type="button" disabled>Loading...</button>
+	<button id="stop" type="button" disabled>Loading...</button>
+	<label><input type="checkbox" id="fancy" checked /> Fancy output</label>
+	<label><input type="checkbox" id="stateful" /> Stateful</label>
+	<label><input type="checkbox" id="auto" /> Auto-rerun</label>
+	<label style="display: none"><input type="checkbox" id="sanitize" checked /> Sanitize HTML</label>
+	<div class="out-controls">
+		<button id="copy-output" type="button">Copy output</button>
+		<button id="open-svg" type="button">Open SVG as PNG (jank)</button>
+		<button id="gen-url" type="button">Generate URL</button>
+	</div>
+</div>
+
 <div id="mid-output">Output: <div id="output"></div></div>
 <div id="mid-error">Error: <div id="error"></div></div>
 <div id="mid-unsafe">HTML stripped by sanitization: <div id="unsafe"></div></div>
-<button id="copy-output" type="button" role="button">Copy output</button>
-<canvas id="canvas" style="display: none"></canvas>
-<button id="open-svg" type="button" role="button">Open SVG as PNG (jank)</button>
-<button id="gen-url" type="button" role="button">Generate URL</button>
+
 <textarea id="url"></textarea>
+<canvas id="canvas" style="display: none"></canvas>
 <script type="module">
 // https://rustwasm.github.io/docs/wasm-bindgen/examples/without-a-bundler.html (???)
 // wasm-pack build --target web
@@ -170,7 +247,7 @@ async function prepare() {
 		}
 	}));
 	runner.disabled = false;
-	runner.textContent = "Run!";
+	runner.textContent = "Run! (Ctrl+↲)";
 	stopper.textContent = "Stop";
 
 	if (pendingRun) {
@@ -594,7 +671,7 @@ document.addEventListener('DOMContentLoaded', function() {
 		let svg = document.querySelector('#output svg');
 		let data = (new XMLSerializer()).serializeToString(svg);
 		let width = Number(svg.getAttribute("width"));
-		let height = Number(svg.getAttribute("width"));
+		let height = Number(svg.getAttribute("height"));
 		let img = new Image(width, height);
 		let svgBlob = new Blob([data], {type: 'image/svg+xml;charset=utf-8'});
 		let url = DOMURL.createObjectURL(svgBlob);
@@ -638,7 +715,7 @@ document.addEventListener('DOMContentLoaded', function() {
 		const input = document.getElementById('input');
 		const fileInput = document.getElementById('input-file');
 		input.disabled = Boolean(inputSelect.value);
-		fileInput.disabled = inputSelect.value !== 'file';
+		fileInput.style.display = inputSelect.value === 'file' ? 'inline-block' : 'none';
 	}
 
 	changeSelect();
@@ -646,6 +723,19 @@ document.addEventListener('DOMContentLoaded', function() {
 
 	init();
 });
+
+// Register service worker for PWA functionality (skip on localhost for development)
+if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+	window.addEventListener('load', () => {
+		navigator.serviceWorker.register('./sw.js')
+			.then(registration => {
+				console.log('SW registered: ', registration);
+			})
+			.catch(registrationError => {
+				console.log('SW registration failed: ', registrationError);
+			});
+	});
+}
 
 </script>
 </body>

@@ -1,0 +1,27 @@
+{
+  "name": "noulith",
+  "short_name": "noulith",
+  "description": "this bad boy can fit so much syntax sugar into it",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f8faf8",
+  "theme_color": "#337722",
+  "orientation": "any",
+  "scope": "./",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable any"
+    }
+  ],
+  "lang": "en",
+  "categories": ["developer", "programming", "education"]
+}
