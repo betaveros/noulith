@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Built-in Functions</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      background-color: #1a1a1a;
+      border: none;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <meta name="theme-color" content="#337722">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <style>
+
+  body {
+  	font-family: sans-serif;
+  	margin: 0 auto;
+  	padding: 1em;
+  	max-width: 900px;
+  	background-color: #f8faf8;
+  	line-height: 1.6;
+  }
+  code {
+  	color: #372;
+  }
+  th {
+  	background-color: #f0f2f0;
+  	font-weight: bold;
+  }
+  th, td {
+  	border-top: 1px solid #aaa;
+  	border-bottom: 1px solid #aaa;
+  }
+  .nav {
+  	margin-bottom: 1em;
+  	font-size: 0.9em;
+  }
+
+  </style>
+</head>
+<body>
+<div class="nav">
+<a href="index.html">← back to noulith</a>
+· <a href="readme.html">README</a>
+· <a href="builtins.html">BUILTINS</a>
+</div>
+<header id="title-block-header">
+<h1 class="title">Built-in Functions</h1>
+</header>
+<h1 id="noulith-builtins">Noulith Builtins</h1>
+<h2 id="arithmetic">Arithmetic</h2>
+<h3 id="binary-operators">Binary Operators</h3>
+<p>All functions take two arguments and partially apply on the right if
+called with one argument, except for <code>-</code> and <code>~</code>.
+All functions vectorize on vectors.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>+</code></td>
+<td>Add</td>
+</tr>
+<tr class="even">
+<td><code>-</code></td>
+<td>Subtract, or negate with one argument</td>
+</tr>
+<tr class="odd">
+<td><code>subtract</code></td>
+<td>Subtract</td>
+</tr>
+<tr class="even">
+<td><code>*</code></td>
+<td>Multiply</td>
+</tr>
+<tr class="odd">
+<td><code>/</code></td>
+<td>Divide (produces exact fractions on two integers)</td>
+</tr>
+<tr class="even">
+<td><code>%</code></td>
+<td>Remainder (sign of dividend)</td>
+</tr>
+<tr class="odd">
+<td><code>//</code></td>
+<td>Integer division with incompletely defined semantics, but if the
+divisor is positive the result floors, and pairs with
+<code>%%</code></td>
+</tr>
+<tr class="even">
+<td><code>%%</code></td>
+<td>Modulo with incompletely defined semantics, but if the divisor is
+positive the result is nonegative, and pairs with <code>//</code></td>
+</tr>
+<tr class="odd">
+<td><code>/!</code></td>
+<td>Exact division; errors if there’s a remainder</td>
+</tr>
+<tr class="even">
+<td><code>^</code></td>
+<td>Exponentiation</td>
+</tr>
+<tr class="odd">
+<td><code>gcd</code></td>
+<td>Greatest common divisor</td>
+</tr>
+<tr class="even">
+<td><code>lcm</code></td>
+<td>Least common multiple</td>
+</tr>
+<tr class="odd">
+<td><code>&amp;</code></td>
+<td>Bitwise AND</td>
+</tr>
+<tr class="even">
+<td><code>\|</code></td>
+<td>Bitwise OR</td>
+</tr>
+<tr class="odd">
+<td><code>~</code></td>
+<td>Bitwise XOR, or bitwise NOT with one argument</td>
+</tr>
+<tr class="even">
+<td><code>xor</code></td>
+<td>Bitwise XOR</td>
+</tr>
+<tr class="odd">
+<td><code>&lt;&lt;</code></td>
+<td>Bitwise left shift</td>
+</tr>
+<tr class="even">
+<td><code>&gt;&gt;</code></td>
+<td>Bitwise right shift</td>
+</tr>
+</tbody>
+</table>
+<h3 id="unary-operators">Unary Operators</h3>
+<ul>
+<li><code>abs</code> <code>floor</code> <code>ceil</code>
+<code>round</code></li>
+<li><code>signum</code>: -1, 0, or 1 depending on sign. Generalizes to
+complex numbers by returning the number on the unit circle with the same
+direction on nonzero complex numbers.</li>
+<li><code>is_prime</code>, <code>even</code>, <code>odd</code>: 1 if
+satisfies the predicate, 0 else.</li>
+<li><code>numerator</code>, <code>denominator</code>: retrieve an
+integer from a fraction</li>
+<li><code>real_part</code>, <code>imag_part</code>: retrieve a float
+component from a complex number</li>
+<li><code>complex_parts</code>: retrieve both float components from a
+complex number</li>
+</ul>
+<p>All of these basically just naively lift the
+<code>f64 -&gt; f64</code> function of the same name from Rust:
+<code>sin</code> <code>sinh</code> <code>cos</code> <code>cosh</code>
+<code>tan</code> <code>tanh</code> <code>asin</code> <code>asinh</code>
+<code>acos</code> <code>acosh</code> <code>atan</code>
+<code>atanh</code> <code>sqrt</code> <code>cbrt</code> <code>exp</code>
+<code>ln</code> <code>log10</code> <code>log2</code></p>
+<ul>
+<li><code>factorize</code></li>
+</ul>
+<p>We have <code>atan2</code> though it’s not technically unary.</p>
+<h3 id="comparisons">Comparisons</h3>
+<p><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code>
+<code>&lt;=</code> <code>&gt;=</code> <code>max</code>
+<code>min</code></p>
+<p>These functions don’t vectorize. Sequences are compared
+lexicographically.</p>
+<p><code>&lt;=&gt;</code> returns -1 if the left argument is less, 0 if
+they’re equal, 1 if the left argument is greater. <code>&gt;=&lt;</code>
+does the opposite.</p>
+<h3 id="randomness">Randomness</h3>
+<ul>
+<li><code>random</code>: [0.0, 1.0)</li>
+<li><code>random_bytes(n)</code>: <code>n</code> random bytes</li>
+<li><code>random_range(a, b)</code>: integer in [a, b)</li>
+<li><code>shuffle</code></li>
+<li><code>choose</code>: random element</li>
+</ul>
+<h2 id="sequences">Sequences</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Args</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>to</code></td>
+<td>2 or 3</td>
+<td>Inclusive range. Third argument, which can be specified by chaining
+with <code>by</code>, specifies a step.</td>
+</tr>
+<tr class="even">
+<td><code>til</code></td>
+<td>2 or 3</td>
+<td>Half-open range (inclusive of first argument, exclusive of second).
+Third argument, which can be specified by chaining with <code>by</code>,
+specifies a step.</td>
+</tr>
+<tr class="odd">
+<td><code>len</code></td>
+<td>1</td>
+<td>Length of a sequence.</td>
+</tr>
+<tr class="even">
+<td><code>only</code></td>
+<td>1</td>
+<td>The only element in a sequence; errors if there are 0 or at least
+2.</td>
+</tr>
+<tr class="odd">
+<td><code>in</code>, <code>∈</code></td>
+<td>2</td>
+<td>Test for presence of key in dictionary, or just element in
+sequence.</td>
+</tr>
+<tr class="even">
+<td><code>not_in</code>, <code>∉</code></td>
+<td>2</td>
+<td>Test for absence of key in dictionary, or just element in
+sequence.</td>
+</tr>
+<tr class="odd">
+<td><code>contains</code>, <code>∋</code></td>
+<td>2</td>
+<td>Reversed test for presence of key in dictionary, or just element in
+sequence.</td>
+</tr>
+<tr class="even">
+<td><code>∌</code></td>
+<td>2</td>
+<td>Reversed test for absence of key in dictionary, or just element in
+sequence.</td>
+</tr>
+<tr class="odd">
+<td><code>transpose</code></td>
+<td>2</td>
+<td>Transpose a sequence of sequences</td>
+</tr>
+<tr class="even">
+<td><code>set</code></td>
+<td>1</td>
+<td>Convert to a “set” (dictionary with elements as keys,
+<code>null</code> as every value)</td>
+</tr>
+<tr class="odd">
+<td><code>dict</code></td>
+<td>1</td>
+<td>Convert sequence of key-value pairs to a dictionary</td>
+</tr>
+<tr class="even">
+<td><code>count_distinct</code></td>
+<td>1</td>
+<td>Count distinct elements. It’s just <code>len(set(...))</code>
+really.</td>
+</tr>
+<tr class="odd">
+<td><code>items</code></td>
+<td>1</td>
+<td>Sequence of key-value pairs in a dictionary.</td>
+</tr>
+<tr class="even">
+<td><code>keys</code></td>
+<td>1</td>
+<td>Sequence of keys in a dictionary.</td>
+</tr>
+<tr class="odd">
+<td><code>values</code></td>
+<td>1</td>
+<td>Sequence of values in a dictionary.</td>
+</tr>
+<tr class="even">
+<td><code>enumerate</code></td>
+<td>1</td>
+<td>Indexes counting from 0 zipped with a sequence.</td>
+</tr>
+<tr class="odd">
+<td><code>unique</code></td>
+<td>1</td>
+<td>Sequence of same type with duplicates removed; elements are ordered
+by their first appearance. (Some other languages call this
+<code>nub</code>.)</td>
+</tr>
+<tr class="even">
+<td><code>window</code></td>
+<td>2</td>
+<td>List of same-type slices of a particular length in order,
+e.g. <code>([1, 2, 3, 4] window 2) == [[1, 2], [2, 3], [3, 4]]</code></td>
+</tr>
+<tr class="odd">
+<td><code>prefixes</code></td>
+<td>2</td>
+<td>List of same-type slices from the start by increasing length,
+e.g. <code>prefixes([1, 2, 3]) == [[], [1], [1, 2], [1, 2, 3]]</code></td>
+</tr>
+<tr class="even">
+<td><code>suffixes</code></td>
+<td>2</td>
+<td>List of same-type slices until the end by increasing length,
+e.g. <code>suffixes([1, 2, 3]) == [[], [3], [2, 3], [1, 2, 3]]</code></td>
+</tr>
+<tr class="odd">
+<td><code>frequencies</code></td>
+<td>1</td>
+<td>Dictionary of elements to how often they appear,
+e.g. <code>frequencies([1, 1, 2, 1]) == {:0, 1: 3, 2: 1}</code></td>
+</tr>
+<tr class="even">
+<td><code>++</code></td>
+<td>2</td>
+<td>Concatenate two lists or like sequences.</td>
+</tr>
+<tr class="odd">
+<td><code>.+</code></td>
+<td>2</td>
+<td>Prepend an element to a list.</td>
+</tr>
+<tr class="even">
+<td><code>+.</code></td>
+<td>2</td>
+<td>Take a list and append an element.</td>
+</tr>
+<tr class="odd">
+<td><code>..</code></td>
+<td>2</td>
+<td>Make a two-element list.</td>
+</tr>
+<tr class="even">
+<td><code>.*</code>, <code>*.</code></td>
+<td>2</td>
+<td>Make a list with n copies of something. The element is on the side
+of the <code>.</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>**</code></td>
+<td>any</td>
+<td>Cartesian product</td>
+</tr>
+<tr class="even">
+<td><code>^^</code></td>
+<td>2</td>
+<td>Cartesian “exponentiation”, repeated Cartesian product with
+itself.</td>
+</tr>
+<tr class="odd">
+<td><code>!!</code>, <code>index</code></td>
+<td>2</td>
+<td>Index into a sequence or access a dict, i.e. <code>a !! b</code> is
+basically <code>a[b]</code>.</td>
+</tr>
+<tr class="even">
+<td><code>!?</code>, <code>index?</code></td>
+<td>2</td>
+<td>Index into a sequence or access a dict or <code>null</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>find</code></td>
+<td>2</td>
+<td>First element equalling a value or satisfying a predicate.</td>
+</tr>
+<tr class="even">
+<td><code>find?</code></td>
+<td>2</td>
+<td>First element equalling a value or satisfying a predicate, or
+null</td>
+</tr>
+<tr class="odd">
+<td><code>locate</code></td>
+<td>2</td>
+<td>Index of first element equalling a value or satisfying a
+predicate.</td>
+</tr>
+<tr class="even">
+<td><code>locate?</code></td>
+<td>2</td>
+<td>Index of first element equalling a value or satisfying a predicate,
+or null</td>
+</tr>
+<tr class="odd">
+<td><code>first</code></td>
+<td>1</td>
+<td>First element</td>
+</tr>
+<tr class="even">
+<td><code>second</code></td>
+<td>1</td>
+<td>Second element</td>
+</tr>
+<tr class="odd">
+<td><code>third</code></td>
+<td>1</td>
+<td>Third element</td>
+</tr>
+<tr class="even">
+<td><code>last</code></td>
+<td>1</td>
+<td>Last element</td>
+</tr>
+<tr class="odd">
+<td><code>tail</code></td>
+<td>1</td>
+<td>All but first element</td>
+</tr>
+<tr class="even">
+<td><code>butlast</code></td>
+<td>1</td>
+<td>All but last element</td>
+</tr>
+<tr class="odd">
+<td><code>uncons</code></td>
+<td>1</td>
+<td>First and all-but-first element. Errors on empty argument</td>
+</tr>
+<tr class="even">
+<td><code>uncons?</code></td>
+<td>1</td>
+<td>First and all-but-first element, or <code>null</code></td>
+</tr>
+<tr class="odd">
+<td><code>unsnoc</code></td>
+<td>1</td>
+<td>All-but-last and last element. Errors on empty argument</td>
+</tr>
+<tr class="even">
+<td><code>unsnoc?</code></td>
+<td>1</td>
+<td>All-but-last and last element, or <code>null</code></td>
+</tr>
+<tr class="odd">
+<td><code>take</code></td>
+<td>2</td>
+<td>Take first n elements or while predicate is satisfied</td>
+</tr>
+<tr class="even">
+<td><code>drop</code></td>
+<td>2</td>
+<td>Drop first n elements or while predicate is satisfied</td>
+</tr>
+<tr class="odd">
+<td><code>sort</code></td>
+<td>1 or 2</td>
+<td>Sort by optional comparator (often <code>&lt;=&gt; on</code> some
+key function)</td>
+</tr>
+<tr class="even">
+<td><code>sort_on</code></td>
+<td>1</td>
+<td>Sort by key (Schwartzian)</td>
+</tr>
+<tr class="odd">
+<td><code>reverse</code></td>
+<td>1</td>
+<td></td>
+</tr>
+<tr class="even">
+<td><code>\|\|</code></td>
+<td>2</td>
+<td>Union dictionaries, right-biased</td>
+</tr>
+<tr class="odd">
+<td><code>\|.</code></td>
+<td>2</td>
+<td>Add key with value <code>null</code></td>
+</tr>
+<tr class="even">
+<td><code>\|\|+</code></td>
+<td>2</td>
+<td>Union dictionaries, merging values at key collisions with
+<code>+</code></td>
+</tr>
+<tr class="odd">
+<td><code>\|\|-</code></td>
+<td>2</td>
+<td>Union dictionaries, merging values at key collisions with
+<code>-</code></td>
+</tr>
+<tr class="even">
+<td><code>-.</code>, <code>discard</code></td>
+<td>2</td>
+<td>Remove key</td>
+</tr>
+<tr class="odd">
+<td><code>insert</code>, <code>\|..</code></td>
+<td>2</td>
+<td>Add key-value pair</td>
+</tr>
+<tr class="even">
+<td><code>&amp;&amp;</code></td>
+<td>2</td>
+<td>Intersect sets; keeps values from left</td>
+</tr>
+<tr class="odd">
+<td><code>--</code></td>
+<td>2</td>
+<td>Removes right keys from left dictionary</td>
+</tr>
+</tbody>
+</table>
+<h3 id="streams-lazy-sequences">Streams (~lazy sequences)</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Args</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>repeat</code></td>
+<td>1</td>
+<td>Infinite lazy sequence that just repeats one element forever.</td>
+</tr>
+<tr class="even">
+<td><code>cycle</code></td>
+<td>1</td>
+<td>Infinite lazy sequence that just cycles through elements of given
+sequence in order.</td>
+</tr>
+<tr class="odd">
+<td><code>iota</code></td>
+<td>1</td>
+<td>Infinite lazy sequence counting from given integer up by 1
+forever.</td>
+</tr>
+<tr class="even">
+<td><code>permutations</code></td>
+<td>1</td>
+<td>Permutations of given sequence.</td>
+</tr>
+<tr class="odd">
+<td><code>combinations</code></td>
+<td>2</td>
+<td>All length-n subsequences of given sequence.</td>
+</tr>
+<tr class="even">
+<td><code>subsequences</code></td>
+<td>1</td>
+<td>All subsequences of given sequence.</td>
+</tr>
+<tr class="odd">
+<td><code>iterate</code></td>
+<td>2</td>
+<td>Infinite lazy sequence that starts with first argument as its first
+element. Each subsequent element is obtained by calling the second
+argument on the previous element. Use with caution — no guarantees if
+the second argument is impure.</td>
+</tr>
+<tr class="even">
+<td><code>lazy_map</code></td>
+<td>2</td>
+<td>Lazy map where each element is obtained by calling the second
+argument on an element of the first. Gracefully terminates if the second
+argument <code>break</code>s. No guarantees if the second argument is
+impure.</td>
+</tr>
+<tr class="odd">
+<td><code>lazy_filter</code></td>
+<td>2</td>
+<td>Lazy filter, first by second. No guarantees if the second argument
+is impure.</td>
+</tr>
+<tr class="even">
+<td><code>lazy_zip</code></td>
+<td>any</td>
+<td>Lazy zip two or more streams, optionally with a function. See
+above.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="strings">Strings</h3>
+<ul>
+<li><code>$</code>: n-ary (including 1) string concatenation, coerces
+all arguments to strings.</li>
+<li><code>$$</code>: exactly binary string concatenation, for partial
+application</li>
+<li><code>*$</code>, <code>$*</code>: string replication; the string is
+on the side of the <code>$</code></li>
+<li><code>chr</code>, <code>ord</code>: convert from an integer to a
+length-1 string and vice versa</li>
+<li><code>upper</code> <code>lower</code></li>
+<li><code>is_upper</code> <code>is_alpha</code> <code>is_alnum</code>
+<code>is_digit</code> <code>is_space</code> <code>is_lower</code>
+<code>is_ascii</code></li>
+<li><code>utf8_decode</code>/<code>utf8_encode</code></li>
+<li><code>hex_decode</code>/<code>hex_encode</code></li>
+<li><code>base64_decode</code>/<code>base64_encode</code></li>
+<li><code>json_decode</code>/<code>json_encode</code></li>
+<li><code>compress</code>/<code>decompress</code></li>
+<li><code>join</code>: join a sequence of values by a string</li>
+<li><code>split</code>: split a string by another</li>
+<li><code>starts_with</code> <code>ends_with</code></li>
+<li><code>words</code>: split by runs of whitespace</li>
+<li><code>unwords</code>: join by space</li>
+<li><code>lines</code>: split by newlines; if a trailing newline exists,
+it’s ignored</li>
+<li><code>unlines</code>: join by newlines and add a trailing
+newline</li>
+<li><code>strip</code> <code>strip_start</code> <code>strip_end</code>.
+Synonymous with <code>trim</code> etc.; I haven’t decided yet.</li>
+<li><code>search</code>: find a regex, or <code>null</code>. If the
+regex has capture groups then return a list of captured strings, else
+return the found string.</li>
+<li><code>search_all</code>: find all nonoverlapping occurrences of a
+regex. If the regex has capture groups then return a list of lists of
+captured strings, else return a list of found strings.</li>
+<li><code>replace</code>: replace a regex everywhere by a replacement
+string.</li>
+<li><code>str_radix</code> <code>int_radix</code></li>
+</ul>
+<h2 id="types">Types</h2>
+<ul>
+<li><code>number</code>: <code>int</code> <code>rational</code>
+<code>float</code> <code>complex</code></li>
+<li><code>str</code> <code>list</code> <code>dict</code>
+<code>vector</code> <code>bytes</code></li>
+<li><code>stream</code></li>
+<li><code>func</code></li>
+<li><code>type</code></li>
+<li><code>anything</code></li>
+</ul>
+<p>The <code>is</code> functions tests if something is of a type
+e.g. <code>3 is int</code></p>
+<p><code>satisfying</code> turns a predicate function into a type,
+somehow.</p>
+<p><code>repr</code> converts to string more verbosely</p>
+<h2 id="functions">Functions</h2>
+<h3 id="composition-or-simple-argument-juggling">Composition or simple
+argument juggling</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Args</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>id</code></td>
+<td>1</td>
+<td>Identity function, returns its sole argument.</td>
+</tr>
+<tr class="even">
+<td><code>const</code></td>
+<td>2</td>
+<td>Constant function, always returns its second argument. Can be
+partially applied.</td>
+</tr>
+<tr class="odd">
+<td><code>.</code></td>
+<td>2</td>
+<td>Reverse function application; calls second argument on first.</td>
+</tr>
+<tr class="even">
+<td><code>then</code></td>
+<td>2</td>
+<td>Reverse function application; calls second argument on first.</td>
+</tr>
+<tr class="odd">
+<td><code>.&gt;</code></td>
+<td>2</td>
+<td>Reverse function application; calls second argument on first.</td>
+</tr>
+<tr class="even">
+<td><code>&lt;.</code></td>
+<td>2</td>
+<td>Function application; calls first argument on second.</td>
+</tr>
+<tr class="odd">
+<td><code>apply</code></td>
+<td>2</td>
+<td>Reverse “splatted” function application; first argument should be a
+sequence, calls second argument with that sequence’s elements as
+arguments.</td>
+</tr>
+<tr class="even">
+<td><code>of</code></td>
+<td>2</td>
+<td>“Splatted” function application; second argument should be a
+sequence, calls first argument with that sequence’s elements as
+arguments.</td>
+</tr>
+<tr class="odd">
+<td><code>&gt;&gt;&gt;</code></td>
+<td>2</td>
+<td>Function composition:
+<code>(f &gt;&gt;&gt; g)(...) = g(f(...))</code></td>
+</tr>
+<tr class="even">
+<td><code>&lt;&lt;&lt;</code>, <code>∘</code></td>
+<td>2</td>
+<td>Function composition:
+<code>(f &lt;&lt;&lt; g)(...) = f(g(...))</code></td>
+</tr>
+<tr class="odd">
+<td><code>on</code></td>
+<td>2</td>
+<td>Lifted function composition:
+<code>(f on g)(a1, a2, ...) = f(g(a1), g(a2), ...)</code>. Typical usage
+is to convert a “key function” into a comparator with
+<code>&lt;=&gt; on key_func</code>.</td>
+</tr>
+<tr class="even">
+<td><code>***</code></td>
+<td>any</td>
+<td>Parallel function composition:
+<code>(f *** g)(a1, a2) = [f(a1), g(a2)]</code></td>
+</tr>
+<tr class="odd">
+<td><code>&amp;&amp;&amp;</code></td>
+<td>any</td>
+<td>Fanout function composition:
+<code>(f &amp;&amp;&amp; g)(...) = [f(...), g(...)]</code></td>
+</tr>
+<tr class="even">
+<td><code>equals</code></td>
+<td>any</td>
+<td>Wacky equality helper.
+<code>(f equals g)(...) = f(...) == g(...)</code> where if
+<code>f</code> or <code>g</code> are not functions they get used
+directly.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="higher-order-functions-on-sequences">Higher-order functions on
+sequences</h3>
+<p>Functions are usually the last argument.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Function</th>
+<th>Args</th>
+<th>Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>each</code></td>
+<td>2</td>
+<td>Call second function on each element of first</td>
+</tr>
+<tr class="even">
+<td><code>map</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each element of first</td>
+</tr>
+<tr class="odd">
+<td><code>map_keys</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each key of first dictionary,
+preserving values, to produce a new dict</td>
+</tr>
+<tr class="even">
+<td><code>map_values</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each value of first dictionary,
+preserving keys, to produce a new dict</td>
+</tr>
+<tr class="odd">
+<td><code>flatten</code></td>
+<td>1</td>
+<td>Flatten one level, producing a list</td>
+</tr>
+<tr class="even">
+<td><code>flat_map</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each element of first and then
+flatten</td>
+</tr>
+<tr class="odd">
+<td><code>filter</code></td>
+<td>2</td>
+<td>New sequence of same type with only elements satisfying a
+predicate</td>
+</tr>
+<tr class="even">
+<td><code>filter_keys</code></td>
+<td>2</td>
+<td>Filter keys of dictionary</td>
+</tr>
+<tr class="odd">
+<td><code>filter_values</code></td>
+<td>2</td>
+<td>Filter values of dictionary</td>
+</tr>
+<tr class="even">
+<td><code>filter_items</code></td>
+<td>2</td>
+<td>Filter items of dictionary. Function gets two arguments, key and
+value</td>
+</tr>
+<tr class="odd">
+<td><code>reject</code></td>
+<td>2</td>
+<td>New sequence of same type with only elements not satisfying a
+predicate</td>
+</tr>
+<tr class="even">
+<td><code>partition</code></td>
+<td>2</td>
+<td>List of two sequences of same type; the first has only the elements
+satisfying the predicate, the second has the rest</td>
+</tr>
+<tr class="odd">
+<td><code>any</code></td>
+<td>1 or 2</td>
+<td>Whether any element is truthy / satisfies the predicate</td>
+</tr>
+<tr class="even">
+<td><code>all</code></td>
+<td>1 or 2</td>
+<td>Whether all elements are truthy / satisfy the predicate</td>
+</tr>
+<tr class="odd">
+<td><code>count</code></td>
+<td>1 or 2</td>
+<td>Number of elements that are truthy / satisfy the predicate</td>
+</tr>
+<tr class="even">
+<td><code>group</code></td>
+<td>1 or 2</td>
+<td>Split up sequence into same-type sequences of adjacent elements that
+are equal / satisfy a binary relation with the previous/next item in the
+group. Second argument can also be a positive integer to just make the
+same-type sequences the same size (the last group may be short).</td>
+</tr>
+<tr class="odd">
+<td><code>group'</code></td>
+<td>1 or 2</td>
+<td>Same, but errors if the sequence’s length isn’t evenly
+divisible.</td>
+</tr>
+<tr class="even">
+<td><code>group_all</code></td>
+<td>1 or 2</td>
+<td>Split up sequence into subsequences of elements that satisfy a
+binary relation with each other (<code>group</code> where elements don’t
+have to be adjacent)</td>
+</tr>
+<tr class="odd">
+<td><code>zip</code></td>
+<td>any</td>
+<td>Zip two or more sequences with an optional function.</td>
+</tr>
+<tr class="even">
+<td><code>ziplongest</code></td>
+<td>any</td>
+<td>Zip two or more sequences with an optional function. If a function
+is provided, it’s used to reduce each batch of elements pairwise instead
+of just called with all at once.</td>
+</tr>
+<tr class="odd">
+<td><code>pairwise</code></td>
+<td>2</td>
+<td>Zip a sequence with its own tail via a function.</td>
+</tr>
+<tr class="even">
+<td><code>merge</code></td>
+<td>any</td>
+<td>Merge two or more dictionaries, with an optional function. Without a
+function, values from later dictionaries overwrite earlier ones when
+their keys collide; with a function, the values are combined with
+it.</td>
+</tr>
+<tr class="odd">
+<td><code>fold</code></td>
+<td>2 or 3</td>
+<td>Fold a sequence by a function, with an optional starting value
+(chainable with <code>from</code>).</td>
+</tr>
+<tr class="even">
+<td><code>scan</code></td>
+<td>2 or 3</td>
+<td>Like <code>fold</code>, but collect all intermediate values into a
+list instead of just the final result.</td>
+</tr>
+<tr class="odd">
+<td><code>par_each</code></td>
+<td>2</td>
+<td>Parallel each?</td>
+</tr>
+<tr class="even">
+<td><code>par_map</code></td>
+<td>2</td>
+<td>Parallel map?</td>
+</tr>
+</tbody>
+</table>
+<h2 id="inputoutput">Input/output</h2>
+<ul>
+<li><code>print</code>: Output arguments, separated by spaces, followed
+by a newline</li>
+<li><code>echo</code>: Output arguments, separated by spaces</li>
+<li><code>write</code>: Output arguments</li>
+<li><code>input</code>: read one line</li>
+<li><code>read</code>: read until EOF</li>
+<li><code>read_compressed</code>: read gzipped</li>
+<li><code>interact</code>: Read all input, call the argument with it,
+then output the result. If multiple arguments, just runs ’em left to
+right</li>
+<li><code>interact_lines</code>: Read all input as a list of lines, call
+the argument with it, then output the result, one thing per line. If
+multiple arguments, just runs ’em left to right</li>
+<li><code>flush</code> (stdout)</li>
+<li><code>debug</code>: Debug output.</li>
+</ul>
+<h3 id="filesystem">Filesystem</h3>
+<ul>
+<li><p><code>read_file</code></p></li>
+<li><p><code>read_file?</code></p></li>
+<li><p><code>read_file_bytes</code></p></li>
+<li><p><code>read_file_bytes?</code></p></li>
+<li><p><code>list_files</code></p></li>
+<li><p><code>write_file</code></p></li>
+<li><p><code>append_file</code></p></li>
+<li><p><code>path_parent</code></p></li>
+<li><p><code>path_join</code></p></li>
+</ul>
+<h3 id="other">Other</h3>
+<ul>
+<li><code>run_process</code></li>
+<li><code>time</code>: time since epoch as a float</li>
+<li><code>now</code>: dictionary with keys
+<code>"year", "month", "day", "hour", "minute", "second", "nanosecond"</code>;
+accepts one optional argument, a number of hours N to get UTC+N</li>
+<li><code>sleep</code></li>
+<li><code>request</code> <code>request_bytes</code>
+<code>request_json</code></li>
+</ul>
+<h2 id="cryptography">Cryptography</h2>
+<p>Most of these were specifically put here for Cryptopals.</p>
+<ul>
+<li><code>aes128_hazmat_encrypt_block(16-byte key, 16-byte block)</code></li>
+<li><code>aes128_hazmat_decrypt_block(16-byte key, 16-byte block)</code></li>
+<li><code>aes256_gcm_encrypt(32-byte key, 12-byte nonce, plaintext)</code></li>
+<li><code>aes256_gcm_decrypt(32-byte key, 12-byte nonce, ciphertext)</code></li>
+<li><code>md5(bytes)</code></li>
+<li><code>sha256(bytes)</code></li>
+<li><code>blake3(bytes)</code></li>
+</ul>
+<h2 id="metaprogramming-misc">Metaprogramming (?) / misc</h2>
+<ul>
+<li><code>eval</code></li>
+<li><code>vars</code>: dictionary of all vars in the current environment
+(writing to it doesn’t do anything)</li>
+<li><code>assert</code>: assert a condition is true else throw an
+error</li>
+<li><code>memoize</code>: make a function memoized</li>
+<li><code>is_big</code>: does an int internally use the small int or big
+int representation</li>
+<li><code>HtmlTag(tag_name, children, attributes)</code>: struct that
+gets rendered as an html element by the WASM frontend</li>
+</ul>
+</body>
+</html>

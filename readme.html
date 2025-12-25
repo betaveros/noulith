@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>README</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      background-color: #1a1a1a;
+      border: none;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <meta name="theme-color" content="#337722">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
+  <style>
+
+  body {
+  	font-family: sans-serif;
+  	margin: 0 auto;
+  	padding: 1em;
+  	max-width: 900px;
+  	background-color: #f8faf8;
+  	line-height: 1.6;
+  }
+  code {
+  	color: #372;
+  }
+  th {
+  	background-color: #f0f2f0;
+  	font-weight: bold;
+  }
+  th, td {
+  	border-top: 1px solid #aaa;
+  	border-bottom: 1px solid #aaa;
+  }
+  .nav {
+  	margin-bottom: 1em;
+  	font-size: 0.9em;
+  }
+
+  </style>
+</head>
+<body>
+<div class="nav">
+<a href="index.html">← back to noulith</a>
+· <a href="readme.html">README</a>
+· <a href="builtins.html">BUILTINS</a>
+</div>
+<header id="title-block-header">
+<h1 class="title">README</h1>
+</header>
+<p>An attempt to give myself a new Pareto-optimal choice for
+quick-and-dirty scripts, particularly when I’m not on a dev computer,
+and to practice writing a more realistic programming language instead of
+the <a href="https://github.com/betaveros/paradoc">overengineered
+stack-based nonsense</a> I spend too much time on. (<a
+href="https://craftinginterpreters.com/">Crafting Interpreters</a> is
+such a good book, I have no excuses.)</p>
+<p>You can <a href="https://betaveros.github.io/noulith/">try Noulith
+online</a> (via wasm)!</p>
+<h2 id="elevator-pitches-and-anti-pitches">Elevator pitches (and
+anti-pitches)</h2>
+<ul>
+<li><p>Immutable data structures (but not variables) means you can write
+<code>matrix = [[0] ** 10] ** 10; matrix[1][2] = 3</code> and not worry
+about it, instead of the <code>[[0] * 10 for _ in range(10)]</code> you
+always have to do in Python. You can also freely use things as keys in
+dictionaries. But, thanks to mutate-or-copy-on-write shenanigans behind
+the scenes (powered by Rust’s overpowered reference-counting pointers),
+you don’t have to sacrifice the performance you’d get from mutating
+lists. (There are almost certainly space leaks from cavalier use of
+<code>Rc</code> but shhhhh.)</p></li>
+<li><p>Everything is an infix operator; nearly everything can be
+partially applied. If you thought Scala had a lot of syntax sugar, wait
+till you see what we’ve got.</p>
+<pre><code>noulith&gt; 1 to 10 filter even map (3*)
+[6, 12, 18, 24, 30]</code></pre></li>
+<li><p>Ever wanted to write <code>x max= y</code> while searching for
+some maximum value in some complicated loop? You can do that here. You
+can do it with literally any function.</p></li>
+<li><p>You know how Python has this edge case where you can write things
+like <code>{1}</code> and <code>{1, 2}</code> to get sets, but
+<code>{}</code> is a dictionary because dictionaries came first? We
+don’t have that problem because we don’t distinguish sets and
+dictionaries.</p></li>
+<li><p>Operator precedence is customizable and resolved at runtime.</p>
+<pre><code>noulith&gt; f := \-&gt; 2 + 5 * 3
+noulith&gt; f()
+17
+noulith&gt; swap +, *
+noulith&gt; f() # (2 times 5) plus 3
+13
+noulith&gt; swap +::precedence, *::precedence
+noulith&gt; f() # 2 times (5 plus 3)
+16
+noulith&gt; swap +, *
+noulith&gt; f() # (2 plus 5) times 3
+21</code></pre>
+<p>Imagine all the <a
+href="https://adventofcode.com/2020/day/18">operator parsing</a> code
+you won’t need to write. When you need like arbitrarily many levels of
+operator precedence, and are happy to <code>eval</code> inputs.</p></li>
+</ul>
+<h2 id="how-do-you-run-this-thing">How do you run this thing?</h2>
+<p>It’s a standard Rust project, so, in brief:</p>
+<ul>
+<li><a href="https://www.rust-lang.org/tools/install">Install Rust</a>
+and set it up</li>
+<li>Clone this repository, <code>cd</code> to it</li>
+<li><code>cargo run --release --features cli,request,crypto</code></li>
+</ul>
+<p>This will drop you into a REPL, or you can pass a filename to run it.
+If you just want to build an executable so you can alias it or add it to
+<code>$PATH</code>, just run
+<code>cargo build --release --features cli,request,crypto</code> and
+look inside <code>target/release</code>.</p>
+<p>None of the command-line options to <code>cargo run</code> or
+<code>cargo build</code> are required; they just give you better
+run-time performance and features for a slower compile time and larger
+binary size. (Without <code>--release</code>, stack frames are so large
+that one of the tests overflows the stack…)</p>
+<h2
+id="features-and-anti-features-and-claims-that-will-become-false-as-i-keep-hacking-on-this">Features
+(and anti-features) (and claims that will become false as I keep hacking
+on this)</h2>
+<ul>
+<li>Dynamically typed.</li>
+<li>Not whitespace- or indentation-sensitive (except for delimiting
+tokens, of course, but that does matter more than is common: operator
+symbols can be strung together freely like Haskell or Scala). In
+particular, newlines don’t mean anything; semicolons everywhere. (I can
+foresee myself regretting this choice so we might revisit it
+later.)</li>
+<li>Declare variables with <code>:=</code>. (I never would have
+considered this on my own, but then I read the <a
+href="https://craftinginterpreters.com/statements-and-state.html#design-note">Crafting
+Interpreters design note</a> and was just totally convinced.)</li>
+<li>List concatenation is <code>++</code>. String concatenation is
+<code>$</code>. Maybe? Not sure yet.</li>
+<li>Things that introduce scopes: functions, loops, <code>switch</code>,
+<code>try</code>, apparently.</li>
+<li>Everything is an expression.</li>
+<li>No classes or members or whatever, it’s just global functions all
+the way down. Or up.</li>
+<li>I already said this, but operator precedence is resolved at
+runtime.</li>
+<li>At the highest level, statements are C/Java/Scala-style
+<code>if (condition) body else body</code>,
+<code>for (thing) body</code> (not the modern
+<code>if cond { body }</code>). The <code>if ... else</code> is the
+ternary expression.</li>
+<li>Lists and dictionaries should look familiar from Python. Lists are
+brackets: <code>[a, b, c]</code>. Dictionaries are curly braces:
+<code>{a, b, c}</code>. We don’t bother with a separate set type, but
+dictionaries often behave quite like their sets of keys.</li>
+<li>For loops use left arrows: <code>for (x &lt;- xs) ...</code>. Use a
+double-headed arrow for index-value or key-value pairs:
+<code>for (i, x &lt;&lt;- xs) ...</code>.</li>
+<li>Prefix operators are wonky. When in doubt, parenthesize the operand:
+<code>a + -(b)</code>; <code>x and not(y)</code>.</li>
+<li>Lambdas look like <code>\x, y -&gt; x + y</code>.</li>
+</ul>
+<h2 id="example">Example</h2>
+<p>Somewhat imperative:</p>
+<pre><code>for (x &lt;- 1 to 100) (
+  o := &#39;&#39;;
+  for (f, s &lt;- [[3, &#39;Fizz&#39;], [5, &#39;Buzz&#39;]])
+    if (x % f == 0)
+      o $= s;
+  print(if (o == &#39;&#39;) x else o)
+)</code></pre>
+<p>Somewhat functional:</p>
+<pre><code>for (x &lt;- 1 to 100) print([[3, &#39;Fizz&#39;], [5, &#39;Buzz&#39;]] map (\(f, s) -&gt; if (x % f == 0) s else &quot;&quot;) join &quot;&quot; or x)</code></pre>
+<h2 id="more-in-depth-tour">More in-depth tour</h2>
+<p>NOTE: I will probably keep changing the language and may not keep all
+this totally up to date.</p>
+<p>Numbers, arithmetic operators, and comparisons mostly work as you’d
+expect, including C-style bitwise operators, except that:</p>
+<ul>
+<li><code>^</code> is exponentiation. Instead, <code>~</code> as a
+binary operator is xor (but can still be unary as bitwise complement).
+Or you can just use <code>xor</code>.</li>
+<li><code>/</code> does perfect rational division like in Common Lisp or
+something. <code>%</code> does C-style signed modulo. <code>//</code>
+does integer division rounding down, and <code>%%</code> does the paired
+modulo (roughly).</li>
+<li>The precedence is something somewhat reasonable and simpler,
+inspired by Go’s precedence, rather than following C’s legacy:</li>
+</ul>
+<pre><code>Tighter ^ &lt;&lt; &gt;&gt;
+        * / % &amp;
+        + - ~
+        |
+Looser  == != &lt; &gt; &lt;= &gt;=</code></pre>
+<p>We support arbitrary radixes up to 36 with syntax
+<code>36r1000 == 36^3</code>, plus specifically the slightly weird
+base-64 <code>64rBAAA == 64^3</code> (because in base-64 <code>A</code>
+is 0, <code>B</code> is 1, etc.)</p>
+<p>Like in Python and mathematics, comparison operators can be chained
+like <code>1 &lt; 2 &lt; 3</code>; we explain how this works later. We
+also have <code>min</code>, <code>max</code>, and the three-valued
+comparison operator <code>&lt;=&gt;</code> and its reverse
+<code>&gt;=&lt;</code>.</p>
+<p>End-of-line comments: <code>#</code> (not immediately followed by
+<code>(</code>). Range comments: <code>#( ... )</code>. Those count
+parentheses so can be nested.</p>
+<p>Strings: <code>"</code> or <code>'</code>. (What will we use the
+backtick for one day, I wonder.) Also like in Python, we don’t have a
+separate character type; iterating over a string just gives
+single-character strings.</p>
+<p>Data types:</p>
+<ul>
+<li>Null</li>
+<li>Numbers: big integers, rationals, floats, and complex numbers, which
+coerce from left to right in that list as needed. Note that there are no
+booleans, we just use 0 and 1.</li>
+<li>Lists (heterogeneous): <code>[a, b]</code>. Pythonic indexing and
+slicing, both in syntax and semantics of negative integers. Assigning to
+slices is indefinitely unimplemented.</li>
+<li>Dictionaries (heterogeneous): <code>{a: b, c: d}</code>. (Valid JSON
+is valid Noulith, maybe modulo the same kind of weird whitespace issues
+that make valid JSON not valid JavaScript.) Values can be omitted, in
+which case they’re just <code>null</code>, and are used like sets. Index
+<code>my_dict[key]</code>, test <code>key in my_dict</code>. If you add
+a <code>{:a}</code>, that’s the default value.</li>
+<li>Strings: just what Rust has, always valid UTF-8 sequences of
+bytes</li>
+<li>Bytes</li>
+<li>Vectors: lists of numbers, notable in that most operations on these
+automatically vectorize/broadcast,
+e.g. <code>V(2, 3) + V(4, 5) == V(6, 8)</code>;
+<code>V(2, 3) + 4 == V(6, 7)</code>. (Note that comparison operators
+don’t vectorize!)</li>
+<li>Streams: lazy lists, only generated in a few specific situations for
+now. Most higher-order functions are eager.</li>
+<li>Functions, which carry with them a precedence. Fun!</li>
+<li>Structs!</li>
+</ul>
+<h3 id="expressions">Expressions</h3>
+<p>Everything is a global function and can be used as an operator! For
+example <code>a + b</code> is really just <code>+(a, b)</code>;
+<code>a max b</code> is <code>max(a, b)</code>. As a special case,
+<code>a b</code> (when fenced by other syntax that prevents treating
+either as binary operator) is <code>a(b)</code> (this is mainly to allow
+unary minus), but four or more evenly-many identifiers and similar
+things in a row like <code>(a b c d)</code> is illegal. (Also, beware
+that <code>a[b]</code> parses as indexing <code>b</code> into
+<code>a</code>, not <code>a([b])</code> like you might sometimes hope if
+you start relying on this too much.) Also:</p>
+<ul>
+<li>Many functions/operators that normally accept two arguments also
+accept just one and partially-apply it as their second,
+e.g. <code>+(3)</code> (which, as above, can be written <code>+3</code>
+in the right context) is a function that adds 3. (This is not special
+syntax, just opt-in from many functions; <code>+</code> is defined to
+take one or two arguments and if it takes one it partially applies
+itself.) Since <code>-</code> and <code>~</code> have unary overloads,
+we provide alternatives <code>subtract</code> and <code>xor</code> that
+do partially apply when called with one argument, just like in
+Haskell.</li>
+<li>If you call <code>a(b)</code> where <code>a</code> isn’t a function
+but <code>b</code> is, <code>b</code> partially applies <code>a</code>
+as its first argument! It’s just like Haskell sections. For a slightly
+more verbose / less mystical way to do this, you can use Scala-style
+<code>_</code>, see below.</li>
+</ul>
+<p>(Sort of considering removing some of the partial application stuff
+now that <code>_</code>s work… hmm…)</p>
+<p>Operator precedence is determined at runtime! This is mainly to
+support chained comparisons: <code>1 &lt; 2 &lt; 3</code> works like in
+Python. Functions can decide at runtime when they chain (though there’s
+no way for user-defined functions to do this yet), and we use this to
+make a few other functions nicer. For example, <code>zip</code> and
+<code>**</code> (cartesian product) chain with themselves;
+<code>a ** b ** c</code> and <code>a zip b zip c</code> will give you a
+list of triplets, instead of a bunch of <code>[[x, y], z]</code>-shaped
+things.</p>
+<p>Identifiers can consist of a letter or <code>_</code> followed by any
+number of alphanumerics, <code>'</code>, or <code>?</code>; or any
+consecutive number of valid symbols for use in operators, including
+<code>?</code>. (So e.g. <code>a*-1</code> won’t work because
+<code>*-</code> will be parsed as a single token. <code>a* -1</code>
+won’t work either, but for a different reason — it parses like it begins
+with calling <code>*</code> with <code>a</code> and <code>-</code> as
+arguments. <code>a*(-1)</code> or <code>a* -(1)</code> would work.)
+Compared to similar languages, note that <code>:</code> is not a legal
+character to use in operators, while <code>$</code> is. In addition, a
+bunch of keywords are forbidden, as are all single-letter uppercase
+letters and tokens beginning with single-letter uppercase letters
+immediately followed by a single quote (though these are just reserved
+and the language doesn’t recognize all of them yet); <code>=</code>,
+<code>!</code>, <code>...</code>, <code>&lt;-</code>,
+<code>-&gt;</code>, and <code>&lt;&lt;-</code>. Also, with the exception
+of <code>==</code> <code>!=</code> <code>&lt;=</code> and
+<code>&gt;=</code>, operators ending in <code>=</code> will be parsed as
+the operator followed by an <code>=</code>, so in general operators
+cannot end with <code>=</code>.</p>
+<p>Almost all builtin functions’ precedences are determined by this
+Scala-inspired rule: Look up each character in the function’s name in
+this table, then take the <em>loosest</em> precedence of any individual
+character. But note that this isn’t a rule in the syntax, it’s just a
+strategy I decided to follow when selecting builtin functions’
+precedences. For example, <code>+</code>, <code>++</code>,
+<code>.+</code>, and <code>+.</code> all have the same precedence. As of
+time of writing, the only exceptions to this rule are
+<code>&lt;&lt;</code> and <code>&gt;&gt;</code>, which have precedence
+like <code>^</code>.</p>
+<pre><code>Tighter . (every other symbol, mainly @ which I haven&#39;t allocated yet)
+        !?
+        ^
+        */%&amp;
+        +-~
+        |
+        $
+        =&lt;&gt;
+Looser  (alphanumerics)</code></pre>
+<p><code>.</code> is not special syntax, it’s actually just an operator
+that does tightly-binding reverse function application!
+<code>a.b = b(a)</code>. <code>then</code> is loosely-binding reverse
+function application.</p>
+<p><code>!</code> is syntax that’s spiritually sort of like what
+Haskell’s <code>$</code> lets you write. It’s as tight as an opening
+parenthesis on its left, but performs a function call that lets you can
+omit the closing one up to the next semicolon or so.
+<code>f! a, b</code> is <code>f(a, b)</code>.</p>
+<p>So, these three expressions are equivalent (assuming the built-in
+<code>.</code> hasn’t been reassigned or shadowed):</p>
+<pre><code>print foo
+print(foo)
+foo.print</code></pre>
+<p>As are these:</p>
+<pre><code>max(foo, bar)
+foo max bar
+max! foo, bar</code></pre>
+<p><code>_</code> is special; assigning to it discards (but type checks
+still happen; see below). Some expressions produce Scala-style anonymous
+functions, e.g. <code>1 &lt; _ &lt; 3</code>, <code>[_, 2]</code>,
+<code>_[3]</code>. I might implement more later.</p>
+<p>Types double as conversion functions: <code>str(3)</code>
+<code>int(3)</code> <code>dict([[1, 2], [3, 4]])</code> etc. Bending
+internal consistency for pure syntax sweetness, <code>to</code> is
+overloaded to takes a type as its second argument to call the same
+conversion. Test types explicitly with <code>is</code>:
+<code>3 is int</code>, <code>int is type</code>. The type of
+<code>null</code> is <code>nulltype</code>. Strings are <code>str</code>
+and functions are <code>func</code>. The “top” type is
+<code>anything</code>.</p>
+<p>We got <code>eval</code>, a dumb dynamic guy; <code>vars</code> for
+examining local variables; <code>assert</code>, which is currently a
+silly function and will probably become a keyword so it can inspect the
+expression being asserted.</p>
+<p><code>freeze</code> is a wonky keyword that goes through an
+expression and eagerly resolves each free variable to what it points to
+outside. It can slightly optimize some functions, surface some name
+errors earlier, and more elegantly(??) handle some binding acrobatics
+that you might have to write IIFEs for in other languages.</p>
+<p>The <code>import</code> statement takes a filename and approximately
+just parses it and splices it in where written, sort of like how C/C++’s
+<code>#include</code> works. This is an awful hack and might be fixed
+one day.</p>
+<h3 id="variables-and-assignments">Variables and assignments</h3>
+<p>Declare with <code>:=</code>, assign with <code>=</code>. (Statements
+must be separated by semicolons.)</p>
+<pre><code>x := 0; x = 1</code></pre>
+<p>Actually <code>:=</code> is just a declaration with an empty type.
+You can declare typed variables like:</p>
+<pre><code>x : int = 3</code></pre>
+<p>Pythonically, sequences can be unpacked with commas, including a
+single trailing comma for a single-element unpack. Type annotations are
+looser than commas, so below, <code>x</code> and <code>y</code> are both
+ints. Prefix <code>...</code> to pack/unpack multiple things, and
+likewise in function calls.</p>
+<pre><code>x, y : int</code></pre>
+<p>You can declare in an assignment with a parenthesized annotation.</p>
+<pre><code>a := 0
+a, (c:) = 1, 2
+a, (d:int) = 3, 4</code></pre>
+<p>These are checked at runtime! Assigning non-<code>int</code>s to x
+will throw an error. Hopefully. This is useful in other scenarios.</p>
+<p>You can also do operator-assignments like you’d expect, with
+<em>any</em> operator! <code>a f= b</code> is basically just
+<code>a = f(a, b)</code>.</p>
+<p>The left side is parsed similar to a call, so you can even use
+<code>!</code> to use a complicated operator: after</p>
+<pre><code>x := [1, 2]; x! zip+= [3, 4]</code></pre>
+<p><code>x</code> is <code>[4, 6]</code>. In particular when you want to
+write <code>a = f(a)</code> you can just write <code>a .= f</code>
+because <code>.</code> is function application. (In previous versions of
+Noulith, <code>x (zip+)= [3, 4]</code> worked, but that is solidly
+destructuring now.)</p>
+<p>One corner case in the semantics here: While the operator is being
+called, the LHS variable will be null. That is, the following code will
+print <code>null</code>:</p>
+<pre><code>x := 0
+f := \a -&gt; (print x; a)
+x .= f</code></pre>
+<p>This allows us to not have to keep an extra copy of the LHS variable
+in common cases where we “modify” it, so code like
+<code>x append= y</code> is actually efficient (see discussion of
+immutability below).</p>
+<p>The weird keyword <code>every</code> lets you assign to or operate on
+multiple variables or elements of a slice at once. This initializes
+three variables to <code>1</code>. This doesn’t work with
+operator-assignments, though it might in the future.</p>
+<pre><code>every a, b, c := 1</code></pre>
+<p>After this, <code>x == [0, 0, 1, 1, 0]</code>.</p>
+<pre><code>x := [0] ** 5; every x[2:4] = 1</code></pre>
+<p>Important note about assignment: <strong>All data structures are
+immutable.</strong> When we mutate indexes, we make a fresh copy to
+mutate if anything else points to the same data structure. So for
+example, after</p>
+<pre><code>x := [1, 2, 3];
+y := x;
+x[0] = 4</code></pre>
+<p><code>y</code> will still be <code>[1, 2, 3]</code>. You may wish to
+think of <code>x[0] = 4</code> as syntax sugar for
+<code>x = [4] ++ x[1:]</code>, although when nothing else refers to the
+same list, it’s actually as fast as a mutation.</p>
+<p>We have more functional-style update syntax too:
+<code>x{k1 = v1, k2 = v2}</code> is like
+<code>(x' = x; x'[k1] = v1; x'[k2] = v2; x')</code>.</p>
+<p>As a consequence, calling a function on a data structure cannot
+mutate it. There are a few special keywords that mutate whatever they’re
+given. There’s <code>swap</code> like <code>swap x, y</code> for
+swapping two values; there’s <code>pop</code> and <code>remove</code>
+for mutating sequences; and the crudest instrument of all,
+<code>consume</code> gives you the value after replacing it in where it
+came from with <code>null</code>. After</p>
+<pre><code>x := [1, 2, 3, 4, 5];
+y := pop x;
+z := remove x[0]</code></pre>
+<p><code>y</code> will be <code>5</code>, <code>z</code> will be
+<code>1</code>, and <code>x</code> will be <code>[2, 3, 4]</code>.
+There’s no way to implement <code>pop</code> as a function yourself; the
+best you could do is take a list and separately return the last element
+and everything before it.</p>
+<p>You can implement your own “mutable data cells” easily (?) with a
+closure:</p>
+<pre><code>make_cell := \init -&gt; (x := init; [\ -&gt; x, \y -&gt; (x = y)])
+get_a, set_a := make_cell(0)</code></pre>
+<h3 id="control-flow">Control Flow</h3>
+<p>As above: statements must be separated by semicolons.</p>
+<p>Everything is an expression, so the “ternary expression” and if/else
+statement are one and the same: <code>if (a) b else c</code>. Loops:
+<code>for (var &lt;- list) body</code>; <code>while (cond) body</code>.
+For loops can have many iteration clauses:
+<code>for (a &lt;- b; c &lt;- d)</code>. Several other clauses are
+supported: <code>for (p &lt;&lt;- m)</code> iterates over index-value or
+key-value pairs, <code>for (x := y)</code> declares a variable in the
+middle, and <code>for (if x)</code> is a guard. Finally <code>for</code>
+loops can <code>yield</code> (only the entire body, not inside a more
+complicated expression) to turn into a list comprehension, like Scala:
+<code>for (x &lt;- xs) yield x + 1</code>.</p>
+<p>There are no “blocks”; just use more parentheses:
+<code>if (a) (b; c; d)</code>.</p>
+<p>We have short-circuiting, quite-low-precedence <code>and</code> and
+<code>or</code>. We also have <code>coalesce</code>, which is similar to
+<code>or</code>, but it only takes its RHS if its LHS is precisely
+<code>null</code>, not other falsy things. Note <code>not</code> is just
+a normal function.</p>
+<p>Switch:</p>
+<pre><code>switch (x)
+case 1 -&gt; b
+case 2 -&gt; d</code></pre>
+<p>Run-time type checking does some work here:</p>
+<pre><code>switch (x)
+case _: int -&gt; print(&quot;it&#39;s an int&quot;)
+case _ -&gt; print(&quot;not sure&quot;)</code></pre>
+<p>Stupid complicated runtime types with <code>satisfying</code>:</p>
+<pre><code>switch (x)
+case _: satisfying! 1 &lt; _ &lt; 9 -&gt; print(&quot;it&#39;s between 1 and 9&quot;)
+case _ -&gt; print(&quot;not sure&quot;)</code></pre>
+<p>Don’t do weird things in the argument to <code>satisfying</code>,
+it’s illegal. (Also actually you can just write this because the
+comparison operators <code>&lt;</code> have yet another layer of magic —
+<code>1 &lt; _ &lt; 9</code> is <em>not</em> a lambda here; you could
+have actually replaced <code>_</code> with a named variable to bind
+it.)</p>
+<pre><code>switch (x)
+case 1 &lt; _ &lt; 9 -&gt; print(&quot;it&#39;s between 1 and 9&quot;)
+case _ -&gt; print(&quot;not sure&quot;)</code></pre>
+<p>Try-catch: <code>try a catch x -&gt; y</code>.</p>
+<p><code>break</code> <code>continue</code> <code>return</code> work.
+You can <code>break</code> out of a loop with an expression to make the
+loop evaluate to something. You can even break out of multiple loops by
+repeating it, <code>break break break</code>.</p>
+<p>Only lambdas exist, declare all functions this way:
+<code>\a, b -&gt; c</code>. You can annotate parameters and otherwise
+pattern match in functions as you’d expect:
+<code>\a: int, (b, c) -&gt; d</code>.</p>
+<h3 id="structs">Structs</h3>
+<p>Super bare-bones product types right now. No methods or namespaces or
+anything. (Haskell survived without them for a few decades, we can
+procrastinate.) Fields can have default values, otherwise they’re
+required.</p>
+<pre><code>struct Foo (bar, baz = &quot;default&quot;);</code></pre>
+<p>Then you can construct <code>Foo(a, b)</code> or <code>Foo(a)</code>
+to let <code>bar</code> be the default value. <code>bar</code> and
+<code>baz</code> are now member access functions, or if you have a
+<code>foo</code> of type <code>Foo</code>, you can access, assign, or
+modify the fields as <code>foo[bar]</code> and <code>foo[baz]</code>. To
+be clear, these names really are not namespaced at all; <code>bar</code>
+and <code>baz</code> are new variables holding functions in whatever
+scope you declared this struct in, and can be passed around as functions
+in their own right, assigned to variables, etc. (but won’t work on any
+other struct).</p>
+<h3 id="sequence-operators">Sequence operators</h3>
+<p><code>len</code> for length.</p>
+<p>Most operators for working with lists/dictionaries/other sequences
+are two characters, doubled or involving a <code>.</code> on the side of
+an individual element:</p>
+<ul>
+<li>List concatenation is <code>++</code>. You can combine individual
+elements with lists with <code>+.</code>, <code>.+</code>, and
+<code>..</code>, e.g. <code>[1, 2] +. 3 == [1, 2, 3]</code></li>
+<li>Replicate is <code>.*</code>, e.g. <code>2 .* 3 == [2, 2, 2]</code>.
+List multiplication or (n-ary) cartesian product is <code>**</code>.
+Cartesian exponentiation (?) is <code>^^</code>.</li>
+<li>Dictionary union, intersection, and subtraction are <code>||</code>,
+<code>&amp;&amp;</code>, and <code>--</code>; <code>|.</code> and
+<code>|..</code> and <code>-.</code>.</li>
+<li>Indexing, alternatives to <code>a[b]</code> syntax: <code>!!</code>
+and <code>!?</code> for or-null (these are Haskell-isms roughly);
+<code>!%</code> for mod the length.</li>
+<li><code>tail</code> <code>first</code> <code>second</code>
+<code>third</code> <code>last</code> <code>only</code> <code>take</code>
+<code>drop</code></li>
+<li>Get keys, values: <code>keys</code>, <code>values</code>. Get
+index/key-value pairs: <code>enumerate</code>, <code>items</code>.</li>
+<li>String concatenation is <code>$</code>. It has quite low precedence
+and coerces things to strings. String multiplication <code>$*</code> /
+<code>*$</code>.</li>
+<li>Ranges: <code>a til b</code> is exclusive, <code>a to b</code> is
+inclusive. Both use chaining to allow <code>a til b by c</code>.
+<code>iota a</code> counts from <code>a</code> up. These are all
+lazy.</li>
+<li><code>sort</code>, <code>reverse</code>, <code>unique</code>.
+<code>set</code> “converts to a set”. <code>transpose</code>.
+<code>prefixes</code> <code>suffixes</code>
+<code>frequencies</code></li>
+<li><code>upper</code>, <code>lower</code>; <code>is_upper</code>,
+…</li>
+<li>strings: <code>split</code>, <code>join</code>, <code>strip</code>,
+<code>starts_with</code>, <code>ends_with</code>. Split always takes two
+arguments, a string and a separator, common splits and joins are like in
+Haskell,
+<code>words</code>/<code>unwords</code>/<code>lines</code>/<code>unlines</code>.</li>
+</ul>
+<p>Some functions to make streams: <code>repeat</code>
+<code>cycle</code> <code>permutations</code> <code>combinations</code>
+<code>subsequences</code></p>
+<p><code>start iterate func</code> swallows, plus you can cause weird
+borrow errors if the function is weird. Don’t do this:</p>
+<pre><code>x := iterate! 0, \t -&gt; x const t
+x[0] = 0</code></pre>
+<h3 id="functional-programming">Functional programming</h3>
+<p>All the usuals and some weird ones: <code>each</code>,
+<code>map</code>, <code>flat_map</code>, <code>filter</code>,
+<code>reject</code>, <code>any</code>, <code>all</code>,
+<code>find</code>/<code>find?</code>,
+<code>locate</code>/<code>locate?</code> (finds the index of something),
+<code>count</code>, <code>take</code>, <code>drop</code>,
+<code>zip</code>, <code>sort</code>, <code>group</code>. These take the
+function as the second argument / on the right! Also they’re eager!</p>
+<p><code>zip</code>, <code>group</code>, <code>window</code> have
+overloads that don’t take functions.</p>
+<p><code>zip</code> is n-ary and can take a function to zip with too
+(which gets all arguments); you can also use <code>with</code>.
+<code>merge</code> is similar but for like-keyed entries of
+dictionaries. <code>ziplongest</code> is like <code>zip</code>, but,
+well, the longest; and when there’s a function it’s used to reduce all
+the remaining elements, two at a time, instead of called with all of
+them at once.</p>
+<p><code>fold</code>/<code>reduce</code> (which are the same) require a
+nonempty sequence with two arguments, but also chain with an optional
+<code>from</code> starting value, e.g. <code>x fold * from 1</code>.</p>
+<p><code>sort</code> takes a three-valued comparator, which you can get
+by <code>&lt;=&gt; on</code> some key function. Or
+<code>&gt;=&lt;</code> for backwards. Or <code>sort_on</code> for the
+Schwartzian transform taking the key function directly.</p>
+<pre><code>[[1], [2, 3, 4], [5, 6]] sort_by (&lt;=&gt; on len)
+\1: [[1], [5, 6], [2, 3, 4]]</code></pre>
+<p>Other goodies: <code>id</code>, <code>const</code> (returns its
+second argument!), <code>flip</code>. Some Haskell-Arrow-esque operators
+exist: <code>&amp;&amp;&amp;</code>, <code>***</code>,
+<code>&gt;&gt;&gt;</code>, <code>&lt;&lt;&lt;</code>. The first two are
+n-ary like <code>zip</code>.</p>
+<h3 id="io-and-interfacing-with-the-world">I/O and interfacing with the
+world</h3>
+<ul>
+<li><p><code>print</code>: space-separated newline-terminated</p></li>
+<li><p><code>echo</code>: space-separated</p></li>
+<li><p><code>write</code>: just concatenated</p></li>
+<li><p><code>debug</code>: debug</p></li>
+<li><p><code>input</code>: read line</p></li>
+<li><p><code>read</code>: read all</p></li>
+<li><p><code>read_file</code> <code>read_file?</code>
+<code>read_file_bytes</code> <code>read_file_bytes?</code></p></li>
+<li><p><code>write_file</code> <code>append_file</code> These take the
+file as the second argument to better support partial application, but I
+feel like I’ll regret this soon.</p></li>
+<li><p>(current implementation completely disrespects cross-OS unicode
+things) <code>path_join</code> <code>path_parent</code></p></li>
+<li><p><code>time</code> <code>now</code></p></li>
+</ul>
+<p>If compiled with <code>request</code>:</p>
+<ul>
+<li><code>request("https://httpbin.org/", {"method": "POST", "headers": {"Foo": "Bar"}})</code></li>
+</ul>
+<h3 id="internal-control-flow-and-functions">“internal” control flow and
+functions</h3>
+<p>weird things that are faster to evaluate than always making/following
+chains of environments, looking up variable names in maps, etc. in
+theory the hope is that we can automatically translate code to use these
+things to optimize them, in practice it’s a ton of work lol.</p>
+<ul>
+<li><code>__internal_frame expr</code>: record the stack’s length,
+execute the body, then truncate the stack back to the same length (if
+the stack is too short you’re on your own)</li>
+<li><code>__internal_push expr</code>: push something onto the
+stack</li>
+<li><code>__internal_pop</code>: pop something from the stack (and
+return it)</li>
+<li><code>__internal_peek integer-const</code>: get or assign to some
+position, 0-indexed from the top of the stack</li>
+<li><code>__internal_for (expr) body</code>:
+<ul>
+<li>if the expr evaluates to an integer: evaluate the body n times,
+restoring the stack’s length each time, without changing the
+environment</li>
+<li>if the expr evaluates to an iterable: for each item, push it,
+evaluate the body, then restore the stack’s length to before the
+push</li>
+</ul></li>
+<li><code>__internal_call integer-const expr</code>: pop the top n
+elements of the stack, then call the expression with those as arguments
+(bottom to top)</li>
+<li><code>__internal_lambda [captures] n body</code>: makes an internal
+lambda that, when called, doesn’t enter a new environment; but records
+the stack length, pushes any captures followed by the arguments on, then
+executes and can return a value as usual, restoring the stack length
+before returning. n is the number of arguments accepted.</li>
+</ul>
+<h3 id="web-stuff">web stuff</h3>
+<p>On the wasm version, lists and dictionaries can be pretty-printed and
+there’s a
+<code>HtmlTag(html_tag_name, html_tag_children, html_tag_attributes)</code>
+struct that gets rendered out dynamically as HTML if your code evaluates
+to it. There’s a fairly stringent allowlist by default that I would be
+surprised if there’s any XSS that can get through it, though I’m not
+100% confident. Hopefully there’s nothing on this domain to steal
+anyway.</p>
+</body>
+</html>
