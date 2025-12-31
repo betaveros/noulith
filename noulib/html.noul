@@ -28,8 +28,13 @@ select := freeze \...args -> HtmlTag("select", ...args);
 
 svg := freeze \...args -> HtmlTag("svg:svg", ...args);
 circle := freeze \arg -> HtmlTag("svg:circle", [], arg);
+ellipse := freeze \arg -> HtmlTag("svg:ellipse", [], arg);
 line := freeze \arg -> HtmlTag("svg:line", [], arg);
 rect := freeze \arg -> HtmlTag("svg:rect", [], arg);
+path := freeze \arg -> HtmlTag("svg:path", [], arg);
+polygon := freeze \arg -> HtmlTag("svg:polygon", [], arg);
+polyline := freeze \arg -> HtmlTag("svg:polyline", [], arg);
+svg_text := freeze \...args -> HtmlTag("svg:text", ...args);
 
 simple_counter := 0;
 display_simple := \displayable -> (
