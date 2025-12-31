@@ -4882,10 +4882,11 @@ impl Env {
     pub fn insert_builtin_with_alias(&mut self, b: impl Builtin + 'static + Clone, alias: &str) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b.clone(), p);
+        let pp = Precedence(default_precedence(alias), Assoc::Left);
         self.insert(
             alias.to_string(),
             ObjType::Any,
-            Obj::Func(Func::Builtin(Rc::new(b)), p),
+            Obj::Func(Func::Builtin(Rc::new(b)), pp),
         )
         .unwrap()
     }
@@ -4896,10 +4897,11 @@ impl Env {
     ) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Right);
         self.insert_builtin_with_precedence(b.clone(), p);
+        let pp = Precedence(default_precedence(alias), Assoc::Right);
         self.insert(
             alias.to_string(),
             ObjType::Any,
-            Obj::Func(Func::Builtin(Rc::new(b)), p),
+            Obj::Func(Func::Builtin(Rc::new(b)), pp),
         )
         .unwrap()
     }
