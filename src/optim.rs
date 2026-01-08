@@ -1,10 +1,35 @@
 use crate::core::*;
 use crate::lex::CodeLoc;
+use crate::rc::Rc;
 use std::collections::HashMap;
 
 struct OptimState {
     stack: HashMap<String, usize>,
     stack_size: usize,
+}
+
+fn extract_simple_ident_from_lvalue(lv: &Lvalue) -> Option<String> {
+    match lv {
+        Lvalue::IndexedIdent(Ident::Ident(name), indices) if indices.is_empty() => {
+            Some(name.clone())
+        }
+        Lvalue::Annotation(inner, _) => extract_simple_ident_from_lvalue(inner),
+        _ => None,
+    }
+}
+
+fn optimize_indices(state: &mut OptimState, indices: Vec<IndexOrSlice>) -> Vec<IndexOrSlice> {
+    indices
+        .into_iter()
+        .map(|ios| match ios {
+            IndexOrSlice::Index(expr) => IndexOrSlice::Index(Box::new(optimize(state, *expr))),
+            IndexOrSlice::Slice(start, end) => IndexOrSlice::Slice(
+                start.map(|e| Box::new(optimize(state, *e))),
+                end.map(|e| Box::new(optimize(state, *e))),
+            ),
+            IndexOrSlice::Symbol(s) => IndexOrSlice::Symbol(s),
+        })
+        .collect()
 }
 
 fn optimize_for(
@@ -76,9 +101,9 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
             match *lvalue {
                 Lvalue::Annotation(ann_lvalue, None) => match *ann_lvalue {
                     Lvalue::IndexedIdent(Ident::Ident(ident), ioses) => {
-                        if ioses.is_empty() {
-                            let opt_expr = optimize(state, *expr);
+                        let opt_expr = optimize(state, *expr);
 
+                        if ioses.is_empty() {
                             // Check if this is a new variable or reassignment
                             match state.stack.get(&ident) {
                                 None => {
@@ -109,15 +134,32 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
                                 }
                             }
                         } else {
-                            panic!("Assign: No indexing supported")
+                            // Has indexing - optimize indices and replace ident if on stack
+                            let opt_indices = optimize_indices(state, ioses);
+                            let new_ident = match state.stack.get(&ident) {
+                                Some(stack_index) => {
+                                    let peek_index = state.stack_size - stack_index - 1;
+                                    Ident::InternalPeek(peek_index)
+                                }
+                                None => Ident::Ident(ident),
+                            };
+                            LocExpr {
+                                start: e.start,
+                                end: e.end,
+                                expr: Expr::Assign(
+                                    false,
+                                    Box::new(Lvalue::IndexedIdent(new_ident, opt_indices)),
+                                    Box::new(opt_expr),
+                                ),
+                            }
                         }
                     }
                     _ => panic!("Unsupported assign lvalue annotation"),
                 },
                 Lvalue::IndexedIdent(Ident::Ident(ident), ioses) => {
-                    if ioses.is_empty() {
-                        let opt_expr = optimize(state, *expr);
+                    let opt_expr = optimize(state, *expr);
 
+                    if ioses.is_empty() {
                         // Check if this is a new variable or reassignment
                         match state.stack.get(&ident) {
                             None => {
@@ -148,7 +190,24 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
                             }
                         }
                     } else {
-                        panic!("Assign: No indexing supported")
+                        // Has indexing - optimize indices and replace ident if on stack
+                        let opt_indices = optimize_indices(state, ioses);
+                        let new_ident = match state.stack.get(&ident) {
+                            Some(stack_index) => {
+                                let peek_index = state.stack_size - stack_index - 1;
+                                Ident::InternalPeek(peek_index)
+                            }
+                            None => Ident::Ident(ident),
+                        };
+                        LocExpr {
+                            start: e.start,
+                            end: e.end,
+                            expr: Expr::Assign(
+                                false,
+                                Box::new(Lvalue::IndexedIdent(new_ident, opt_indices)),
+                                Box::new(opt_expr),
+                            ),
+                        }
                     }
                 }
                 _ => panic!("Unsupported assign lvalue"),
@@ -156,30 +215,27 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
         }
         Expr::OpAssign(false, lvalue, op, rhs) => match *lvalue {
             Lvalue::IndexedIdent(Ident::Ident(ident), ioses) => {
-                if ioses.is_empty() {
-                    match state.stack.get(&ident) {
-                        Some(stack_index) => {
-                            let peek_index = state.stack_size - stack_index - 1;
-                            let opt_op = optimize(state, *op);
-                            let opt_rhs = optimize(state, *rhs);
-                            LocExpr {
-                                start: e.start,
-                                end: e.end,
-                                expr: Expr::OpAssign(
-                                    false,
-                                    Box::new(Lvalue::IndexedIdent(
-                                        Ident::InternalPeek(peek_index),
-                                        Vec::new(),
-                                    )),
-                                    Box::new(opt_op),
-                                    Box::new(opt_rhs),
-                                ),
-                            }
-                        }
-                        None => panic!("OpAssign to undeclared variable: {}", ident),
+                let opt_op = optimize(state, *op);
+                let opt_rhs = optimize(state, *rhs);
+                let opt_indices = optimize_indices(state, ioses);
+
+                let new_ident = match state.stack.get(&ident) {
+                    Some(stack_index) => {
+                        let peek_index = state.stack_size - stack_index - 1;
+                        Ident::InternalPeek(peek_index)
                     }
-                } else {
-                    panic!("OpAssign: No indexing supported")
+                    None => Ident::Ident(ident),
+                };
+
+                LocExpr {
+                    start: e.start,
+                    end: e.end,
+                    expr: Expr::OpAssign(
+                        false,
+                        Box::new(Lvalue::IndexedIdent(new_ident, opt_indices)),
+                        Box::new(opt_op),
+                        Box::new(opt_rhs),
+                    ),
                 }
             }
             _ => panic!("Unsupported OpAssign lvalue"),
@@ -215,6 +271,88 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
                 start: e.start,
                 end: e.end,
                 expr: Expr::Call(Box::new(opt_func), opt_args, syntax),
+            }
+        }
+        Expr::Index(base, ios) => {
+            let opt_base = optimize(state, *base);
+            let opt_ios = match ios {
+                IndexOrSlice::Index(expr) => IndexOrSlice::Index(Box::new(optimize(state, *expr))),
+                IndexOrSlice::Slice(start, end) => IndexOrSlice::Slice(
+                    start.map(|e| Box::new(optimize(state, *e))),
+                    end.map(|e| Box::new(optimize(state, *e))),
+                ),
+                IndexOrSlice::Symbol(s) => IndexOrSlice::Symbol(s),
+            };
+            LocExpr {
+                start: e.start,
+                end: e.end,
+                expr: Expr::Index(Box::new(opt_base), opt_ios),
+            }
+        }
+        Expr::Lambda(params, body) => {
+            // capture expressions for all current stack variables
+            // (this optimization is totally wrong whenever we mutate them; we need to do like
+            // upvalues or something.)
+            let mut captures = Vec::new();
+            let mut stack_vars: Vec<_> = state.stack.iter().collect();
+            stack_vars.sort_by_key(|(_, &idx)| idx);
+
+            for (_, &stack_idx) in &stack_vars {
+                let peek_offset = state.stack_size - stack_idx - 1;
+                captures.push(Box::new(LocExpr {
+                    start: e.start,
+                    end: e.start,
+                    expr: Expr::InternalPeek(peek_offset),
+                }));
+            }
+
+            let saved_stack = state.stack.clone();
+            let saved_size = state.stack_size;
+
+            // add lambda parameters to the stack (on top of captures)
+            let mut param_count = 0;
+            for param in params.iter() {
+                match extract_simple_ident_from_lvalue(param) {
+                    Some(name) => {
+                        state.stack.insert(name, state.stack_size);
+                        state.stack_size += 1;
+                        param_count += 1;
+                    }
+                    None => panic!("Lambda: Only simple parameter names supported"),
+                }
+            }
+
+            let body_owned = Rc::try_unwrap(body).unwrap_or_else(|_rc| {
+                panic!("Lambda optimization: body Rc has multiple strong references")
+            });
+            let opt_body = optimize(state, body_owned);
+
+            state.stack = saved_stack;
+            state.stack_size = saved_size;
+
+            LocExpr {
+                start: e.start,
+                end: e.end,
+                expr: Expr::InternalLambda(Rc::new(captures), Some(param_count), Rc::new(opt_body)),
+            }
+        }
+        Expr::List(elements) => {
+            let opt_elements = elements
+                .into_iter()
+                .map(|elem| Box::new(optimize(state, *elem)))
+                .collect();
+            LocExpr {
+                start: e.start,
+                end: e.end,
+                expr: Expr::List(opt_elements),
+            }
+        }
+        Expr::Freeze(inner) => {
+            let opt_inner = optimize(state, *inner);
+            LocExpr {
+                start: e.start,
+                end: e.end,
+                expr: Expr::Freeze(Box::new(opt_inner)),
             }
         }
         Expr::Frozen(obj) => LocExpr {
