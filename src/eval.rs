@@ -1443,7 +1443,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         Vec::new(),
                     ),
                     Some(&ObjType::Func),
-                    Obj::Func(Func::StructField(s.clone(), i), Precedence::zero()),
+                    Obj::Func(Func::StructField(Box::new(s.clone()), i), Precedence::zero()),
                 )?;
             }
             Ok(Obj::Null)
@@ -1628,7 +1628,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 captured.push(evaluate(env, cap)?);
             }
             Ok(Obj::Func(
-                Func::InternalLambda(captured, *n, Rc::clone(body)),
+                Func::InternalLambda(Box::new(captured), n.unwrap_or(usize::MAX), Rc::clone(body)),
                 Precedence::zero(),
             ))
         }
@@ -1765,7 +1765,7 @@ pub fn index(xr: Obj, ir: Obj) -> NRes<Obj> {
             _ => Err(NErr::type_error(format!("can't index into func {:?}", k))),
         },
         (Obj::Instance(struc, fields), Obj::Func(Func::StructField(istruc, field_index), _)) => {
-            if struc == &istruc {
+            if struc == istruc.as_ref() {
                 Ok(fields[field_index].clone())
             } else {
                 Err(NErr::index_error(format!("wrong struct type",)))
@@ -2268,7 +2268,7 @@ pub fn set_index(
             Obj::Instance(struc, fields),
             [EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)), rest @ ..],
         ) => {
-            if struc == istruc {
+            if struc == istruc.as_ref() {
                 set_index(&mut fields[*field_index], rest, value, every)
             } else {
                 Err(NErr::index_error(format!("wrong struct type",)))
@@ -2343,7 +2343,7 @@ pub fn modify_existing_index(
                         _,
                     )),
                 ) => {
-                    if struc == istruc {
+                    if struc == istruc.as_ref() {
                         modify_existing_index(&mut fields[*field_index], rest, f)
                     } else {
                         Err(NErr::index_error(format!("wrong struct type",)))
@@ -2429,7 +2429,7 @@ pub fn modify_every_existing_index(
                         _,
                     )),
                 ) => {
-                    if struc == istruc {
+                    if struc == istruc.as_ref() {
                         modify_every_existing_index(&mut fields[*field_index], rest, f)
                     } else {
                         Err(NErr::index_error(format!("wrong struct type",)))
@@ -2884,14 +2884,11 @@ impl Func {
             Func::Builtin(b) => b.run(env, args),
             Func::Closure(c) => c.run(args),
             Func::InternalLambda(caps, n, body) => {
-                match n {
-                    Some(n) => {
-                        if args.len() != *n {
-                            return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
-                        }
-                    }
-                    None => {
-                        args = vec![Obj::list(args)];
+                if *n == usize::MAX {
+                    args = vec![Obj::list(args)];
+                } else {
+                    if args.len() != *n {
+                        return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
                     }
                 }
                 let s = {
@@ -3068,7 +3065,7 @@ impl Func {
             Func::Type(t) => call_type(t, args),
             Func::StructField(struc, field_index) => match few(args) {
                 Few::One(Obj::Instance(s, fields)) => {
-                    if *struc == s {
+                    if &s == struc.as_ref() {
                         Ok(fields[*field_index].clone())
                     } else {
                         Err(NErr::argument_error(format!("field of {} got wrong kind of struct", &*struc.name)))

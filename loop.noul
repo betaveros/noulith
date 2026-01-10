@@ -1,0 +1,10 @@
+# 0.69 directly
+# 0.36 optimized, maybe 0.35 with a freeze
+# That's still 3.6× a manually written version...
+freeze (
+t := time();
+s := 0;
+for (i <- 1 to 1000000) s += i;
+print(s);
+print(time() - t);
+)

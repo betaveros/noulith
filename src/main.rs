@@ -152,10 +152,6 @@ fn get_wrapper(arg: &str) -> Option<Option<&'static str>> {
 }
 
 fn main() {
-    // println!("{}", std::mem::size_of::<Obj>());
-    // println!("{}", std::mem::size_of::<noulith::nnum::NNum>());
-    // println!("{}", std::mem::size_of::<noulith::Seq>());
-    // println!("{}", std::mem::size_of::<noulith::Func>());
     let mut args = std::env::args().collect::<Vec<String>>();
     if args.len() <= 1 {
         #[cfg(feature = "cli")]
@@ -164,6 +160,27 @@ fn main() {
         repl();
     } else {
         args.remove(0);
+
+        // Check for --sizes flag
+        let show_sizes = if args.first().map(|s| s.as_str()) == Some("--sizes") {
+            args.remove(0);
+            true
+        } else {
+            false
+        };
+
+        if show_sizes {
+            println!("Obj size: {}", std::mem::size_of::<Obj>());
+            println!("NNum size: {}", std::mem::size_of::<noulith::nnum::NNum>());
+            println!("Seq size: {}", std::mem::size_of::<noulith::Seq>());
+            println!("Func size: {}", std::mem::size_of::<noulith::Func>());
+            println!("Closure size: {}", std::mem::size_of::<noulith::Closure>());
+            println!("Struct size: {}", std::mem::size_of::<noulith::Struct>());
+            if args.is_empty() {
+                return;
+            }
+        }
+
         let opt = if args.first().map(|s| s.as_str()) == Some("-O") {
             args.remove(0);
             true

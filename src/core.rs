@@ -4549,8 +4549,8 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
 pub enum Func {
     Builtin(Rc<dyn Builtin>),
     Closure(Closure),
-    // usize is num args. If None, takes any args as one list.
-    InternalLambda(Vec<Obj>, Option<usize>, Rc<LocExpr>),
+    // usize is num args. If usize::MAX, takes any args as one list.
+    InternalLambda(Box<Vec<Obj>>, usize, Rc<LocExpr>),
     // partially applied first argument (lower priority)
     PartialApp1(Box<Func>, Box<Obj>),
     // partially applied second argument (more of the default in our weird world)
@@ -4588,7 +4588,7 @@ pub enum Func {
     ),
     CallSection(Option<Box<Obj>>, Vec<Result<Obj, bool>>),
     Type(ObjType), // includes Struct now
-    StructField(Struct, usize),
+    StructField(Box<Struct>, usize),
     SymbolAccess(Rc<String>),
     Memoized(Box<Func>, Rc<RefCell<HashMap<Vec<ObjKey>, Obj>>>),
 }
@@ -4914,10 +4914,10 @@ impl Display for Func {
         match self {
             Func::Builtin(b) => write!(formatter, "Builtin({})", b.builtin_name()),
             Func::Closure(_) => write!(formatter, "Closure"),
-            Func::InternalLambda(_, Some(n), _) => {
+            Func::InternalLambda(_, n, _) if *n != usize::MAX => {
                 write!(formatter, "InternalLambda(.., {}, ?)", n)
             }
-            Func::InternalLambda(_, None, _) => write!(formatter, "InternalLambda(.., .., ?)"),
+            Func::InternalLambda(_, _, _) => write!(formatter, "InternalLambda(.., .., ?)"),
             Func::PartialApp1(f, x) => write!(formatter, "Partial({}({}, ?))", f, FmtObj::debug(x)),
             Func::PartialApp2(f, x) => write!(formatter, "Partial({}(?, {}))", f, FmtObj::debug(x)),
             Func::PartialAppLast(f, x) => {
