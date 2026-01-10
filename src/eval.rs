@@ -330,11 +330,16 @@ pub fn eval_index_or_slice(
 pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalue> {
     match expr {
         Lvalue::Underscore => Ok(EvaluatedLvalue::Underscore),
+        // another hotpath...
         Lvalue::IndexedIdent(s, v) => Ok(EvaluatedLvalue::IndexedIdent(
             s.clone(),
-            v.iter()
-                .map(|e| Ok(eval_index_or_slice(env, e)?))
-                .collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?,
+            if v.is_empty() {
+                vec![]
+            } else {
+                v.iter()
+                    .map(|e| Ok(eval_index_or_slice(env, e)?))
+                    .collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?
+            }
         )),
         Lvalue::Annotation(s, t) => Ok(EvaluatedLvalue::Annotation(
             Box::new(eval_lvalue(env, s)?),
@@ -971,6 +976,9 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     }
                 } else {
                     // hot path with no party trick
+                    // note: it would be good for performance to fold the drop_lhs into
+                    // eval_lvalue_as_obj but we surely can't break an op-assign as simple as
+                    // x += x
                     let lhs_value = eval_lvalue_as_obj(env, &p)?;
                     match evaluate(env, op)? {
                         Obj::Func(ff, _) => {
