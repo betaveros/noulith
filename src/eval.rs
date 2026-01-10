@@ -736,7 +736,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         ));
                     }
                 }
-                Ok(Obj::Func(Func::ChainSection(v1, acc), Precedence::zero()))
+                Ok(Obj::Func(Func::ChainSection(v1, Box::new(acc)), Precedence::zero()))
             } else if ops.len() == 1 {
                 // micro-optimization, but this path is extremely common
                 let lhs = evaluate(env, op1)?;
@@ -1044,12 +1044,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 (None, Ok(v)) => Ok(Obj::Func(
                     Func::CallSection(
                         None,
-                        v.into_iter().map(Ok).collect::<Vec<Result<Obj, bool>>>(),
+                        Box::new(v.into_iter().map(Ok).collect::<Vec<Result<Obj, bool>>>()),
                     ),
                     Precedence::zero(),
                 )),
                 (f, Err(v)) => Ok(Obj::Func(
-                    Func::CallSection(f.map(Box::new), v),
+                    Func::CallSection(f.map(Box::new), Box::new(v)),
                     Precedence::zero(),
                 )),
             }
@@ -2967,7 +2967,7 @@ impl Func {
             }
             Func::OnFanoutConst(f, gs) => {
                 let mut mapped_args = Vec::new();
-                for g in gs {
+                for g in &**gs {
                     mapped_args.push(match g {
                         Obj::Func(gf, _) => gf.run(env, args.clone())?,
                         x => x.clone(),
@@ -2993,7 +2993,7 @@ impl Func {
                         None => return Err(NErr::argument_error("chain section: too few arguments".to_string())),
                     }
                 });
-                for (start, end, op, prec, opd) in ops {
+                for (start, end, op, prec, opd) in &**ops {
                     ce.give(env, *op.clone(), *prec, match opd {
                         Some(x) => *x.clone(),
                         None => match it.next() {
@@ -3016,7 +3016,7 @@ impl Func {
                         None => return Err(NErr::argument_error("call section: too few arguments".to_string())),
                     }
                 };
-                let real_args = apply_section(sec_args.clone(), it)?;
+                let real_args = apply_section((**sec_args).clone(), it)?;
                 call(env, callee, real_args)
             }
             Func::IndexSection(x, i) => {

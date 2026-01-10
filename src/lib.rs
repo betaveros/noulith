@@ -1689,7 +1689,7 @@ impl Builtin for Lift {
             Few::Many(mut xs) => {
                 let last = xs.pop().unwrap();
                 match last {
-                    Obj::Func(f, p) => Ok(Obj::Func(Func::OnFanoutConst(Box::new(f), xs), p)),
+                    Obj::Func(f, p) => Ok(Obj::Func(Func::OnFanoutConst(Box::new(f), Box::new(xs)), p)),
                     _ => Err(NErr::type_error(format!("lift: not func"))),
                 }
             }
@@ -1712,7 +1712,7 @@ impl Builtin for LiftedEquals {
                     "==",
                     |a, b| Ok(a == b),
                 )))),
-                args,
+                Box::new(args),
             ),
             Precedence::zero(),
         ))

@@ -4567,7 +4567,7 @@ pub enum Func {
     Fanout(Vec<Func>),
     // a... -> f(g1(a...), g2(a...), ...)
     // where, if g_i isn't a function, it's constant
-    OnFanoutConst(Box<Func>, Vec<Obj>),
+    OnFanoutConst(Box<Func>, Box<Vec<Obj>>),
     // \x, y: f(y, x) (...I feel like we shouldn't special-case so many but shrug...)
     Flip(Box<Func>),
     // each Err is a slot for an argument, true if splat
@@ -4584,9 +4584,9 @@ pub enum Func {
     UpdateSection(Vec<(Box<Obj>, Box<Obj>)>),
     ChainSection(
         Option<Box<Obj>>,
-        Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>,
+        Box<Vec<(CodeLoc, CodeLoc, Box<Func>, Precedence, Option<Box<Obj>>)>>,
     ),
-    CallSection(Option<Box<Obj>>, Vec<Result<Obj, bool>>),
+    CallSection(Option<Box<Obj>>, Box<Vec<Result<Obj, bool>>>),
     Type(ObjType), // includes Struct now
     StructField(Box<Struct>, usize),
     SymbolAccess(Rc<String>),
@@ -4952,7 +4952,7 @@ impl Display for Func {
             }
             Func::ChainSection(xs, ys) => {
                 write!(formatter, "ChainSection({}", FmtSectionBoxedSlot(xs))?;
-                for (_start, _end, func, _prec, operand) in ys {
+                for (_start, _end, func, _prec, operand) in &**ys {
                     write!(formatter, " {} {}", func, FmtSectionBoxedSlot(operand))?;
                 }
                 write!(formatter, ")")
