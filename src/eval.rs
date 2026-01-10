@@ -916,51 +916,95 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             } else {
                 let p = eval_lvalue(env, pat)?;
-                let lhs_items = destructure_top_level_ands(p)
-                    .into_iter()
-                    .map(|p| Ok((eval_lvalue_as_obj(env, &p)?, p)))
-                    .collect::<NRes<Vec<(Obj, EvaluatedLvalue)>>>()?;
+                // duplicate some code because i guess the party trick is cool but lvalue ands are
+                // stupidly rare and paying the iteration tax elsewhere is awful
+                //
+                // the party trick is this:
+                // a := 1; b := 2; (a and b) += 3;
+                // and then a = 4 and b = 5
+                if let EvaluatedLvalue::And(_, _) = p {
+                    let lhs_items = destructure_top_level_ands(p)
+                        .into_iter()
+                        .map(|p| Ok((eval_lvalue_as_obj(env, &p)?, p)))
+                        .collect::<NRes<Vec<(Obj, EvaluatedLvalue)>>>()?;
 
-                match evaluate(env, op)? {
-                    Obj::Func(ff, _) => {
-                        let mut rhs_value = match &**rhs {
-                            LocExpr {
-                                expr: Expr::CommaSeq(xs),
-                                ..
-                            } => Ok(Obj::list(eval_seq(env, xs)?)),
-                            _ => evaluate(env, rhs),
-                        }?;
-                        let ps_len = lhs_items.len();
-                        for (i, (lhs_value, lvalue)) in lhs_items.into_iter().enumerate() {
+                    match evaluate(env, op)? {
+                        Obj::Func(ff, _) => {
+                            let mut rhs_value = match &**rhs {
+                                LocExpr {
+                                    expr: Expr::CommaSeq(xs),
+                                    ..
+                                } => Ok(Obj::list(eval_seq(env, xs)?)),
+                                _ => evaluate(env, rhs),
+                            }?;
+                            let ps_len = lhs_items.len();
+                            for (i, (lhs_value, lvalue)) in lhs_items.into_iter().enumerate() {
+                                // Drop the Rc from the lvalue so that functions can try to consume it. We
+                                // used to only do this when the function was pure, but that required a
+                                // stupid amount of code to bookkeep and prevents users from writing
+                                // consuming modifiers. Instead it's now enshrined into the semantics.
+                                add_trace(
+                                    drop_lhs(&env, &lvalue),
+                                    || format!("null-assign"),
+                                    expr.start,
+                                    expr.end,
+                                )?;
+                                let rhs_value_clone = if i + 1 == ps_len {
+                                    std::mem::take(&mut rhs_value)
+                                } else {
+                                    rhs_value.clone()
+                                };
+                                let combined = ff.run2(env, lhs_value, rhs_value_clone)?;
+                                add_trace(
+                                    assign(&env, &lvalue, None, combined),
+                                    || format!("op({})-assign", ff),
+                                    expr.start,
+                                    expr.end,
+                                )?;
+                            }
+                            Ok(Obj::Null)
+                        }
+                        opv => Err(NErr::type_error(format!(
+                            "Operator assignment: operator is not function {:?}",
+                            opv
+                        ))),
+                    }
+                } else {
+                    // hot path with no party trick
+                    let lhs_value = eval_lvalue_as_obj(env, &p)?;
+                    match evaluate(env, op)? {
+                        Obj::Func(ff, _) => {
+                            let rhs_value = match &**rhs {
+                                LocExpr {
+                                    expr: Expr::CommaSeq(xs),
+                                    ..
+                                } => Ok(Obj::list(eval_seq(env, xs)?)),
+                                _ => evaluate(env, rhs),
+                            }?;
                             // Drop the Rc from the lvalue so that functions can try to consume it. We
                             // used to only do this when the function was pure, but that required a
                             // stupid amount of code to bookkeep and prevents users from writing
                             // consuming modifiers. Instead it's now enshrined into the semantics.
                             add_trace(
-                                drop_lhs(&env, &lvalue),
+                                drop_lhs(&env, &p),
                                 || format!("null-assign"),
                                 expr.start,
                                 expr.end,
                             )?;
-                            let rhs_value_clone = if i + 1 == ps_len {
-                                std::mem::take(&mut rhs_value)
-                            } else {
-                                rhs_value.clone()
-                            };
-                            let combined = ff.run2(env, lhs_value, rhs_value_clone)?;
+                            let combined = ff.run2(env, lhs_value, rhs_value)?;
                             add_trace(
-                                assign(&env, &lvalue, None, combined),
+                                assign(&env, &p, None, combined),
                                 || format!("op({})-assign", ff),
                                 expr.start,
                                 expr.end,
                             )?;
+                            Ok(Obj::Null)
                         }
-                        Ok(Obj::Null)
+                        opv => Err(NErr::type_error(format!(
+                            "Operator assignment: operator is not function {:?}",
+                            opv
+                        ))),
                     }
-                    opv => Err(NErr::type_error(format!(
-                        "Operator assignment: operator is not function {:?}",
-                        opv
-                    ))),
                 }
             }
         }
@@ -2471,7 +2515,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 },
                 Ident::InternalPeek(i) => match rt {
                     Some(_) => Err(NErr::name_error(format!("Can't declare into peek"))),
-                    None => try_borrow_mut_nres(env, &format!("peek {}", i), "peek")?
+                    None => try_borrow_mut_nres(env, "peek", "peek")?
                         .modify_peek(*i, |x| set_index(x, ixs, Some(rhs), false)),
                 },
             }
