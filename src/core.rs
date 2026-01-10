@@ -33,7 +33,7 @@ pub enum Obj {
     Num(NNum),
     Seq(Seq),
     Func(Func, Precedence),
-    Instance(Struct, Vec<Obj>),
+    Instance(Struct, Box<Vec<Obj>>),
 }
 
 // Sequences produce NRes<Obj> when iterated over.
@@ -793,7 +793,7 @@ pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
                     Some(def) => args.push(def.clone()),
                 }
             }
-            Ok(Obj::Instance(s.clone(), args))
+            Ok(Obj::Instance(s.clone(), Box::new(args)))
         }
         _ => call_type1(ty, expect_one(args, &ty.name())?),
     }
@@ -1503,7 +1503,7 @@ impl MyDisplay for Obj {
                 formatter,
                 "<{} instance: {}>",
                 s.name,
-                CommaSeparated(fields)
+                CommaSeparated(&**fields)
             ),
         }
     }

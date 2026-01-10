@@ -532,7 +532,7 @@ fn splat_section_eval(
 fn symbol_access(obj: Obj, sym: &str) -> NRes<Obj> {
     match obj {
         Obj::Instance(s, fields) => {
-            for (s_field, i_field) in s.fields.iter().zip(fields.into_iter()) {
+            for (s_field, i_field) in s.fields.iter().zip((*fields).into_iter()) {
                 if &s_field.0 == sym {
                     return Ok(i_field);
                 }
@@ -1892,7 +1892,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 .map(|v| eval_lvalue_as_obj(env, v))
                 .collect::<NRes<Vec<Obj>>>()?;
             if v.len() == s.fields.len() {
-                Ok(Obj::Instance(s.clone(), v))
+                Ok(Obj::Instance(s.clone(), Box::new(v)))
             } else {
                 Err(NErr::argument_error(format!(
                     "struct construction: wrong number of arguments: {}, wanted {}",
@@ -2635,7 +2635,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                 args,
                 rt,
                 vs.len(),
-                || Ok(vs),
+                || Ok(*vs),
                 "(Shouldn't be possible) Can't destructure into mismatched length struct",
             ),
             _ => Err(NErr::type_error(
