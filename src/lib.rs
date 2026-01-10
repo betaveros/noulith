@@ -6460,19 +6460,19 @@ pub fn make_env(
     env.insert(
         "html_tag_name".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(tag_struct.clone(), 0), Precedence::zero()),
+        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 0), Precedence::zero()),
     )
     .unwrap();
     env.insert(
         "html_tag_children".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(tag_struct.clone(), 1), Precedence::zero()),
+        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 1), Precedence::zero()),
     )
     .unwrap();
     env.insert(
         "html_tag_attributes".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(tag_struct.clone(), 2), Precedence::zero()),
+        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 2), Precedence::zero()),
     )
     .unwrap();
 
