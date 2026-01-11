@@ -4750,6 +4750,19 @@ impl Env {
             allow_redeclaration: false,
         }))
     }
+    pub fn with_parent_and_slots(
+        env: &Rc<RefCell<Env>>,
+        vars: Rc<HashMap<String, usize>>,
+    ) -> Rc<RefCell<Env>> {
+        let n = vars.len();
+        Rc::new(RefCell::new(Env {
+            vars,
+            slots: vec![None; n],
+            parent: Ok(Rc::clone(&env)),
+            internal_stack: Vec::new(),
+            allow_redeclaration: false,
+        }))
+    }
     pub fn mut_top_env<T>(&self, f: impl FnOnce(&mut TopEnv) -> T) -> T {
         match &self.parent {
             Ok(v) => cell_borrow(v).mut_top_env(f),
@@ -4760,30 +4773,30 @@ impl Env {
     pub fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
         let r = try_borrow_nres(env, "env", s)?;
         match r.vars.get(s) {
-            Some(&slot_idx) => {
-                let (_, v) = r.slots[slot_idx].as_ref().expect("BUG: vars references slot but slot is None");
-                Ok(try_borrow_nres(&*v, "variable", s)?.clone())
-            }
-            None => {
-                let inner = match &r.parent {
-                    Ok(p) => Env::try_borrow_get_var(p, s),
-                    Err(_) => Err(NErr::name_error(format!("No such variable: \"{}\".", s))),
-                };
-                match inner {
-                    Err(NErr::Throw(x, _)) => {
-                        let mut msg = format!("{}", x);
-                        if let Some(k) = r
-                            .vars
-                            .keys()
-                            .min_by_key(|k| fast_edit_distance(k.as_bytes(), s.as_bytes()))
-                        {
-                            msg += &format!(" Did you mean: \"{}\"?", k);
-                        }
-                        Err(NErr::throw(msg))
-                    }
-                    x => x,
+            Some(&slot_idx) => match r.slots[slot_idx].as_ref() {
+                Some((_, v)) => return Ok(try_borrow_nres(&*v, "variable", s)?.clone()),
+                None => (), // allocated but empty slot
+            },
+            None => (), // no slot
+        }
+
+        let inner = match &r.parent {
+            Ok(p) => Env::try_borrow_get_var(p, s),
+            Err(_) => Err(NErr::name_error(format!("No such variable: \"{}\".", s))),
+        };
+        match inner {
+            Err(NErr::Throw(x, _)) => {
+                let mut msg = format!("{}", x);
+                if let Some(k) = r
+                    .vars
+                    .keys()
+                    .min_by_key(|k| fast_edit_distance(k.as_bytes(), s.as_bytes()))
+                {
+                    msg += &format!(" Did you mean: \"{}\"?", k);
                 }
+                Err(NErr::throw(msg))
             }
+            x => x,
         }
     }
 
@@ -4809,11 +4822,16 @@ impl Env {
         f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
     ) -> Option<T> {
         match self.vars.get(key) {
-            Some(&slot_idx) => Some(f(self.slots[slot_idx].as_ref().expect("BUG: vars references slot but slot is None"))),
-            None => match &self.parent {
-                Ok(p) => cell_borrow(p).modify_existing_var(key, f),
-                Err(_) => None,
+            Some(&slot_idx) => match self.slots[slot_idx].as_ref() {
+                Some(e) => return Some(f(e)),
+                None => (), // allocated but empty slot
             },
+            None => (), // no slot
+        }
+        // if not found here, fall through to above env
+        match &self.parent {
+            Ok(p) => cell_borrow(p).modify_existing_var(key, f),
+            Err(_) => None,
         }
     }
 
@@ -4849,8 +4867,8 @@ impl Env {
                 Ok(())
             }
             std::collections::hash_map::Entry::Occupied(e) => {
-                if self.allow_redeclaration {
-                    let slot_idx = *e.get();
+                let slot_idx = *e.get();
+                if self.allow_redeclaration || self.slots[slot_idx].is_none() {
                     self.slots[slot_idx] = Some((ty, Box::new(RefCell::new(val))));
                     Ok(())
                 } else {

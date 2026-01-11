@@ -421,10 +421,14 @@ fn evaluate_for(
         },
         [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
             let mut itr = evaluate(env, expr)?;
+            let ids = lvalue.collect_identifiers(false /* declared_only */);
+            // TODO: this is primitive, we should collect declared variables from the forloop body
+            let slot_vars: Rc<HashMap<String, usize>> =
+                Rc::new(ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect());
             match ty {
                 ForIterationType::Normal => {
                     for x in mut_obj_into_iter(&mut itr, "for iteration")? {
-                        let ee = Env::with_parent(env);
+                        let ee = Env::with_parent_and_slots(env, Rc::clone(&slot_vars));
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
@@ -435,7 +439,7 @@ fn evaluate_for(
                 ForIterationType::Item => {
                     for kv in mut_obj_into_iter_pairs(&mut itr, "for (item) iteration")? {
                         let (k, v) = kv?;
-                        let ee = Env::with_parent(env);
+                        let ee = Env::with_parent_and_slots(env, Rc::clone(&slot_vars));
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
@@ -449,7 +453,7 @@ fn evaluate_for(
                     }
                 }
                 ForIterationType::Declare => {
-                    let ee = Env::with_parent(env);
+                    let ee = Env::with_parent_and_slots(env, Rc::clone(&slot_vars));
                     let p = eval_lvalue(&ee, lvalue)?;
                     assign(&ee, &p, Some(&ObjType::Any), itr)?;
 
