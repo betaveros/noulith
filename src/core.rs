@@ -2349,6 +2349,7 @@ pub fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
 #[derive(Clone)]
 pub struct Closure {
     pub params: Rc<Vec<Box<Lvalue>>>,
+    pub slot_vars: Rc<HashMap<String, usize>>,
     pub body: Rc<LocExpr>,
     pub env: Rc<RefCell<Env>>,
 }
@@ -2935,6 +2936,42 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             )),
         }?,
     })
+}
+
+pub fn collect_outer_scope_bound_vars(set: &mut HashSet<String>, expr: &LocExpr) {
+    // Accumulate variables that this code will bind in the immediate scope it's executed in.
+    // fortunately code will still be correct if this misses things, just not optimized; but TODO
+    // flesh it out
+    match &expr.expr {
+        Expr::Struct(name, field_names) => {
+            set.insert(name.as_ref().clone());
+            for s in field_names {
+                set.insert(s.0.as_ref().clone());
+            }
+        }
+        Expr::Assign(_every, lvalue, _expr) => {
+            set.extend(lvalue.collect_identifiers(/* declared_only */ true));
+        }
+        Expr::If(cond, expr, opt_expr) => {
+            collect_outer_scope_bound_vars(set, cond);
+            collect_outer_scope_bound_vars(set, expr);
+            if let Some(else_expr) = opt_expr {
+                collect_outer_scope_bound_vars(set, else_expr);
+            }
+        }
+        Expr::Sequence(xs, _es) => {
+            for x in xs {
+                collect_outer_scope_bound_vars(set, x);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn outer_scope_bound_vars(expr: &LocExpr) -> HashSet<String> {
+    let mut set = HashSet::new();
+    collect_outer_scope_bound_vars(&mut set, expr);
+    set
 }
 
 fn err_add_context(

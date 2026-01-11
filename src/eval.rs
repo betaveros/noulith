@@ -423,6 +423,7 @@ fn evaluate_for(
             let mut itr = evaluate(env, expr)?;
             let ids = lvalue.collect_identifiers(false /* declared_only */);
             // TODO: this is primitive, we should collect declared variables from the forloop body
+            // That requires some plumbing where we know callback works though
             let slot_vars: Rc<HashMap<String, usize>> =
                 Rc::new(ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect());
             match ty {
@@ -1401,14 +1402,22 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             evaluate(&env, body)?,
             vec![("throw".to_string(), expr.start, expr.end, None)],
         )),
-        Expr::Lambda(params, body) => Ok(Obj::Func(
-            Func::Closure(Closure {
-                params: Rc::clone(params),
-                body: Rc::clone(body),
-                env: Rc::clone(env),
-            }),
-            Precedence::zero(),
-        )),
+        Expr::Lambda(params, body) => {
+            let mut ids: HashSet<String> = params.iter().map(|lvalue| lvalue.collect_identifiers(false /* declared_only */)).flatten().collect();
+            collect_outer_scope_bound_vars(&mut ids, body);
+            println!("slotting ids: {:?}", ids);
+            // TODO: this is primitive, we should collect declared variables from the body
+            let slot_vars: HashMap<String, usize> = ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
+            Ok(Obj::Func(
+                Func::Closure(Closure {
+                    params: Rc::clone(params),
+                    slot_vars: Rc::new(slot_vars),
+                    body: Rc::clone(body),
+                    env: Rc::clone(env),
+                }),
+                Precedence::zero(),
+            ))
+        }
         Expr::Backref(i) => {
             try_borrow_nres(env, "backref", &format!("{}", i))?.mut_top_env(|top| {
                 match if *i == 0 {
