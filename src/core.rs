@@ -4609,7 +4609,7 @@ impl Debug for TopEnv {
 
 #[derive(Debug)]
 pub struct Env {
-    pub vars: HashMap<String, usize>,
+    pub vars: Rc<HashMap<String, usize>>,
     pub slots: Vec<(ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
@@ -4723,7 +4723,7 @@ pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
 impl Env {
     pub fn new(top: TopEnv, allow_redeclaration: bool) -> Env {
         Env {
-            vars: HashMap::new(),
+            vars: Rc::new(HashMap::new()),
             slots: Vec::new(),
             parent: Err(Rc::new(RefCell::new(top))),
             internal_stack: Vec::new(),
@@ -4743,7 +4743,7 @@ impl Env {
     }
     pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
-            vars: HashMap::new(),
+            vars: Rc::new(HashMap::new()),
             slots: Vec::new(),
             parent: Ok(Rc::clone(&env)),
             internal_stack: Vec::new(),
@@ -4840,7 +4840,8 @@ impl Env {
     }
 
     pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
-        match self.vars.entry(key.clone()) {
+        let vars = Rc::make_mut(&mut self.vars);
+        match vars.entry(key.clone()) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 let slot_idx = self.slots.len();
                 self.slots.push((ty, Box::new(RefCell::new(val))));
