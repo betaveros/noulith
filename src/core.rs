@@ -4895,16 +4895,11 @@ impl Env {
     }
 
     pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
-        let vars = Rc::make_mut(&mut self.vars);
-        match vars.entry(key.clone()) {
-            std::collections::hash_map::Entry::Vacant(e) => {
-                let slot_idx = self.slots.len();
-                self.slots.push(Some((ty, Box::new(RefCell::new(val)))));
-                e.insert(slot_idx);
-                Ok(())
-            }
-            std::collections::hash_map::Entry::Occupied(e) => {
-                let slot_idx = *e.get();
+        // Try not to make_mut vars; in hot paths vars will be preallocated correctly
+        // Some juggling to not borrow self.vars twice
+        let known_slot_idx: Option<usize> = self.vars.get(&key).copied();
+        match known_slot_idx {
+            Some(slot_idx) => {
                 if self.allow_redeclaration || self.slots[slot_idx].is_none() {
                     self.slots[slot_idx] = Some((ty, Box::new(RefCell::new(val))));
                     Ok(())
@@ -4914,6 +4909,12 @@ impl Env {
                         key
                     )))
                 }
+            }
+            None => {
+                let slot_idx = self.slots.len();
+                self.slots.push(Some((ty, Box::new(RefCell::new(val)))));
+                Rc::make_mut(&mut self.vars).insert(key, slot_idx);
+                Ok(())
             }
         }
     }

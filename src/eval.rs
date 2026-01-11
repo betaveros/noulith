@@ -1403,11 +1403,16 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             vec![("throw".to_string(), expr.start, expr.end, None)],
         )),
         Expr::Lambda(params, body) => {
-            let mut ids: HashSet<String> = params.iter().map(|lvalue| lvalue.collect_identifiers(false /* declared_only */)).flatten().collect();
+            let mut ids: HashSet<String> = params
+                .iter()
+                .map(|lvalue| lvalue.collect_identifiers(false /* declared_only */))
+                .flatten()
+                .collect();
             collect_outer_scope_bound_vars(&mut ids, body);
             println!("slotting ids: {:?}", ids);
             // TODO: this is primitive, we should collect declared variables from the body
-            let slot_vars: HashMap<String, usize> = ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
+            let slot_vars: HashMap<String, usize> =
+                ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
             Ok(Obj::Func(
                 Func::Closure(Closure {
                     params: Rc::clone(params),
