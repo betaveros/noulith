@@ -2511,7 +2511,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                     Some(ty) => {
                         // declaration
                         if ixs.is_empty() {
-                            insert_declare(env, s, ty.clone(), rhs.clone())
+                            insert_declare(env, s, ty.clone(), rhs)
                         } else {
                             return Err(NErr::name_error(format!(
                                 "Can't declare new value into index expression: {:?} {:?}",
@@ -2610,7 +2610,7 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                     _ => None,
                 })
                 .collect::<Vec<Option<Obj>>>();
-            let res = f.destructure(rhs.clone(), known)?;
+            let res = f.destructure(rhs, known)?;
             if res.len() == args.len() {
                 assign_all(
                     env,
@@ -2696,7 +2696,7 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
             Some(ty) => {
                 // declaration
                 if ixs.is_empty() {
-                    insert_declare(env, s, ty.clone(), rhs.clone())
+                    insert_declare(env, s, ty.clone(), rhs)
                 } else {
                     Err(NErr::name_error(format!(
                         "Can't declare new value into index expression: {:?} {:?}",
@@ -2763,7 +2763,7 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
                     _ => None,
                 })
                 .collect::<Vec<Option<Obj>>>();
-            let res = f.destructure(rhs.clone(), known)?;
+            let res = f.destructure(rhs, known)?;
             if res.len() == args.len() {
                 assign_all(
                     env,
