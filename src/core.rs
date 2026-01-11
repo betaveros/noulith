@@ -4609,7 +4609,8 @@ impl Debug for TopEnv {
 
 #[derive(Debug)]
 pub struct Env {
-    pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
+    pub vars: HashMap<String, usize>,
+    pub slots: Vec<(ObjType, Box<RefCell<Obj>>)>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
     pub allow_redeclaration: bool,
@@ -4723,6 +4724,7 @@ impl Env {
     pub fn new(top: TopEnv, allow_redeclaration: bool) -> Env {
         Env {
             vars: HashMap::new(),
+            slots: Vec::new(),
             parent: Err(Rc::new(RefCell::new(top))),
             internal_stack: Vec::new(),
             allow_redeclaration,
@@ -4742,6 +4744,7 @@ impl Env {
     pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
         Rc::new(RefCell::new(Env {
             vars: HashMap::new(),
+            slots: Vec::new(),
             parent: Ok(Rc::clone(&env)),
             internal_stack: Vec::new(),
             allow_redeclaration: false,
@@ -4757,7 +4760,10 @@ impl Env {
     pub fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
         let r = try_borrow_nres(env, "env", s)?;
         match r.vars.get(s) {
-            Some(v) => Ok(try_borrow_nres(&*v.1, "variable", s)?.clone()),
+            Some(&slot_idx) => {
+                let (_, v) = &r.slots[slot_idx];
+                Ok(try_borrow_nres(&*v, "variable", s)?.clone())
+            }
             None => {
                 let inner = match &r.parent {
                     Ok(p) => Env::try_borrow_get_var(p, s),
@@ -4803,7 +4809,7 @@ impl Env {
         f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
     ) -> Option<T> {
         match self.vars.get(key) {
-            Some(target) => Some(f(target)),
+            Some(&slot_idx) => Some(f(&self.slots[slot_idx])),
             None => match &self.parent {
                 Ok(p) => cell_borrow(p).modify_existing_var(key, f),
                 Err(_) => None,
@@ -4834,21 +4840,24 @@ impl Env {
     }
 
     pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
-        match self.vars.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
+        match self.vars.entry(key.clone()) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let slot_idx = self.slots.len();
+                self.slots.push((ty, Box::new(RefCell::new(val))));
+                e.insert(slot_idx);
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
                 if self.allow_redeclaration {
-                    e.insert((ty, Box::new(RefCell::new(val))));
+                    let slot_idx = *e.get();
+                    self.slots[slot_idx] = (ty, Box::new(RefCell::new(val)));
                     Ok(())
                 } else {
                     Err(NErr::name_error(format!(
                         "Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables",
-                        e.key()
+                        key
                     )))
                 }
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((ty, Box::new(RefCell::new(val))));
-                Ok(())
             }
         }
     }

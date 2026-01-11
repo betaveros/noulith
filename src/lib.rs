@@ -6201,12 +6201,14 @@ pub fn initialize(env: &mut Env) {
     env.insert_builtin(BasicBuiltin {
         name: "vars".to_string(),
         body: |env, _args| {
+            let env_ref = try_borrow_nres(env, "vars", "vars")?;
             Ok(Obj::Seq(Seq::Dict(
                 Rc::new(
-                    try_borrow_nres(env, "vars", "vars")?
+                    env_ref
                         .vars
                         .iter()
-                        .map(|(k, (_t, v))| {
+                        .map(|(k, &slot_idx)| {
+                            let (_t, v) = &env_ref.slots[slot_idx];
                             Ok((
                                 ObjKey::from(k.clone()),
                                 try_borrow_nres(v, "vars", k)?.clone(),
