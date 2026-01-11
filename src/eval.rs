@@ -339,7 +339,7 @@ pub fn eval_lvalue(env: &Rc<RefCell<Env>>, expr: &Lvalue) -> NRes<EvaluatedLvalu
                 v.iter()
                     .map(|e| Ok(eval_index_or_slice(env, e)?))
                     .collect::<NRes<Vec<EvaluatedIndexOrSlice>>>()?
-            }
+            },
         )),
         Lvalue::Annotation(s, t) => Ok(EvaluatedLvalue::Annotation(
             Box::new(eval_lvalue(env, s)?),
@@ -736,7 +736,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         ));
                     }
                 }
-                Ok(Obj::Func(Func::ChainSection(v1, Box::new(acc)), Precedence::zero()))
+                Ok(Obj::Func(
+                    Func::ChainSection(v1, Box::new(acc)),
+                    Precedence::zero(),
+                ))
             } else if ops.len() == 1 {
                 // micro-optimization, but this path is extremely common
                 let lhs = evaluate(env, op1)?;
@@ -1443,7 +1446,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         Vec::new(),
                     ),
                     Some(&ObjType::Func),
-                    Obj::Func(Func::StructField(Box::new(s.clone()), i), Precedence::zero()),
+                    Obj::Func(
+                        Func::StructField(Box::new(s.clone()), i),
+                        Precedence::zero(),
+                    ),
                 )?;
             }
             Ok(Obj::Null)

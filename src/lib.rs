@@ -279,7 +279,7 @@ impl Builtin for Divide {
 #[derive(Clone)]
 struct ComparisonOperator {
     name: String, // will be "illegal" for chained operators
-    chained: Vec<Func>,
+    chained: Vec<fn(&Obj, &Obj) -> NRes<bool>>,
     accept: fn(&Obj, &Obj) -> NRes<bool>,
 }
 impl Debug for ComparisonOperator {
@@ -340,7 +340,7 @@ fn clone_and_part_app_last(f: &(impl Builtin + Clone + 'static), arg: Obj) -> Ob
 }
 
 impl Builtin for ComparisonOperator {
-    fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
+    fn run(&self, _env: &REnv, args: Vec<Obj>) -> NRes<Obj> {
         if self.chained.is_empty() {
             match few(args) {
                 Few::Zero => Err(NErr::argument_error(format!(
@@ -363,10 +363,8 @@ impl Builtin for ComparisonOperator {
                     return Ok(Obj::from(false));
                 }
                 for i in 0..self.chained.len() {
-                    let res =
-                        self.chained[i].run2(env, args[i + 1].clone(), args[i + 2].clone())?;
-                    if !res.truthy() {
-                        return Ok(res);
+                    if !(self.chained[i])(&args[i + 1], &args[i + 2])? {
+                        return Ok(Obj::from(false));
                     }
                 }
                 Ok(Obj::from(true))
@@ -384,20 +382,20 @@ impl Builtin for ComparisonOperator {
 
     fn try_chain(&self, other: &Func) -> Option<Func> {
         match other {
-            Func::Builtin(b) => match b.builtin_name() {
-                other_name @ ("==" | "!=" | "<" | ">" | "<=" | ">=") => {
-                    Some(Func::Builtin(Rc::new(ComparisonOperator {
-                        name: format!("{},{}", self.name, other_name),
+            Func::Builtin(b) => {
+                match (b.as_ref() as &dyn std::any::Any).downcast_ref::<ComparisonOperator>() {
+                    Some(other) => Some(Func::Builtin(Rc::new(ComparisonOperator {
+                        name: format!("{},{}", self.name, b.builtin_name()),
                         chained: {
                             let mut k = self.chained.clone();
-                            k.push(Func::clone(other));
+                            k.push(other.accept);
                             k
                         },
                         accept: self.accept,
-                    })))
+                    }))),
+                    None => None,
                 }
-                _ => None,
-            },
+            }
             _ => None,
         }
     }
@@ -1689,7 +1687,9 @@ impl Builtin for Lift {
             Few::Many(mut xs) => {
                 let last = xs.pop().unwrap();
                 match last {
-                    Obj::Func(f, p) => Ok(Obj::Func(Func::OnFanoutConst(Box::new(f), Box::new(xs)), p)),
+                    Obj::Func(f, p) => {
+                        Ok(Obj::Func(Func::OnFanoutConst(Box::new(f), Box::new(xs)), p))
+                    }
                     _ => Err(NErr::type_error(format!("lift: not func"))),
                 }
             }
@@ -6460,19 +6460,28 @@ pub fn make_env(
     env.insert(
         "html_tag_name".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 0), Precedence::zero()),
+        Obj::Func(
+            Func::StructField(Box::new(tag_struct.clone()), 0),
+            Precedence::zero(),
+        ),
     )
     .unwrap();
     env.insert(
         "html_tag_children".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 1), Precedence::zero()),
+        Obj::Func(
+            Func::StructField(Box::new(tag_struct.clone()), 1),
+            Precedence::zero(),
+        ),
     )
     .unwrap();
     env.insert(
         "html_tag_attributes".to_string(),
         ObjType::Func,
-        Obj::Func(Func::StructField(Box::new(tag_struct.clone()), 2), Precedence::zero()),
+        Obj::Func(
+            Func::StructField(Box::new(tag_struct.clone()), 2),
+            Precedence::zero(),
+        ),
     )
     .unwrap();
 

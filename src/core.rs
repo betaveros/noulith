@@ -2141,7 +2141,7 @@ fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     }
 }
 
-pub trait Builtin: Debug + MaybeSync + MaybeSend {
+pub trait Builtin: Debug + MaybeSync + MaybeSend + std::any::Any {
     fn run(&self, env: &REnv, args: Vec<Obj>) -> NRes<Obj>;
 
     // there are a LOT of builtins who specialize based on how many arguments they get, and a LOT
