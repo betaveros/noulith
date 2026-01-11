@@ -4610,7 +4610,7 @@ impl Debug for TopEnv {
 #[derive(Debug)]
 pub struct Env {
     pub vars: Rc<HashMap<String, usize>>,
-    pub slots: Vec<(ObjType, Box<RefCell<Obj>>)>,
+    pub slots: Vec<Option<(ObjType, Box<RefCell<Obj>>)>>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
     pub allow_redeclaration: bool,
@@ -4761,7 +4761,7 @@ impl Env {
         let r = try_borrow_nres(env, "env", s)?;
         match r.vars.get(s) {
             Some(&slot_idx) => {
-                let (_, v) = &r.slots[slot_idx];
+                let (_, v) = r.slots[slot_idx].as_ref().expect("BUG: vars references slot but slot is None");
                 Ok(try_borrow_nres(&*v, "variable", s)?.clone())
             }
             None => {
@@ -4809,7 +4809,7 @@ impl Env {
         f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
     ) -> Option<T> {
         match self.vars.get(key) {
-            Some(&slot_idx) => Some(f(&self.slots[slot_idx])),
+            Some(&slot_idx) => Some(f(self.slots[slot_idx].as_ref().expect("BUG: vars references slot but slot is None"))),
             None => match &self.parent {
                 Ok(p) => cell_borrow(p).modify_existing_var(key, f),
                 Err(_) => None,
@@ -4844,14 +4844,14 @@ impl Env {
         match vars.entry(key.clone()) {
             std::collections::hash_map::Entry::Vacant(e) => {
                 let slot_idx = self.slots.len();
-                self.slots.push((ty, Box::new(RefCell::new(val))));
+                self.slots.push(Some((ty, Box::new(RefCell::new(val)))));
                 e.insert(slot_idx);
                 Ok(())
             }
             std::collections::hash_map::Entry::Occupied(e) => {
                 if self.allow_redeclaration {
                     let slot_idx = *e.get();
-                    self.slots[slot_idx] = (ty, Box::new(RefCell::new(val)));
+                    self.slots[slot_idx] = Some((ty, Box::new(RefCell::new(val))));
                     Ok(())
                 } else {
                     Err(NErr::name_error(format!(

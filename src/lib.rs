@@ -6208,7 +6208,7 @@ pub fn initialize(env: &mut Env) {
                         .vars
                         .iter()
                         .map(|(k, &slot_idx)| {
-                            let (_t, v) = &env_ref.slots[slot_idx];
+                            let (_t, v) = env_ref.slots[slot_idx].as_ref().expect("BUG: vars references slot but slot is None");
                             Ok((
                                 ObjKey::from(k.clone()),
                                 try_borrow_nres(v, "vars", k)?.clone(),
