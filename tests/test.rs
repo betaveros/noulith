@@ -273,6 +273,10 @@ fn streams() {
         Obj::from("111,112,121,122,211,212,221,222")
     );
     assert_eq!(
+        simple_eval("len([] ^^ 3)"),
+        i(0)
+    );
+    assert_eq!(
         simple_eval("permutations([1, 2, 3]) map (join '') join ','"),
         Obj::from("123,132,213,231,312,321")
     );

@@ -426,6 +426,7 @@ impl Stream for Subsequences {
     }
 }
 
+// 1. list we're powering; 2. current coordinates
 #[derive(Debug, Clone)]
 pub struct CartesianPower(pub Rc<Vec<Obj>>, pub Option<Rc<Vec<usize>>>);
 impl Iterator for CartesianPower {

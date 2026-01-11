@@ -4826,6 +4826,7 @@ pub fn initialize(env: &mut Env) {
         name: "^^".to_string(),
         body: |a, b| {
             let v = to_rc_vec_obj(a)?;
+            let empty = v.is_empty();
             match b {
                 Obj::Num(n) => {
                     let u = n
@@ -4833,7 +4834,11 @@ pub fn initialize(env: &mut Env) {
                         .ok_or(NErr::value_error("bad lazy pow".to_string()))?;
                     Ok(Obj::Seq(Seq::Stream(Rc::new(CartesianPower(
                         v,
-                        Some(Rc::new(vec![0; u])),
+                        if empty {
+                            None
+                        } else {
+                            Some(Rc::new(vec![0; u]))
+                        }
                     )))))
                 }
                 b => Err(NErr::argument_error_second(&b)),
