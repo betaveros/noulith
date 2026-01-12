@@ -289,7 +289,9 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
                 expr: Expr::Index(Box::new(opt_base), opt_ios),
             }
         }
-        Expr::Lambda(params, body) => {
+        Expr::Lambda(params, body, _slot_vars) => {
+            // TODO slot_vars totally broke this. maybe give up
+
             // capture expressions for all current stack variables
             // (this optimization is totally wrong whenever we mutate them; we need to do like
             // upvalues or something.)

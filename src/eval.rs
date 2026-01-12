@@ -1402,21 +1402,12 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             evaluate(&env, body)?,
             vec![("throw".to_string(), expr.start, expr.end, None)],
         )),
-        Expr::Lambda(params, body) => {
-            let mut ids: HashSet<String> = params
-                .iter()
-                .map(|lvalue| lvalue.collect_identifiers(false /* declared_only */))
-                .flatten()
-                .collect();
-            collect_outer_scope_bound_vars(&mut ids, body);
-            println!("slotting ids: {:?}", ids);
-            // TODO: this is primitive, we should collect declared variables from the body
-            let slot_vars: HashMap<String, usize> =
-                ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
+        Expr::Lambda(params, body, slot_vars) => {
+            println!("slotting ids: {:?}", slot_vars);
             Ok(Obj::Func(
                 Func::Closure(Closure {
                     params: Rc::clone(params),
-                    slot_vars: Rc::new(slot_vars),
+                    slot_vars: Rc::clone(slot_vars),
                     body: Rc::clone(body),
                     env: Rc::clone(env),
                 }),
@@ -1664,7 +1655,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
 
 impl Closure {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        let ee = Env::with_parent(&self.env);
+        let ee = Env::with_parent_and_slots(&self.env, Rc::clone(&self.slot_vars));
         let p = self
             .params
             .iter()
@@ -2562,7 +2553,17 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                         .modify_peek(*i, |x| set_index(x, ixs, Some(rhs), false)),
                 },
                 Ident::Slot(slot_idx) => match rt {
-                    Some(_) => Err(NErr::name_error(format!("Can't declare into slot"))),
+                    Some(ty) => {
+                        // declaration
+                        if ixs.is_empty() {
+                            Env::try_borrow_set_slot(env, *slot_idx, rhs, ty.clone())
+                        } else {
+                            return Err(NErr::name_error(format!(
+                                "Can't declare new value into slot index expression: {:?} {:?}",
+                                slot_idx, ixs
+                            )));
+                        }
+                    }
                     None => try_borrow_mut_nres(env, "slot", "slot")?
                         .modify_slot(*slot_idx, |_ty, x| set_index(x, ixs, Some(rhs), false)),
                 },
@@ -2889,7 +2890,7 @@ pub fn modify_every(
                         assign_respecting_type(env, s, &[], old, false /* every */)
                     }
                     Ident::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, old),
-                    Ident::Slot(slot_idx) => Env::try_borrow_set_slot(env, *slot_idx, old),
+                    Ident::Slot(_slot_idx) => Err(NErr::throw("FIXME".to_string())),
                 }
             }
         }

@@ -769,6 +769,14 @@ fn namespace_poc() {
 }
 
 #[test]
+fn scopes() {
+    assert_eq!(
+        simple_eval("a, b := 1, 2; c := \\a, c -> (b := 3; 100 * a + 10 * b + c);  c(b, a)"),
+        i(231)
+    );
+}
+
+#[test]
 fn breaking() {
     assert_eq!(
         simple_eval("x := 0; for (i <- 1 to 10) (x = i; if (i == 5) break); x"),

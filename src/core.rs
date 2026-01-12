@@ -1964,7 +1964,13 @@ pub enum Expr {
     Literally(Box<LocExpr>),
 
     // these get cloned in particular
-    Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
+    // last field is now slot_vars and is necessary to correctly interpret
+    // both params and body!
+    Lambda(
+        Rc<Vec<Box<Lvalue>>>,
+        Rc<LocExpr>,
+        Rc<HashMap<String, usize>>,
+    ),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
@@ -2852,7 +2858,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     box_freeze(&mut env2, catcher)?,
                 ))
             }
-            Expr::Lambda(params, body) => {
+            Expr::Lambda(params, body, slot_vars) => {
                 let mut env2 = env.clone();
                 env2.bind(
                     params
@@ -2861,8 +2867,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         .collect::<HashSet<String>>(),
                 );
                 Ok(Expr::Lambda(
-                    params.clone(),
+                    Rc::clone(params),
                     Rc::new(freeze(&mut env2, body)?),
+                    Rc::clone(slot_vars),
                 ))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
@@ -2967,6 +2974,7 @@ pub fn collect_outer_scope_bound_vars(set: &mut HashSet<String>, expr: &LocExpr)
                 collect_outer_scope_bound_vars(set, x);
             }
         }
+        // remember don't recurse into blocks that start scopes...
         _ => {}
     }
 }
@@ -2975,6 +2983,47 @@ pub fn outer_scope_bound_vars(expr: &LocExpr) -> HashSet<String> {
     let mut set = HashSet::new();
     collect_outer_scope_bound_vars(&mut set, expr);
     set
+}
+
+pub fn rewrite_outer_scope_bound_vars_lvalue(
+    slot_vars: &HashMap<String, usize>,
+    lvalue: Lvalue,
+) -> Lvalue {
+    // Similar to above things will still be correct if this misses things (except maybe the type
+    // check we neglected)
+    match lvalue {
+        Lvalue::IndexedIdent(Ident::Ident(id), xs) => {
+            // TODO recurse into xs
+            let slot_idx: Option<usize> = slot_vars.get(&id).copied();
+            match slot_idx {
+                Some(slot_idx) => Lvalue::IndexedIdent(Ident::Slot(slot_idx), /* todo */ xs),
+                None => Lvalue::IndexedIdent(Ident::Ident(id), xs),
+            }
+        }
+        lvalue => lvalue,
+    }
+}
+
+pub fn rewrite_outer_scope_bound_vars(
+    slot_vars: &HashMap<String, usize>,
+    expr: LocExpr,
+) -> LocExpr {
+    // Similar to above things will still be correct if this misses things (except maybe the type
+    // check we neglected)
+    LocExpr {
+        start: expr.start,
+        end: expr.start,
+        expr: match expr.expr {
+            Expr::Sequence(xs, es) => Expr::Sequence(
+                xs.into_iter()
+                    .map(|x| Box::new(rewrite_outer_scope_bound_vars(slot_vars, *x)))
+                    .collect(),
+                es,
+            ),
+            // remember don't recurse into blocks that start scopes...
+            expr => expr,
+        },
+    }
 }
 
 fn err_add_context(
@@ -3616,16 +3665,35 @@ impl Parser {
                                 match v.last() {
                                     Some((_, e)) => {
                                         let end = e.end;
+
+                                        let switch_expr = LocExpr {
+                                            expr: Expr::Switch(Box::new(scrutinee), v),
+                                            start,
+                                            end,
+                                        };
+
+                                        let mut vars = HashSet::new();
+                                        vars.insert("switch".to_string()); // param
+                                        collect_outer_scope_bound_vars(&mut vars, &switch_expr);
+                                        let slot_vars = vars
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(i, s)| (s, i))
+                                            .collect();
+
+                                        let param = rewrite_outer_scope_bound_vars_lvalue(
+                                            &slot_vars, param,
+                                        );
+                                        let switch_expr =
+                                            rewrite_outer_scope_bound_vars(&slot_vars, switch_expr);
+
                                         Ok(LocExpr {
                                             start,
-                                            end: e.end,
+                                            end,
                                             expr: Expr::Lambda(
                                                 Rc::new(vec![Box::new(param)]),
-                                                Rc::new(LocExpr {
-                                                    expr: Expr::Switch(Box::new(scrutinee), v),
-                                                    start,
-                                                    end,
-                                                }),
+                                                Rc::new(switch_expr),
+                                                Rc::new(slot_vars),
                                             ),
                                         })
                                     }
@@ -3637,10 +3705,33 @@ impl Parser {
                             _ => {
                                 let params = self.parameter_list()?;
                                 let body = self.single("body of lambda")?;
+
+                                let mut vars = HashSet::new();
+                                for param in &params {
+                                    vars.extend(param.collect_identifiers(/* declared_only */ false));
+                                }
+                                collect_outer_scope_bound_vars(&mut vars, &body);
+                                let slot_vars =
+                                    vars.into_iter().enumerate().map(|(i, s)| (s, i)).collect();
+
+                                let params = params
+                                    .into_iter()
+                                    .map(|e| {
+                                        Box::new(rewrite_outer_scope_bound_vars_lvalue(
+                                            &slot_vars, *e,
+                                        ))
+                                    })
+                                    .collect();
+                                let body = rewrite_outer_scope_bound_vars(&slot_vars, body);
+
                                 Ok(LocExpr {
                                     start,
                                     end: body.end,
-                                    expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
+                                    expr: Expr::Lambda(
+                                        Rc::new(params),
+                                        Rc::new(body),
+                                        Rc::new(slot_vars),
+                                    ),
                                 })
                             }
                         }
@@ -4864,19 +4955,9 @@ impl Env {
         Ok(x)
     }
 
-    pub fn try_borrow_set_slot(env: &Rc<RefCell<Env>>, slot_idx: usize, new_val: Obj) -> NRes<()> {
-        let r = try_borrow_nres(env, "slot", "slot set")?;
-        let (_ty, v) = r.slots[slot_idx].as_ref().expect("BUG: slot is None");
-        /* FIXME
-        if !is_type(ty, &new_val)? {
-            return Err(NErr::type_error(format!(
-                "Slot assignment type check failed: {} is not of type {}",
-                new_val,
-                ty.name()
-            )));
-        }
-        */
-        *try_borrow_mut_nres(&*v, "slot", "slot set")? = new_val;
+    pub fn try_borrow_set_slot(env: &Rc<RefCell<Env>>, slot_idx: usize, new_val: Obj, new_ty: ObjType) -> NRes<()> {
+        let mut r = try_borrow_mut_nres(env, "slot", "slot set")?;
+        r.slots[slot_idx] = Some((new_ty, Box::new(RefCell::new(new_val))));
         std::mem::drop(r);
         Ok(())
     }
@@ -4906,7 +4987,11 @@ impl Env {
         f(&mut s[n - 1 - i])
     }
 
-    pub fn modify_slot<T>(&mut self, slot_idx: usize, f: impl FnOnce(&ObjType, &mut Obj) -> NRes<T>) -> NRes<T> {
+    pub fn modify_slot<T>(
+        &mut self,
+        slot_idx: usize,
+        f: impl FnOnce(&ObjType, &mut Obj) -> NRes<T>,
+    ) -> NRes<T> {
         let (ty, vv) = self.slots[slot_idx].as_ref().expect("BUG: slot is None");
         f(ty, &mut *vv.borrow_mut())
     }
