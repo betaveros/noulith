@@ -1851,6 +1851,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             let mut sr = match s {
                 Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
                 Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+                Ident::Slot(slot_idx) => Env::try_borrow_slot(env, *slot_idx)?,
             };
             for ix in v {
                 sr = index_or_slice(sr, ix)?.clone();
@@ -1865,6 +1866,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
                 let mut sr = match s {
                     Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
                     Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+                    Ident::Slot(slot_idx) => Env::try_borrow_slot(env, *slot_idx)?,
                 };
                 match v.split_last() {
                     None => Ok(sr),
@@ -2559,6 +2561,11 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
                     None => try_borrow_mut_nres(env, "peek", "peek")?
                         .modify_peek(*i, |x| set_index(x, ixs, Some(rhs), false)),
                 },
+                Ident::Slot(slot_idx) => match rt {
+                    Some(_) => Err(NErr::name_error(format!("Can't declare into slot"))),
+                    None => try_borrow_mut_nres(env, "slot", "slot")?
+                        .modify_slot(*slot_idx, |_ty, x| set_index(x, ixs, Some(rhs), false)),
+                },
             }
         }
         EvaluatedLvalue::CommaSeq(ss, d) => {
@@ -2750,6 +2757,17 @@ pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs
                     .modify_peek(*i, |x| set_index(x, ixs, None, true))
             }
         }
+        EvaluatedLvalue::IndexedIdent(Ident::Slot(slot_idx), ixs) => {
+            if rt.is_some() {
+                Err(NErr::name_error(format!(
+                    "Can't declare new value into slot: {:?} {:?}",
+                    slot_idx, ixs
+                )))
+            } else {
+                try_borrow_mut_nres(env, "slot", "slot")?
+                    .modify_slot(*slot_idx, |_ty, x| set_index(x, ixs, None, true))
+            }
+        }
         EvaluatedLvalue::CommaSeq(ss, _d) => {
             // contrast this with how assigning [1, 2] to [a, b]: vector doesn't mean a and b are
             // vectors. i think this was a dumb idea
@@ -2836,6 +2854,7 @@ pub fn modify_every(
             let mut old: Obj = match s {
                 Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
                 Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
+                Ident::Slot(slot_idx) => Env::try_borrow_slot(env, *slot_idx)?,
             };
 
             if ixs.is_empty() {
@@ -2870,6 +2889,7 @@ pub fn modify_every(
                         assign_respecting_type(env, s, &[], old, false /* every */)
                     }
                     Ident::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, old),
+                    Ident::Slot(slot_idx) => Env::try_borrow_set_slot(env, *slot_idx, old),
                 }
             }
         }

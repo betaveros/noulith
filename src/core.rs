@@ -2004,6 +2004,7 @@ impl Expr {
 pub enum Ident {
     Ident(String),
     InternalPeek(usize),
+    Slot(usize),
 }
 
 impl Display for Ident {
@@ -2011,6 +2012,7 @@ impl Display for Ident {
         match self {
             Ident::Ident(x) => write!(formatter, "{}", x),
             Ident::InternalPeek(x) => write!(formatter, "🐉{}", x),
+            Ident::Slot(x) => write!(formatter, "#{}", x),
         }
     }
 }
@@ -2063,6 +2065,7 @@ impl Lvalue {
                 }
             }
             Lvalue::IndexedIdent(Ident::InternalPeek(_), _) => HashSet::new(),
+            Lvalue::IndexedIdent(Ident::Slot(_), _) => HashSet::new(),
             Lvalue::Annotation(x, _) => x.collect_identifiers(false),
             Lvalue::WithDefault(x, _) => x.collect_identifiers(declared_only),
             Lvalue::CommaSeq(x, _) => x
@@ -4853,6 +4856,31 @@ impl Env {
         Ok(())
     }
 
+    pub fn try_borrow_slot(env: &Rc<RefCell<Env>>, slot_idx: usize) -> NRes<Obj> {
+        let r = try_borrow_nres(env, "slot", "slot")?;
+        let (_, v) = r.slots[slot_idx].as_ref().expect("BUG: slot is None");
+        let x = try_borrow_nres(&*v, "slot", "slot")?.clone();
+        std::mem::drop(r);
+        Ok(x)
+    }
+
+    pub fn try_borrow_set_slot(env: &Rc<RefCell<Env>>, slot_idx: usize, new_val: Obj) -> NRes<()> {
+        let r = try_borrow_nres(env, "slot", "slot set")?;
+        let (_ty, v) = r.slots[slot_idx].as_ref().expect("BUG: slot is None");
+        /* FIXME
+        if !is_type(ty, &new_val)? {
+            return Err(NErr::type_error(format!(
+                "Slot assignment type check failed: {} is not of type {}",
+                new_val,
+                ty.name()
+            )));
+        }
+        */
+        *try_borrow_mut_nres(&*v, "slot", "slot set")? = new_val;
+        std::mem::drop(r);
+        Ok(())
+    }
+
     pub fn modify_existing_var<T>(
         &self,
         key: &str,
@@ -4878,6 +4906,11 @@ impl Env {
         f(&mut s[n - 1 - i])
     }
 
+    pub fn modify_slot<T>(&mut self, slot_idx: usize, f: impl FnOnce(&ObjType, &mut Obj) -> NRes<T>) -> NRes<T> {
+        let (ty, vv) = self.slots[slot_idx].as_ref().expect("BUG: slot is None");
+        f(ty, &mut *vv.borrow_mut())
+    }
+
     pub fn modify_ident<T>(
         env: &Rc<RefCell<Env>>,
         ident: &Ident,
@@ -4890,6 +4923,9 @@ impl Env {
                 .ok_or_else(|| NErr::name_error(format!("Variable {} not found", op)))?,
             Ident::InternalPeek(i) => {
                 try_borrow_mut_nres(env, op, "peek")?.modify_peek(*i, |x| f(&ObjType::Any, x))
+            }
+            Ident::Slot(slot_idx) => {
+                try_borrow_mut_nres(env, op, "slot")?.modify_slot(*slot_idx, f)
             }
         }
     }
