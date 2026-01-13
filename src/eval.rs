@@ -419,13 +419,8 @@ fn evaluate_for(
             Err(NErr::Continue(0)) => Ok(()),
             Err(e) => Err(e),
         },
-        [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
+        [ForIteration::Iteration(ty, lvalue, expr, slot_vars), rest @ ..] => {
             let mut itr = evaluate(env, expr)?;
-            let ids = lvalue.collect_identifiers(false /* declared_only */);
-            // TODO: this is primitive, we should collect declared variables from the forloop body
-            // That requires some plumbing where we know callback works though
-            let slot_vars: Rc<HashMap<String, usize>> =
-                Rc::new(ids.into_iter().enumerate().map(|(i, s)| (s, i)).collect());
             match ty {
                 ForIterationType::Normal => {
                     for x in mut_obj_into_iter(&mut itr, "for iteration")? {

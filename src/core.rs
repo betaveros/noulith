@@ -1878,7 +1878,12 @@ pub enum ForIterationType {
 
 #[derive(Debug)]
 pub enum ForIteration {
-    Iteration(ForIterationType, Box<Lvalue>, Box<LocExpr>),
+    Iteration(
+        ForIterationType,
+        Box<Lvalue>,
+        Box<LocExpr>,
+        Rc<HashMap<String, usize>>,
+    ),
     Guard(Box<LocExpr>),
 }
 
@@ -2771,7 +2776,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     iteratees
                         .iter()
                         .map(|x| match x {
-                            ForIteration::Iteration(ty, lv, expr) => {
+                            ForIteration::Iteration(ty, lv, expr, slot_vars) => {
                                 // have to bind first so box_freeze_lvalue works
                                 // also recursive functions work ig
                                 env2.bind(lv.collect_identifiers(
@@ -2785,6 +2790,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                                     *ty,
                                     box_freeze_lvalue(&mut env2, lv)?,
                                     box_freeze(&mut env2, expr)?,
+                                    Rc::clone(slot_vars),
                                 ))
                             }
                             ForIteration::Guard(expr) => {
@@ -3708,7 +3714,9 @@ impl Parser {
 
                                 let mut vars = HashSet::new();
                                 for param in &params {
-                                    vars.extend(param.collect_identifiers(/* declared_only */ false));
+                                    vars.extend(
+                                        param.collect_identifiers(/* declared_only */ false),
+                                    );
                                 }
                                 collect_outer_scope_bound_vars(&mut vars, &body);
                                 let slot_vars =
@@ -4047,10 +4055,19 @@ impl Parser {
                 _ => return Err(self.error_here(format!("for: require <- or <<- or ="))),
             };
             let iteratee = self.annotated_pattern(false, "for iteratee")?;
+            let slot_vars = pat
+                .collect_identifiers(/* declared_only */ false)
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| (s, i))
+                .collect();
+            let pat = rewrite_outer_scope_bound_vars_lvalue(&slot_vars, pat);
+            // TODO: Last iteration should include slot_vars for body
             Ok(ForIteration::Iteration(
                 ty,
                 Box::new(pat),
                 Box::new(iteratee),
+                Rc::new(slot_vars),
             ))
         }
     }
@@ -4955,7 +4972,12 @@ impl Env {
         Ok(x)
     }
 
-    pub fn try_borrow_set_slot(env: &Rc<RefCell<Env>>, slot_idx: usize, new_val: Obj, new_ty: ObjType) -> NRes<()> {
+    pub fn try_borrow_set_slot(
+        env: &Rc<RefCell<Env>>,
+        slot_idx: usize,
+        new_val: Obj,
+        new_ty: ObjType,
+    ) -> NRes<()> {
         let mut r = try_borrow_mut_nres(env, "slot", "slot set")?;
         r.slots[slot_idx] = Some((new_ty, Box::new(RefCell::new(new_val))));
         std::mem::drop(r);

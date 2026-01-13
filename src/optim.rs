@@ -43,7 +43,8 @@ fn optimize_for(
         optimize(state, body)
     } else {
         match its.remove(0) {
-            ForIteration::Iteration(ForIterationType::Normal, lvalue, expr) => match *lvalue {
+            ForIteration::Iteration(ForIterationType::Normal, lvalue, expr, _slot_vars) => match *lvalue {
+                // TODO slot_vars totally broke this. maybe give up
                 Lvalue::IndexedIdent(Ident::Ident(ident), ioses) => {
                     if ioses.is_empty() {
                         let opt_expr = optimize(state, *expr);
