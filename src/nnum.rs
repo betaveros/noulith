@@ -1,11 +1,11 @@
 // a lot ripped from paradoc-rust, but we can be a sensible language that doesn't worry about chars
 // and doesn't just randomly coerce floats like ints...
 
+use num::BigRational;
 use num::bigint::ToBigInt;
 use num::bigint::{BigInt, Sign};
 use num::complex::Complex64;
 use num::pow::Pow;
-use num::BigRational;
 use num::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::fmt;
@@ -389,7 +389,9 @@ impl NNum {
             NNum::Rational(r) => NNum::Float(gamma::gamma(rational_to_f64_or_inf(r) + 1.0)),
             NNum::Float(f) => NNum::Float(gamma::gamma(f + 1.0)),
             NNum::Complex(_) => {
-                panic!("OK you should be able to compute the factorial of a complex number but it's hard");
+                panic!(
+                    "OK you should be able to compute the factorial of a complex number but it's hard"
+                );
             }
         }
     }

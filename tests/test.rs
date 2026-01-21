@@ -1,9 +1,9 @@
 extern crate noulith;
-use noulith::simple_eval;
 use noulith::Env;
 use noulith::Obj;
 use noulith::Rc;
 use noulith::RefCell;
+use noulith::simple_eval;
 use noulith::{evaluate, parse};
 use num::bigint::BigInt;
 
@@ -18,7 +18,9 @@ fn demos() {
         i(3628800)
     );
     assert_eq!(
-        simple_eval("(for (x <- 1 to 15) yield (o := ''; for (f, s <- [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"),
+        simple_eval(
+            "(for (x <- 1 to 15) yield (o := ''; for (f, s <- [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"
+        ),
         Obj::from("1;2;Fizz;4;Buzz;Fizz;7;8;Fizz;Buzz;11;Fizz;13;14;FizzBuzz")
     );
 }
@@ -272,10 +274,7 @@ fn streams() {
         simple_eval("[1, 2] ^^ 3 map (join '') join ','"),
         Obj::from("111,112,121,122,211,212,221,222")
     );
-    assert_eq!(
-        simple_eval("len([] ^^ 3)"),
-        i(0)
-    );
+    assert_eq!(simple_eval("len([] ^^ 3)"), i(0));
     assert_eq!(
         simple_eval("permutations([1, 2, 3]) map (join '') join ','"),
         Obj::from("123,132,213,231,312,321")
@@ -575,7 +574,9 @@ fn dict_hofs() {
         Obj::from("0 1 2 3 4 5")
     );
     assert_eq!(
-        simple_eval("(for (k <- 1 to 5) yield k: k) map_values (//2) then items then sort then flatten then unwords"),
+        simple_eval(
+            "(for (k <- 1 to 5) yield k: k) map_values (//2) then items then sort then flatten then unwords"
+        ),
         Obj::from("1 0 2 1 3 1 4 2 5 2")
     );
     assert_eq!(
@@ -709,9 +710,24 @@ fn switch() {
         simple_eval("switch (2) case _: str -> 1 case _: vector -> 3 case x: int -> x * 2"),
         i(4)
     );
-    assert_eq!(simple_eval("switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"), i(4));
-    assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(0, _) -> 0 case Foo(a, b) -> a + b"), i(7));
-    assert_eq!(simple_eval("struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(3, b) -> b case Foo(a, b) -> a + b"), i(4));
+    assert_eq!(
+        simple_eval(
+            "switch ([1, 2, 3]) case a, b -> 1 case a, 1, b -> 2 case a, 2, 2 -> 3 case a, 2, b -> a + b"
+        ),
+        i(4)
+    );
+    assert_eq!(
+        simple_eval(
+            "struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(0, _) -> 0 case Foo(a, b) -> a + b"
+        ),
+        i(7)
+    );
+    assert_eq!(
+        simple_eval(
+            "struct Foo(bar, baz); switch (Foo(3, 4)) case a, b -> 0 case Foo(3, b) -> b case Foo(a, b) -> a + b"
+        ),
+        i(4)
+    );
 }
 
 #[test]

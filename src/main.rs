@@ -1,6 +1,6 @@
 use noulith::{
-    evaluate, initialize, optimize_expr, parse, warn, Env, Expr, LocExpr, Obj, ObjType, Rc,
-    RefCell, TopEnv,
+    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, optimize_expr,
+    parse, warn,
 };
 use std::fs::File;
 use std::io;

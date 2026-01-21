@@ -1,6 +1,6 @@
 use crate::rc::Rc;
-use num::bigint::BigInt;
 use num::BigRational;
+use num::bigint::BigInt;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]

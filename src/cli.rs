@@ -1,11 +1,11 @@
 use std::io;
 use std::io::BufReader;
 
-use noulith::{cell_borrow, cell_borrow_mut, Rc, RefCell};
-use noulith::{evaluate, initialize, lex, parse, type_of, Env, Obj, Token, TopEnv};
+use noulith::{Env, Obj, Token, TopEnv, evaluate, initialize, lex, parse, type_of};
+use noulith::{Rc, RefCell, cell_borrow, cell_borrow_mut};
 
-use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use rustyline::error::ReadlineError;
 use rustyline_derive::{Helper, Hinter, Validator};
 
 #[derive(Helper, Hinter, Validator)]

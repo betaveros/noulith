@@ -21,14 +21,8 @@ pub enum RcVecIter<'a, T> {
 
 impl<T> RcVecIter<'_, T> {
     pub fn of(v: &mut Rc<Vec<T>>) -> RcVecIter<'_, T> {
-        // Some non-lexical lifetime stuff going on here, matching Rc::get_mut(v) doesn't drop it in
-        // the None branch and we can't access v again even though we should be able to. If I switch to
-        // nightly I can probably use #![feature(nll)]
-        if Rc::get_mut(v).is_some() {
-            match Rc::get_mut(v) {
-                Some(v) => RcVecIter::Draining(v.drain(..)),
-                None => panic!("non-lexical lifetime issue"),
-            }
+        if Rc::strong_count(v) == 1 && Rc::weak_count(v) == 0 {
+            RcVecIter::Draining(Rc::get_mut(v).unwrap().drain(..))
         } else {
             RcVecIter::Cloning(v.iter())
         }

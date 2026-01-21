@@ -295,9 +295,9 @@ fn optimize(state: &mut OptimState, e: LocExpr) -> LocExpr {
             // upvalues or something.)
             let mut captures = Vec::new();
             let mut stack_vars: Vec<_> = state.stack.iter().collect();
-            stack_vars.sort_by_key(|(_, &idx)| idx);
+            stack_vars.sort_by_key(|(_, idx)| **idx);
 
-            for (_, &stack_idx) in &stack_vars {
+            for &(_, stack_idx) in &stack_vars {
                 let peek_offset = state.stack_size - stack_idx - 1;
                 captures.push(Box::new(LocExpr {
                     start: e.start,

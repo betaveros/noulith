@@ -1,6 +1,6 @@
+use num::Zero;
 use num::bigint::BigInt;
 use num::rational::Ratio;
-use num::Zero;
 
 fn apply_exp10(base: BigInt, exponent: i32) -> Ratio<BigInt> {
     if exponent >= 0 {

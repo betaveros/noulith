@@ -23,8 +23,8 @@ use rand;
 use rand::prelude::SliceRandom;
 use rand::{Rng, RngCore};
 
-use flate2::read::{GzDecoder, GzEncoder};
 use flate2::Compression;
+use flate2::read::{GzDecoder, GzEncoder};
 
 #[cfg(feature = "request")]
 use reqwest;
@@ -32,7 +32,7 @@ use reqwest;
 #[cfg(feature = "crypto")]
 use aes;
 #[cfg(feature = "crypto")]
-use aes::cipher::{generic_array, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array};
 #[cfg(feature = "crypto")]
 use aes_gcm;
 #[cfg(feature = "crypto")]
@@ -655,7 +655,7 @@ impl Builtin for Extremum {
                             return Err(NErr::argument_error(format!(
                                 "{}: two functions",
                                 self.name
-                            )))
+                            )));
                         }
                         _ => {}
                     }
@@ -1069,7 +1069,7 @@ impl Builtin for Zip {
                             return Err(NErr::argument_error(format!(
                                 "zip: not iterable: {}",
                                 FmtObj::debug(e)
-                            )))
+                            )));
                         }
                     }
                 }
@@ -1212,7 +1212,7 @@ impl Builtin for LazyZip {
                             return Err(NErr::argument_error(format!(
                                 "lazy_zip: not stream: {}",
                                 FmtObj::debug(&e)
-                            )))
+                            )));
                         }
                     }
                 }
@@ -1482,7 +1482,7 @@ impl Builtin for Merge {
                         _ => {
                             return Err(NErr::argument_error(
                                 "merge: neither func nor dict".to_string(),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -1754,11 +1754,7 @@ impl Builtin for Group {
     }
 
     fn builtin_name(&self) -> &str {
-        if self.strict {
-            "group'"
-        } else {
-            "group"
-        }
+        if self.strict { "group'" } else { "group" }
     }
 }
 
@@ -3203,7 +3199,7 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
                     return Err(NErr::type_error(format!(
                         "bad headers, should be dict: {}",
                         k
-                    )))
+                    )));
                 }
                 None => {}
             }
@@ -3220,7 +3216,7 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
                     return Err(NErr::type_error(format!(
                         "bad query, should be dict: {}",
                         k
-                    )))
+                    )));
                 }
                 None => {}
             }
@@ -3234,7 +3230,7 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
                     );
                 }
                 Some(k) => {
-                    return Err(NErr::type_error(format!("bad form, should be dict: {}", k)))
+                    return Err(NErr::type_error(format!("bad form, should be dict: {}", k)));
                 }
                 None => {}
             }
@@ -3243,7 +3239,7 @@ fn request_response(args: Vec<Obj>) -> NRes<reqwest::blocking::Response> {
                     builder = builder.json(&json_encode(map.clone())?);
                 }
                 Some(k) => {
-                    return Err(NErr::type_error(format!("bad json, should be dict: {}", k)))
+                    return Err(NErr::type_error(format!("bad json, should be dict: {}", k)));
                 }
                 None => {}
             }
@@ -4838,7 +4834,7 @@ pub fn initialize(env: &mut Env) {
                             None
                         } else {
                             Some(Rc::new(vec![0; u]))
-                        }
+                        },
                     )))))
                 }
                 b => Err(NErr::argument_error_second(&b)),
@@ -5908,7 +5904,8 @@ pub fn initialize(env: &mut Env) {
             Few::One(t) => match t {
                 Obj::Num(n) => {
                     let now = Utc::now();
-                    let off = FixedOffset::east((to_f64_ok(&n)? * 3600.0) as i32);
+                    let off = FixedOffset::east_opt((to_f64_ok(&n)? * 3600.0) as i32)
+                        .ok_or_else(|| NErr::value_error("invalid timezone offset".to_string()))?;
                     Ok(datetime_to_obj(now + off))
                 }
                 t => Err(NErr::argument_error_1(&t)),

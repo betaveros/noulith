@@ -12,10 +12,10 @@ use std::fmt::Debug;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 
-use num::bigint::BigInt;
-use num::complex::Complex64;
 use num::BigRational;
 use num::ToPrimitive;
+use num::bigint::BigInt;
+use num::complex::Complex64;
 
 use crate::decimal::*;
 use crate::few::*;
@@ -114,11 +114,7 @@ pub fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
     }
 
     let i2 = i + (xs.len() as isize);
-    if i2 < 0 {
-        0
-    } else {
-        i2 as usize
-    }
+    if i2 < 0 { 0 } else { i2 as usize }
 }
 
 pub fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
@@ -788,7 +784,7 @@ pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
                             "struct construction: not enough arguments at {}, wanted {}",
                             args.len(),
                             s.fields.len(),
-                        )))
+                        )));
                     }
                     Some(def) => args.push(def.clone()),
                 }
@@ -1373,14 +1369,8 @@ pub fn write_pairs<'a, 'b>(
 }
 
 pub struct FmtDictPairs<'f, T>(pub T, pub &'f MyFmtFlags);
-impl<
-        'f,
-        'a,
-        'b,
-        A: MyDisplay + 'a,
-        B: MyDisplay + 'b,
-        T: Iterator<Item = (&'a A, &'b B)> + Clone,
-    > Display for FmtDictPairs<'f, T>
+impl<'f, 'a, 'b, A: MyDisplay + 'a, B: MyDisplay + 'b, T: Iterator<Item = (&'a A, &'b B)> + Clone>
+    Display for FmtDictPairs<'f, T>
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "{{")?;
@@ -2757,8 +2747,9 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                             },
                             _,
                         ) => {
-                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence (at {})\x1b[0m",
-                                    FmtCodeLocRange(&expr.start, &expr.end)
+                            eprintln!(
+                                "\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence (at {})\x1b[0m",
+                                FmtCodeLocRange(&expr.start, &expr.end)
                             );
                         }
                         _ => {}
@@ -2875,33 +2866,36 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 if env.warn {
                     match &e.expr {
                         // FIXME refactor out with freeze
-                        Expr::StringLit(s) => {
-                            match read_import_to_string(&**s) {
-                                Ok(c) => match parse(&c) {
-                                    Ok(Some(code)) => match freeze(env, &code) {
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            eprintln!("\x1b[1;33mWARNING\x1b[0;33m: analyzing import failed: {}\x1b[0m", e.render(&c));
-                                        }
-                                    },
-                                    Ok(None) => {
-                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: import of empty file\x1b[0m");
-                                    }
-                                    Err(s) => {
+                        Expr::StringLit(s) => match read_import_to_string(&**s) {
+                            Ok(c) => match parse(&c) {
+                                Ok(Some(code)) => match freeze(env, &code) {
+                                    Ok(_) => {}
+                                    Err(e) => {
                                         eprintln!(
-                                            "\x1b[1;33mWARNING\x1b[0;33m: lexing import failed: {}\x1b[0m",
-                                            s.render(&c)
+                                            "\x1b[1;33mWARNING\x1b[0;33m: analyzing import failed: {}\x1b[0m",
+                                            e.render(&c)
                                         );
                                     }
                                 },
-                                Err(e) => {
+                                Ok(None) => {
                                     eprintln!(
+                                        "\x1b[1;33mWARNING\x1b[0;33m: import of empty file\x1b[0m"
+                                    );
+                                }
+                                Err(s) => {
+                                    eprintln!(
+                                        "\x1b[1;33mWARNING\x1b[0;33m: lexing import failed: {}\x1b[0m",
+                                        s.render(&c)
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!(
                                     "\x1b[1;33mWARNING\x1b[0;33m: io error when handling import: {}\x1b[0m",
                                     e
                                 );
-                                }
                             }
-                        }
+                        },
                         inner => {
                             eprintln!(
                                 "\x1b[1;33mWARNING\x1b[0;33m: can't handle nonliteral import: {:?}\x1b[0m",
@@ -3059,7 +3053,7 @@ fn parse_format_string(
                                                     e
                                                 ),
                                                 outer_token.clone(),
-                                            ))
+                                            ));
                                         }
                                     }
                                 }
@@ -4846,7 +4840,10 @@ impl Env {
                     e.insert((ty, Box::new(RefCell::new(val))));
                     Ok(())
                 } else {
-                    Err(NErr::name_error(format!("Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables", e.key())))
+                    Err(NErr::name_error(format!(
+                        "Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables",
+                        e.key()
+                    )))
                 }
             }
             std::collections::hash_map::Entry::Vacant(e) => {

@@ -1089,12 +1089,15 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             acc.insert(k, v);
                         }
                     }
-                    (Expr::Splat(_), Some(_)) => {
-                        Err(NErr::type_error_loc(format!("Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}", ke, ve),
+                    (Expr::Splat(_), Some(_)) => Err(NErr::type_error_loc(
+                        format!(
+                            "Dictionary: Can only splat other dictionary without value; instead got {:?} {:?}",
+                            ke, ve
+                        ),
                         format!("dict lit"),
                         ke.start,
-                        ke.end))?
-                    }
+                        ke.end,
+                    ))?,
                     _ => {
                         let k = evaluate(env, ke)?;
                         let kk = to_key(k)?;
@@ -1178,7 +1181,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                             Some(into_body) => {
                                 let f = evaluate(env, into_body)?;
                                 match &f {
-                                    Obj::Func(Func::Builtin(ref b), _) => match b.catamorphism() {
+                                    Obj::Func(Func::Builtin(b), _) => match b.catamorphism() {
                                         Some(cat) => (cat, None),
                                         None => (
                                             Box::new(CataList(Vec::new())) as Box<dyn Catamorphism>,
@@ -1595,7 +1598,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                     return Err(NErr::type_error(format!(
                         "{}: internal for: not int and not iterable",
                         FmtObj::debug(&e)
-                    )))
+                    )));
                 }
             }
             Ok(Obj::Null)
@@ -2004,7 +2007,7 @@ pub fn assign_all(
                 Some(_) => {
                     return Err(NErr::syntax_error(format!(
                         "Can't have two splats in same sequence on left-hand side of assignment"
-                    )))
+                    )));
                 }
                 None => {
                     splat = Some((i, Ok(inner)));
@@ -2016,7 +2019,7 @@ pub fn assign_all(
                     Some(_) => {
                         return Err(NErr::syntax_error(format!(
                             "Can't have two splats in same sequence on left-hand side of assignment"
-                        )))
+                        )));
                     }
                     None => {
                         splat = Some((i, Err((inner, anno))));
@@ -2272,7 +2275,10 @@ pub fn set_index(
         },
         (
             Obj::Instance(struc, fields),
-            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)), rest @ ..],
+            [
+                EvaluatedIndexOrSlice::Index(Obj::Func(Func::StructField(istruc, field_index), _)),
+                rest @ ..,
+            ],
         ) => {
             if struc == istruc.as_ref() {
                 set_index(&mut fields[*field_index], rest, value, every)
@@ -2282,7 +2288,10 @@ pub fn set_index(
         }
         (
             Obj::Instance(struc, fields),
-            [EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(sym), _)), rest @ ..],
+            [
+                EvaluatedIndexOrSlice::Index(Obj::Func(Func::SymbolAccess(sym), _)),
+                rest @ ..,
+            ],
         ) => {
             for (s_field, i_field) in struc.fields.iter().zip(fields.iter_mut()) {
                 if &s_field.0 == &**sym {
@@ -2337,7 +2346,7 @@ pub fn modify_existing_index(
                                     "nothing at key {}[{}]",
                                     FmtDictPairs(mut_d.iter(), &DEBUG_FMT),
                                     kk
-                                )))
+                                )));
                             }
                         },
                     }
@@ -2423,7 +2432,7 @@ pub fn modify_every_existing_index(
                                     "nothing at key {}[{}]",
                                     FmtDictPairs(mut_d.iter(), &DEBUG_FMT),
                                     kk
-                                )))
+                                )));
                             }
                         },
                     }
@@ -2894,7 +2903,11 @@ impl Func {
                     args = vec![Obj::list(args)];
                 } else {
                     if args.len() != *n {
-                        return Err(NErr::argument_error(format!("internal lambda expected {} args, got {}", n, args.len())))
+                        return Err(NErr::argument_error(format!(
+                            "internal lambda expected {} args, got {}",
+                            n,
+                            args.len()
+                        )));
                     }
                 }
                 let s = {
@@ -2906,24 +2919,31 @@ impl Func {
                 };
                 let ret = match evaluate(env, body) {
                     Err(NErr::Return(k)) => Ok(k),
-                    x => add_trace(
-                        x,
-                        || "closure call".to_string(),
-                        body.start,
-                        body.end,
-                    ),
+                    x => add_trace(x, || "closure call".to_string(), body.start, body.end),
                 };
-                try_borrow_mut_nres(env, "internal", "lambda call")?.internal_stack.truncate(s);
+                try_borrow_mut_nres(env, "internal", "lambda call")?
+                    .internal_stack
+                    .truncate(s);
                 ret
             }
             Func::PartialApp1(f, x) => match few(args) {
                 Few::One(arg) => f.run2(env, (**x).clone(), arg),
-                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
-            }
+                a => Err(NErr::argument_error(format!(
+                    "partially applied functions can only be called with one more argument, but {} {} got {}",
+                    f,
+                    FmtObj::debug(x),
+                    a
+                ))),
+            },
             Func::PartialApp2(f, x) => match few(args) {
                 Few::One(arg) => f.run2(env, arg, (**x).clone()),
-                a => Err(NErr::argument_error(format!("partially applied functions can only be called with one more argument, but {} {} got {}", f, FmtObj::debug(x), a)))
-            }
+                a => Err(NErr::argument_error(format!(
+                    "partially applied functions can only be called with one more argument, but {} {} got {}",
+                    f,
+                    FmtObj::debug(x),
+                    a
+                ))),
+            },
             Func::PartialAppLast(f, x) => {
                 args.push(*x.clone());
                 f.run(env, args)
@@ -2939,22 +2959,35 @@ impl Func {
             Func::Parallel(fs) => {
                 let mut res = Vec::new();
                 match few(args) {
-                    Few::One(Obj::Seq(mut seq)) => {
-                        match seq.len() {
-                            Some(n) if n == fs.len() => {
-                                for (f, a) in fs.iter().zip(mut_seq_into_iter(&mut seq)) {
-                                    res.push(f.run1(env, a?)?);
-                                }
+                    Few::One(Obj::Seq(mut seq)) => match seq.len() {
+                        Some(n) if n == fs.len() => {
+                            for (f, a) in fs.iter().zip(mut_seq_into_iter(&mut seq)) {
+                                res.push(f.run1(env, a?)?);
                             }
-                            Some(n) => return Err(NErr::type_error(format!("Parallel argument seq has wrong length {}: {:?}", n, seq))),
-                            None => return Err(NErr::type_error(format!("Parallel argument seq has infinite length?: {:?}", seq)))
                         }
-                    }
+                        Some(n) => {
+                            return Err(NErr::type_error(format!(
+                                "Parallel argument seq has wrong length {}: {:?}",
+                                n, seq
+                            )));
+                        }
+                        None => {
+                            return Err(NErr::type_error(format!(
+                                "Parallel argument seq has infinite length?: {:?}",
+                                seq
+                            )));
+                        }
+                    },
                     Few::Zero => {
-                        return Err(NErr::argument_error(format!("can't call Parallel with no args")))
+                        return Err(NErr::argument_error(format!(
+                            "can't call Parallel with no args"
+                        )));
                     }
                     Few::One(x) => {
-                        return Err(NErr::type_error(format!("can't call Parallel with one non-seq {}", FmtObj::debug(&x))))
+                        return Err(NErr::type_error(format!(
+                            "can't call Parallel with one non-seq {}",
+                            FmtObj::debug(&x)
+                        )));
                     }
                     Few::Many(args) => {
                         for (f, a) in fs.iter().zip(args) {
@@ -2983,34 +3016,54 @@ impl Func {
             }
             Func::Flip(f) => match few2(args) {
                 // weird lol
-                Few2::One(a) => Ok(Obj::Func(Func::PartialApp1(f.clone(), Box::new(a)), Precedence::zero())),
+                Few2::One(a) => Ok(Obj::Func(
+                    Func::PartialApp1(f.clone(), Box::new(a)),
+                    Precedence::zero(),
+                )),
                 Few2::Two(a, b) => f.run2(env, b, a),
-                _ => Err(NErr::argument_error("Flipped function can only be called on two arguments".to_string()))
-            }
-            Func::ListSection(x) => {
-                Ok(Obj::list(apply_section(x.clone(), args.into_iter())?))
-            }
+                _ => Err(NErr::argument_error(
+                    "Flipped function can only be called on two arguments".to_string(),
+                )),
+            },
+            Func::ListSection(x) => Ok(Obj::list(apply_section(x.clone(), args.into_iter())?)),
             Func::ChainSection(seed, ops) => {
                 let mut it = args.into_iter();
                 let mut ce = ChainEvaluator::new(match seed {
                     Some(x) => *x.clone(),
                     None => match it.next() {
                         Some(e) => e,
-                        None => return Err(NErr::argument_error("chain section: too few arguments".to_string())),
-                    }
+                        None => {
+                            return Err(NErr::argument_error(
+                                "chain section: too few arguments".to_string(),
+                            ));
+                        }
+                    },
                 });
                 for (start, end, op, prec, opd) in &**ops {
-                    ce.give(env, *op.clone(), *prec, match opd {
-                        Some(x) => *x.clone(),
-                        None => match it.next() {
-                            Some(e) => e,
-                            None => return Err(NErr::argument_error("chain section: too few arguments".to_string())),
-                        }
-                    }, *start, *end)?;
+                    ce.give(
+                        env,
+                        *op.clone(),
+                        *prec,
+                        match opd {
+                            Some(x) => *x.clone(),
+                            None => match it.next() {
+                                Some(e) => e,
+                                None => {
+                                    return Err(NErr::argument_error(
+                                        "chain section: too few arguments".to_string(),
+                                    ));
+                                }
+                            },
+                        },
+                        *start,
+                        *end,
+                    )?;
                 }
                 match it.next() {
                     None => ce.finish(env),
-                    Some(_) => Err(NErr::argument_error("chain section: too many arguments".to_string())),
+                    Some(_) => Err(NErr::argument_error(
+                        "chain section: too many arguments".to_string(),
+                    )),
                 }
             }
             Func::CallSection(callee, sec_args) => {
@@ -3019,8 +3072,12 @@ impl Func {
                     Some(x) => *x.clone(),
                     None => match it.next() {
                         Some(e) => e,
-                        None => return Err(NErr::argument_error("call section: too few arguments".to_string())),
-                    }
+                        None => {
+                            return Err(NErr::argument_error(
+                                "call section: too few arguments".to_string(),
+                            ));
+                        }
+                    },
                 };
                 let real_args = apply_section((**sec_args).clone(), it)?;
                 call(env, callee, real_args)
@@ -3029,42 +3086,57 @@ impl Func {
                 let mut it = args.into_iter();
                 let x = match x {
                     Some(e) => (**e).clone(),
-                    None => it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?,
+                    None => it.next().ok_or(NErr::argument_error(
+                        "index section: too few arguments".to_string(),
+                    ))?,
                 };
                 let i = match i {
                     Some(e) => (**e).clone(),
-                    None => it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?,
+                    None => it.next().ok_or(NErr::argument_error(
+                        "index section: too few arguments".to_string(),
+                    ))?,
                 };
                 index(x, i)
             }
             Func::UpdateSection(xs) => match few(args) {
                 Few::One(mut arg) => {
                     for (k, v) in xs {
-                        set_index(&mut arg, &[EvaluatedIndexOrSlice::Index((**k).clone())], Some((**v).clone()), false)?;
+                        set_index(
+                            &mut arg,
+                            &[EvaluatedIndexOrSlice::Index((**k).clone())],
+                            Some((**v).clone()),
+                            false,
+                        )?;
                     }
                     Ok(arg)
-                },
+                }
                 _ => Err(NErr::argument_error(format!("UpdateSection one arg only"))),
-            }
+            },
             Func::SliceSection(x, lo, hi) => {
                 let mut it = args.into_iter();
                 let x = match x {
                     Some(e) => (**e).clone(),
-                    None => it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?,
+                    None => it.next().ok_or(NErr::argument_error(
+                        "index section: too few arguments".to_string(),
+                    ))?,
                 };
                 let lo = match lo {
                     None => None,
                     Some(inner) => match &**inner {
-                        None => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
+                        None => Some(it.next().ok_or(NErr::argument_error(
+                            "index section: too few arguments".to_string(),
+                        ))?),
                         Some(e) => Some((*e).clone()),
-                    }
+                    },
                 };
                 let hi = match hi {
                     None => None,
                     Some(inner) => match &**inner {
-                        None => Some(it.next().ok_or(NErr::argument_error("index section: too few arguments".to_string()))?),
+                        None => Some(it.next().ok_or(NErr::argument_error(
+                            "index section: too few arguments".to_string(),
+                        ))?),
                         Some(e) => Some((*e).clone()),
-                    }
+                    },
                 };
                 slice(x, lo, hi)
             }
@@ -3074,28 +3146,37 @@ impl Func {
                     if &s == struc.as_ref() {
                         Ok(fields[*field_index].clone())
                     } else {
-                        Err(NErr::argument_error(format!("field of {} got wrong kind of struct", &*struc.name)))
+                        Err(NErr::argument_error(format!(
+                            "field of {} got wrong kind of struct",
+                            &*struc.name
+                        )))
                     }
                 }
-                f => err_add_name(Err(NErr::argument_error_few(&f)), &format!("field of {}", &*struc.name))
-            }
+                f => err_add_name(
+                    Err(NErr::argument_error_few(&f)),
+                    &format!("field of {}", &*struc.name),
+                ),
+            },
             Func::SymbolAccess(sym) => match few(args) {
                 Few::One(obj) => symbol_access(obj, sym),
-                f => err_add_name(Err(NErr::argument_error_few(&f)), "bad symbol call")
-            }
+                f => err_add_name(Err(NErr::argument_error_few(&f)), "bad symbol call"),
+            },
             Func::Memoized(f, memo) => {
-                let kargs = args.into_iter().map(to_key).collect::<NRes<Vec<ObjKey>>>()?;
+                let kargs = args
+                    .into_iter()
+                    .map(to_key)
+                    .collect::<NRes<Vec<ObjKey>>>()?;
                 match cell_try_borrow(memo) {
                     Ok(memo) => match memo.get(&kargs) {
                         Some(res) => return Ok(res.clone()),
                         None => {}
-                    }
-                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
+                    },
+                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?,
                 };
                 let res = f.run(env, kargs.iter().cloned().map(key_to_obj).collect())?;
                 match cell_try_borrow_mut(memo) {
                     Ok(mut memo) => memo.insert(kargs, res.clone()),
-                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?
+                    Err(e) => Err(NErr::io_error(format!("memo: borrow failed: {}", e)))?,
                 };
                 Ok(res)
             }

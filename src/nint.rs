@@ -1,7 +1,7 @@
-use num::bigint::{BigInt, Sign};
-use num::pow::Pow;
 use num::BigUint;
 use num::Integer;
+use num::bigint::{BigInt, Sign};
+use num::pow::Pow;
 use num::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 use std::fmt;

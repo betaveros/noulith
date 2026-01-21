@@ -84,7 +84,7 @@ fn parse_elements(tokens: &[Token]) -> NRes<Vec<Vec<String>>> {
                             break;
                         }
                         Some(Token::LParen) => {
-                            return Err(NErr::throw("nested '(' not allowed".into()))
+                            return Err(NErr::throw("nested '(' not allowed".into()));
                         }
                         Some(Token::Arrow) => return Err(NErr::throw("'->' inside group".into())),
                     }
@@ -227,7 +227,7 @@ fn iterate(
                     return Err(NErr::throw(format!(
                         "rearrange: underconstrained, {} unspecified",
                         z
-                    )))
+                    )));
                 }
             };
             let nn = filled_dims.len();
