@@ -1,6 +1,5 @@
 // TODO: isolate
 #[cfg(not(target_arch = "wasm32"))]
-use crate::resolve::ResolveOptions;
 use std::fs;
 
 use std::io;
@@ -22,6 +21,7 @@ use crate::decimal::*;
 use crate::few::*;
 use crate::iter::*;
 use crate::lex::*;
+use crate::resolve::ResolveOptions;
 
 use crate::nint::NInt;
 use crate::nnum::NNum;
