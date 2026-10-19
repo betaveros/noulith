@@ -1,5 +1,6 @@
 use noulith::{
-    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, RootVars, TopEnv, evaluate, initialize, parse,
+    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, RootVars, TopEnv, evaluate, initialize,
+    parse_and_resolve_in,
 };
 use std::fs::File;
 use std::io;
@@ -39,7 +40,7 @@ fn repl() {
 
     let mut input = String::new();
     while prompt(&mut input) {
-        match parse(&input) {
+        match parse_and_resolve_in(&e, &input) {
             Ok(Some(expr)) => match evaluate(&e, &expr) {
                 Ok(Obj::Null) => {}
                 Ok(x) => {
@@ -90,11 +91,11 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
         vars,
     )));
 
-    match parse(&code) {
+    match parse_and_resolve_in(&e, &code) {
         Ok(Some(expr)) => {
             let wrapped_expr = match invoke_wrapper {
                 Some(wrap_id) => {
-                    let wrapper = Env::try_borrow_get_var(&e, wrap_id)
+                    let wrapper = Env::try_borrow_get_root_var(&e, wrap_id)
                         .expect("BUG: env didn't have specified invocation wrapper");
                     LocExpr {
                         start: expr.start,
