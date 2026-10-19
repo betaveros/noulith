@@ -2010,7 +2010,9 @@ pub enum Expr {
         Vec<Ident>,
     ),
     Freeze(Box<LocExpr>),
-    Import(Box<LocExpr>),
+    // a file to splice in here, which resolve.rs reads and turns into Imported
+    Import(Rc<String>),
+    Imported(Box<ImportedFile>),
     // lvalues only
     Literally(Box<LocExpr>),
 
@@ -2056,6 +2058,14 @@ impl Expr {
 pub struct LambdaParams {
     pub lvalues: Vec<Box<Lvalue>>,
     pub layout: SlotLayout,
+}
+
+// An imported file's code, parsed and resolved as if it were written where the import is.
+#[derive(Debug)]
+pub struct ImportedFile {
+    pub path: Rc<String>,
+    pub source: Rc<String>, // for rendering errors
+    pub body: LocExpr,
 }
 
 // A variable reference that resolve.rs has matched to the scope declaring it.
@@ -2898,7 +2908,14 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 env.scoped(|env| Ok(Expr::Lambda(Rc::clone(params), Rc::new(freeze(env, body)?))))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
-            Expr::Import(_) => Err(NErr::syntax_error(format!("cannot freeze import"))),
+            Expr::Import(_) => Err(NErr::syntax_error(format!(
+                "BUG: freezing unresolved import"
+            ))),
+            Expr::Imported(f) => Ok(Expr::Imported(Box::new(ImportedFile {
+                path: Rc::clone(&f.path),
+                source: Rc::clone(&f.source),
+                body: freeze(env, &f.body)?,
+            }))),
             Expr::Literally(e) => Ok(Expr::Literally(box_freeze(env, e)?)),
 
             Expr::Break(n, e) => Ok(Expr::Break(*n, opt_box_freeze(env, e)?)),
@@ -3431,11 +3448,20 @@ impl Parser {
                 Token::Import => {
                     self.advance();
                     let s = self.single("import")?;
-                    Ok(LocExpr {
-                        start,
-                        end: s.end,
-                        expr: Expr::Import(Box::new(s)),
-                    })
+                    match s.expr {
+                        Expr::StringLit(path) => Ok(LocExpr {
+                            start,
+                            end: s.end,
+                            expr: Expr::Import(path),
+                        }),
+                        _ => Err(ParseError::expr(
+                            format!(
+                                "import: need a string literal (imports are resolved before running)"
+                            ),
+                            s.start,
+                            s.end,
+                        )),
+                    }
                 }
                 Token::LeftParen => {
                     self.advance();
