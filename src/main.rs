@@ -1,6 +1,8 @@
+#[cfg(not(feature = "cli"))]
+use noulith::parse_and_resolve_in;
 use noulith::{
     Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, RootVars, TopEnv, evaluate, initialize,
-    parse_and_resolve_in,
+    parse_and_resolve_in_with_warnings,
 };
 use std::fs::File;
 use std::io;
@@ -91,7 +93,7 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
         vars,
     )));
 
-    match parse_and_resolve_in(&e, &code) {
+    match parse_and_resolve_in_with_warnings(&e, &code) {
         Ok(Some(expr)) => {
             let wrapped_expr = match invoke_wrapper {
                 Some(wrap_id) => {
