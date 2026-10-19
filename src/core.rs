@@ -1540,17 +1540,6 @@ impl<'a, T: Display> Display for CommaSeparated<'a, T> {
     }
 }
 
-pub(crate) struct FmtSectionSlot<'a>(&'a Option<Obj>);
-
-impl<'a> Display for FmtSectionSlot<'a> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self.0 {
-            Some(t) => write!(formatter, "{}", FmtObj::debug(t)),
-            None => write!(formatter, "_"),
-        }
-    }
-}
-
 pub(crate) struct FmtSectionBoxedSlot<'a>(&'a Option<Box<Obj>>);
 
 impl<'a> Display for FmtSectionBoxedSlot<'a> {
@@ -1586,22 +1575,6 @@ impl<'a> Display for FmtSectionSlots<'a> {
     }
 }
 
-pub(crate) struct FmtSectionBoxedSlots<'a>(&'a [Option<Box<Obj>>]);
-
-impl<'a> Display for FmtSectionBoxedSlots<'a> {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        let mut started = false;
-        for t in self.0 {
-            if started {
-                write!(formatter, ", ")?;
-            }
-            started = true;
-            write!(formatter, "{}", FmtSectionBoxedSlot(t))?
-        }
-        Ok(())
-    }
-}
-
 impl Display for Obj {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         self.fmt_with(formatter, MyFmtFlags::new())
@@ -1620,16 +1593,6 @@ impl MyDisplay for ObjKey {
     } // thonk
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result {
         self.0.fmt_with_mut(formatter, flags)
-    }
-}
-
-impl ObjKey {
-    pub(crate) fn fmt_with(
-        &self,
-        formatter: &mut dyn fmt::Write,
-        mut flags: MyFmtFlags,
-    ) -> fmt::Result {
-        self.fmt_with_mut(formatter, &mut flags)
     }
 }
 
