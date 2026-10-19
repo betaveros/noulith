@@ -62,10 +62,8 @@ mod iter;
 mod lex;
 mod nint;
 pub mod nnum;
-mod optim;
 mod rc;
 mod streams;
-// mod optim;
 use crate::few::*;
 use crate::iter::*;
 use crate::streams::*;
@@ -76,7 +74,6 @@ pub use crate::eval::*;
 pub use crate::lex::Token;
 use crate::nint::NInt;
 use crate::nnum::NNum;
-pub use crate::optim::optimize_expr;
 pub use crate::rc::*;
 
 // can "destructure"

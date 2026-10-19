@@ -1,6 +1,5 @@
 use noulith::{
-    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, optimize_expr,
-    parse, warn,
+    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, parse, warn,
 };
 use std::fs::File;
 use std::io;
@@ -65,13 +64,7 @@ fn repl() {
     }
 }
 
-fn run_code(
-    code: &str,
-    args: Vec<String>,
-    invoke_wrapper: Option<&'static str>,
-    filename: String,
-    opt: bool,
-) {
+fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>, filename: String) {
     let mut env = Env::new(
         TopEnv {
             backrefs: Vec::new(),
@@ -118,14 +111,7 @@ fn run_code(
                 }
                 None => expr,
             };
-            let final_expr = if opt {
-                let e = optimize_expr(wrapped_expr);
-                println!("{:?}", e);
-                e
-            } else {
-                wrapped_expr
-            };
-            match evaluate(&e, &final_expr) {
+            match evaluate(&e, &wrapped_expr) {
                 Ok(Obj::Null) => {}
                 Ok(e) => {
                     println!("{}", e);
@@ -181,12 +167,6 @@ fn main() {
             }
         }
 
-        let opt = if args.first().map(|s| s.as_str()) == Some("-O") {
-            args.remove(0);
-            true
-        } else {
-            false
-        };
         let (code, filename, wrap_id) = match get_wrapper(&args[0]) {
             Some(wrap_id) => {
                 args.remove(0);
@@ -211,6 +191,6 @@ fn main() {
                 }
             }
         };
-        run_code(&code, args, wrap_id, filename, opt);
+        run_code(&code, args, wrap_id, filename);
     }
 }
