@@ -4,7 +4,7 @@ use noulith::Obj;
 use noulith::Rc;
 use noulith::RefCell;
 use noulith::simple_eval;
-use noulith::{evaluate, parse};
+use noulith::{evaluate, parse_and_resolve_in};
 use num::bigint::BigInt;
 
 fn i(n: i64) -> Obj {
@@ -398,10 +398,10 @@ fn fast_append_pop() {
 
 #[test]
 fn short_circuit() {
-    assert_eq!(simple_eval("3 or x"), i(3));
-    assert_eq!(simple_eval("0 and x"), i(0));
-    assert_eq!(simple_eval("3 ∨ x"), i(3));
-    assert_eq!(simple_eval("0 ∧ x"), i(0));
+    assert_eq!(simple_eval("3 or (throw 'no')"), i(3));
+    assert_eq!(simple_eval("0 and (throw 'no')"), i(0));
+    assert_eq!(simple_eval("3 ∨ (throw 'no')"), i(3));
+    assert_eq!(simple_eval("0 ∧ (throw 'no')"), i(0));
     assert_eq!(simple_eval("0 or 4"), i(4));
     assert_eq!(simple_eval("3 and 4"), i(4));
 }
@@ -734,8 +734,9 @@ fn switch() {
 fn backrefs() {
     let env = Env::empty();
     env.mut_top_env(|v| v.backrefs.push(i(1337)));
+    let env = Rc::new(RefCell::new(env));
     assert_eq!(
-        evaluate(&Rc::new(RefCell::new(env)), &parse("\\1").unwrap().unwrap()).unwrap(),
+        evaluate(&env, &parse_and_resolve_in(&env, "\\1").unwrap().unwrap()).unwrap(),
         i(1337)
     );
 }

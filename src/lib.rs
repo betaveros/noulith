@@ -63,6 +63,7 @@ mod lex;
 mod nint;
 pub mod nnum;
 mod rc;
+mod resolve;
 mod streams;
 use crate::few::*;
 use crate::iter::*;
@@ -2537,7 +2538,7 @@ pub fn simple_eval(code: &str) -> Obj {
         false,
         vars,
     )));
-    evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
+    evaluate(&e, &parse_and_resolve_in(&e, code).unwrap().unwrap()).unwrap()
 }
 
 fn simple_join(mut obj: Obj, joiner: &str) -> NRes<String> {
@@ -5252,8 +5253,12 @@ pub fn initialize(env: &mut RootVars) {
     env.insert_builtin(EnvOneArgBuiltin {
         name: "eval".to_string(),
         body: |env, a| match a {
+            // in a new scope, so it can't declare things where it's called
             Obj::Seq(Seq::String(r)) => match match parse(&r) {
-                Ok(Some(code)) => evaluate(env, &code),
+                Ok(Some(mut code)) => match crate::resolve::resolve_in_new_scope(env, &mut code) {
+                    Ok(layout) => evaluate(&Env::with_parent(env, &layout), &code),
+                    Err(s) => Err(NErr::value_error(s.render(&r))),
+                },
                 Ok(None) => Err(NErr::value_error("eval: empty expression".to_string())),
                 Err(s) => Err(NErr::value_error(s.render(&r))),
             } {
@@ -6191,16 +6196,22 @@ pub fn initialize(env: &mut RootVars) {
     env.insert_builtin(BasicBuiltin {
         name: "vars".to_string(),
         body: |env, _args| {
+            let env_ref = try_borrow_nres(env, "vars", "vars")?;
             Ok(Obj::Seq(Seq::Dict(
                 Rc::new(
-                    try_borrow_nres(env, "vars", "vars")?
+                    env_ref
                         .vars
                         .iter()
-                        .map(|(k, (_t, v))| {
-                            Ok((
-                                ObjKey::from(k.clone()),
-                                try_borrow_nres(v, "vars", k)?.clone(),
-                            ))
+                        // skip variables in the layout that haven't been declared (yet)
+                        .filter_map(|(k, slot_idx)| {
+                            let (_t, v) = env_ref.slots[slot_idx].as_ref()?;
+                            Some(Ok((
+                                ObjKey::from(k.to_string()),
+                                match try_borrow_nres(v, "vars", k) {
+                                    Ok(v) => v.clone(),
+                                    Err(e) => return Some(Err(e)),
+                                },
+                            )))
                         })
                         .collect::<NRes<HashMap<ObjKey, Obj>>>()?,
                 ),
@@ -6520,7 +6531,7 @@ pub fn encapsulated_eval(
         make_env(input, js_write.clone(), js_display.clone())
     };
 
-    match parse(code) {
+    match parse_and_resolve_in(&e, code) {
         Err(p) => JsValue::from(p.render(code)),
         Ok(None) => JsValue::UNDEFINED,
         Ok(Some(code)) => match evaluate(&e, &code) {
