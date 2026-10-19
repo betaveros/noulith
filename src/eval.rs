@@ -1464,13 +1464,24 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Ok(Obj::Null)
         }
         Expr::Freeze(expr) => evaluate(env, &freeze(&mut FreezeEnv::new(env), expr)?),
-        // FIXME: temporarily unsupported, until the resolver handles imports
         Expr::Import(_) => Err(NErr::syntax_error_loc(
-            "import isn't supported right now".to_string(),
+            "BUG: unresolved import".to_string(),
             "import".to_string(),
             expr.start,
             expr.end,
         )),
+        Expr::Imported(f) => add_trace(
+            match evaluate(env, &f.body) {
+                Err(mut e) => {
+                    e.supply_source(Rc::clone(&f.path), Rc::clone(&f.source));
+                    Err(e)
+                }
+                x => x,
+            },
+            || "import".to_string(),
+            expr.start,
+            expr.end,
+        ),
         Expr::Literally(_) => Err(NErr::syntax_error_loc(
             "'literally' can only be in lvalues / patterns".to_string(),
             "literally".to_string(),
