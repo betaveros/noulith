@@ -89,6 +89,18 @@ struct Resolver {
     error: Option<ParseError>,
     // whether the expr we're about to resolve is somewhere an underscore makes sense
     underscore_ok: bool,
+    // Whether to inline builtins: replace reads of variables the root Env already had filled
+    // before this code (builtins, argv, __file__) with their values, unless the code assigns to
+    // them anywhere. Off when the root Env allows redeclaration (the REPL), where a later line
+    // could assign to one; eval assigning to one won't update code that inlined it.
+    inline_builtins: bool,
+    // What the code assigns to (rather than declares) in the live Env, found during the top
+    // level's collecting pass, which only when inlining builtins also scans the nested scopes for
+    // assignments. The nested scopes it's inside, and what they declare, are in scanned, so
+    // assignments to their own variables don't count.
+    assigned: HashSet<String>,
+    scanning: bool,
+    scanned: Vec<HashMap<String, usize>>,
 }
 
 impl Resolver {
@@ -103,6 +115,10 @@ impl Resolver {
             loc: (expr.start, expr.end),
             error: None,
             underscore_ok: false,
+            inline_builtins: false,
+            assigned: HashSet::new(),
+            scanning: false,
+            scanned: Vec::new(),
         }
     }
 
@@ -119,9 +135,15 @@ impl Resolver {
 pub fn resolve(env: &REnv, expr: &mut LocExpr, opts: ResolveOptions) -> Result<(), ParseError> {
     let mut r = Resolver::new(env, expr);
     r.opts = opts;
+    r.inline_builtins = match cell_try_borrow(env) {
+        Ok(e) => e.parent.is_err() && !e.allow_redeclaration,
+        Err(_) => false,
+    };
     // collecting pass over the top level, like scope() but for the live Env
     r.collecting = Some(Collected::default());
+    r.scanning = r.inline_builtins;
     r.expr(expr);
+    r.scanning = false;
     let declares = r.collecting.take().unwrap().names;
     r.check()?;
     let slots = r.make_room(&declares);
@@ -222,6 +244,20 @@ impl Resolver {
                 None
             }
         }
+    }
+
+    // The value to inline for a read of r, if it's a builtin (see inline_builtins).
+    fn builtin(&self, r: &SlotRef) -> Option<Obj> {
+        if !self.inline_builtins
+            || r.depth != self.scopes.len() - 1
+            || self.scopes[0].slots.contains_key(&*r.name)
+            || self.assigned.contains(&*r.name)
+        {
+            return None;
+        }
+        let env = cell_try_borrow(&self.env).ok()?;
+        let (_, v) = env.slots.get(r.slot)?.as_ref()?;
+        Some(cell_try_borrow(v).ok()?.clone())
     }
 
     // " Did you mean ...?" with the closest name in scope, for a name that isn't
@@ -358,6 +394,19 @@ impl Resolver {
     // declarations in here don't go there.
     fn scope(&mut self, lambda: bool, mut f: impl FnMut(&mut Self)) -> Option<SlotLayout> {
         if self.collecting.is_some() {
+            if self.scanning {
+                // like the two passes below, but only to find assignments to the live Env: first
+                // what this scope declares, then the assignments in it that aren't to those
+                let outer = self.collecting.replace(Collected::default());
+                self.scanning = false;
+                f(self);
+                self.scanning = true;
+                let declares = self.collecting.replace(Collected::default()).unwrap().slots;
+                self.scanned.push(declares);
+                f(self);
+                self.scanned.pop();
+                self.collecting = outer;
+            }
             return None;
         }
         self.collecting = Some(Collected::default());
@@ -426,6 +475,10 @@ impl Resolver {
 
     fn ident(&mut self, id: &mut Ident, declaring: bool) {
         if let Ident::Ident(name) = id {
+            if self.scanning && !declaring && !self.scanned.iter().any(|d| d.contains_key(&**name))
+            {
+                self.assigned.insert(name.clone());
+            }
             let resolved = if declaring {
                 self.declaration(name)
             } else {
@@ -573,7 +626,10 @@ impl Resolver {
         match &mut e.expr {
             Expr::Ident(name) => {
                 if let Some(r) = self.reference(name) {
-                    e.expr = Expr::Slot(r);
+                    e.expr = match self.builtin(&r) {
+                        Some(v) => Expr::Frozen(v),
+                        None => Expr::Slot(r),
+                    };
                 }
             }
             Expr::Null
