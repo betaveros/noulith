@@ -2525,20 +2525,6 @@ fn plusplus_concatenate(a: Obj, b: Obj) -> NRes<Obj> {
     }
 }
 
-pub fn warn(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> LocExpr {
-    let mut frenv = FreezeEnv {
-        bound: HashSet::new(),
-        env: Rc::clone(&env),
-        warn: true,
-    };
-    match freeze(&mut frenv, &expr) {
-        Ok(x) => x,
-        Err(e) => {
-            panic!("\x1b[1;31mERROR\x1b[0;33m: expr warn failed: {}\x1b[0m", e);
-        }
-    }
-}
-
 pub fn simple_eval(code: &str) -> Obj {
     let mut env = Env::empty();
     initialize(&mut env);

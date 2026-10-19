@@ -1,6 +1,4 @@
-use noulith::{
-    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, parse, warn,
-};
+use noulith::{Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, parse};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
@@ -90,7 +88,6 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
 
     match parse(&code) {
         Ok(Some(expr)) => {
-            let expr = warn(&e, &expr);
             let wrapped_expr = match invoke_wrapper {
                 Some(wrap_id) => {
                     let wrapper = Env::try_borrow_get_var(&e, wrap_id)

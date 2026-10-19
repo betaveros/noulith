@@ -2101,12 +2101,15 @@ impl Lvalue {
 // statically catch some mistakes where a switch expression has overlapping cases or a catch-all
 // case followed by later cases. Very simple for now, don't think making this much more complicated
 // will catch many more mistakes.
+// FIXME: unused until the resolver warns about switches again
+#[allow(dead_code)]
 #[derive(Hash, PartialEq, Eq, Debug)]
 enum LvalueArchetype {
     Anything,
     Seq(usize),
 }
 
+#[allow(dead_code)]
 fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     match lvalue {
         Lvalue::Underscore => vec![LvalueArchetype::Anything],
@@ -2389,24 +2392,10 @@ pub struct FreezeEnv {
     pub bound: HashSet<String>,
 
     pub env: REnv,
-
-    // if true, just static pass to warn about issues that are easy to detect;
-    // if false, actually freeze
-    pub warn: bool,
 }
 
 impl FreezeEnv {
     fn bind(&mut self, ids: HashSet<String>) {
-        if self.warn {
-            let rebound = self.bound.intersection(&ids).collect::<Vec<&String>>();
-            if !rebound.is_empty() {
-                eprint!("\x1b[1;33mWARNING\x1b[0;33m: rebinding variables:");
-                for r in rebound {
-                    eprint!(" {}", r);
-                }
-                eprintln!("\x1b[0m");
-            }
-        }
         self.bound.extend(ids);
     }
 }
@@ -2465,12 +2454,6 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
             if let Ident::Ident(id) = s {
                 if env.bound.contains(id) {
                     // fine
-                } else if env.warn {
-                    eprintln!(
-                        "\x1b[1;33mWARNING\x1b[0;33m: ident in lvalue not bound: {}\x1b[0m",
-                        id
-                    );
-                    env.bound.insert(id.clone());
                 } else {
                     // frozen code can't write to an outside lvalue
                     return Err(NErr::name_error(format!(
@@ -2615,35 +2598,16 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 } else {
                     match Env::try_borrow_get_var(&env.env, s) {
                         Ok(v) => Ok(Expr::Frozen(v)),
-                        Err(e) => {
-                            if env.warn {
-                                eprintln!(
-                                    "\x1b[1;33mWARNING\x1b[0;33m: variable not found: {} (at {})\x1b[0m",
-                                    s,
-                                    FmtCodeLocRange(&expr.start, &expr.end)
-                                );
-                                env.bound.insert(s.clone());
-                                Ok(Expr::Ident(s.clone()))
-                            } else {
-                                Err(e)
-                            }
-                        }
+                        Err(e) => Err(e),
                     }
                 }
             }
-            Expr::Underscore => {
-                if env.warn {
-                    eprintln!("\x1b[1;33mWARNING\x1b[0;33m: underscore??\x1b[0m",);
-                    Ok(Expr::Underscore)
-                } else {
-                    Err(NErr::syntax_error_loc(
-                        "Can't freeze underscore".to_string(),
-                        "_".to_string(),
-                        expr.start,
-                        expr.end,
-                    ))
-                }
-            }
+            Expr::Underscore => Err(NErr::syntax_error_loc(
+                "Can't freeze underscore".to_string(),
+                "_".to_string(),
+                expr.start,
+                expr.end,
+            )),
             Expr::Index(x, ios) => Ok(Expr::Index(
                 box_freeze_underscore_ok(env, x)?,
                 freeze_ios(env, ios)?,
@@ -2738,24 +2702,6 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 opt_box_freeze(env, c)?,
             )),
             Expr::For(iteratees, body) => {
-                if env.warn {
-                    match &**body {
-                        ForBody::Yield(
-                            LocExpr {
-                                expr: Expr::Sequence(_, true),
-                                ..
-                            },
-                            _,
-                        ) => {
-                            eprintln!(
-                                "\x1b[1;33mWARNING\x1b[0;33m: for loop yields semicolon-terminated sequence (at {})\x1b[0m",
-                                FmtCodeLocRange(&expr.start, &expr.end)
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-
                 let mut env2 = env.clone();
                 Ok(Expr::For(
                     iteratees
@@ -2808,25 +2754,10 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 ))
             }
             Expr::Switch(scrutinee, arms) => {
-                let mut seen = HashSet::new();
                 Ok(Expr::Switch(
                     box_freeze(env, scrutinee)?,
                     arms.iter()
                         .map(|(pat, rhs)| {
-                            if env.warn {
-                                for t in to_archetypes(pat) {
-                                    // FIXME: we really really should report the pat's location but
-                                    // we don't track it now lmao
-                                    if seen.contains(&LvalueArchetype::Anything) {
-                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: unreachable pattern in switch after a catch-all pattern (at {})\x1b[0m",
-                                        FmtCodeLocRange(&rhs.start, &rhs.end));
-                                    } else if !seen.insert(t) {
-                                        eprintln!("\x1b[1;33mWARNING\x1b[0;33m: unreachable pattern in switch, already saw same pattern (at {})\x1b[0m",
-                                        FmtCodeLocRange(&rhs.start, &rhs.end));
-                                    }
-                                }
-                            }
-
                             let mut env2 = env.clone();
                             env2.bind(pat.collect_identifiers(false /* declared_only */));
                             Ok((
@@ -2862,52 +2793,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 ))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
-            Expr::Import(e) => {
-                if env.warn {
-                    match &e.expr {
-                        // FIXME refactor out with freeze
-                        Expr::StringLit(s) => match read_import_to_string(&**s) {
-                            Ok(c) => match parse(&c) {
-                                Ok(Some(code)) => match freeze(env, &code) {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        eprintln!(
-                                            "\x1b[1;33mWARNING\x1b[0;33m: analyzing import failed: {}\x1b[0m",
-                                            e.render(&c)
-                                        );
-                                    }
-                                },
-                                Ok(None) => {
-                                    eprintln!(
-                                        "\x1b[1;33mWARNING\x1b[0;33m: import of empty file\x1b[0m"
-                                    );
-                                }
-                                Err(s) => {
-                                    eprintln!(
-                                        "\x1b[1;33mWARNING\x1b[0;33m: lexing import failed: {}\x1b[0m",
-                                        s.render(&c)
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                eprintln!(
-                                    "\x1b[1;33mWARNING\x1b[0;33m: io error when handling import: {}\x1b[0m",
-                                    e
-                                );
-                            }
-                        },
-                        inner => {
-                            eprintln!(
-                                "\x1b[1;33mWARNING\x1b[0;33m: can't handle nonliteral import: {:?}\x1b[0m",
-                                inner
-                            );
-                        }
-                    }
-                    Ok(Expr::Import(box_freeze(env, e)?))
-                } else {
-                    Err(NErr::syntax_error(format!("cannot freeze import")))
-                }
-            }
+            Expr::Import(_) => Err(NErr::syntax_error(format!("cannot freeze import"))),
             Expr::Literally(e) => Ok(Expr::Literally(box_freeze(env, e)?)),
 
             Expr::Break(n, e) => Ok(Expr::Break(*n, opt_box_freeze(env, e)?)),
