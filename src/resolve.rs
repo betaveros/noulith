@@ -7,7 +7,8 @@
 // it, and using it before the declaration has run is an error. We reject that here when it's
 // visible in the source order (outside a lambda, which might be called later), and at runtime
 // otherwise (e.g. conditional declarations). Envs inside the code have fixed layouts, so this has
-// to find every declaration in a scope.
+// to find every declaration in a scope; that's why import is resolved here, by splicing the file
+// in.
 //
 // The outermost scope is the live Env the code is evaluated in (or for eval, a new scope inside
 // it). If that's the root Env, we make empty slots in it for everything the code declares at its
@@ -75,6 +76,8 @@ struct Resolver {
     collecting: Option<Collected>,
     // declarations in the current statement, which take effect after its RHS
     pending: Vec<String>,
+    // the files we're inside, to catch import cycles
+    imports: Vec<Rc<String>>,
     // where we are, for errors
     loc: (CodeLoc, CodeLoc),
     error: Option<ParseError>,
@@ -87,6 +90,7 @@ impl Resolver {
             scopes: Vec::new(),
             collecting: None,
             pending: Vec::new(),
+            imports: Vec::new(),
             loc: (expr.start, expr.end),
             error: None,
         }
@@ -322,6 +326,55 @@ impl Resolver {
         match self.scopes.pop().unwrap().kind {
             Kind::Static(layout) => Some(SlotLayout::new(layout)),
             _ => panic!("BUG: scope() popped a non-static scope"),
+        }
+    }
+
+    // Read and parse an imported file. Its code is resolved as if it were written in place of
+    // the import (so it's like C's #include, declarations and all).
+    //
+    // FIXME: this is relative to the working directory. We'd like it to be relative to the
+    // importing file.
+    fn load(&mut self, path: &Rc<String>) -> Option<ImportedFile> {
+        if self.imports.iter().any(|p| p == path) {
+            self.fail(format!("import cycle: {:?} imports itself", path));
+            return None;
+        }
+        let source = match read_import_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.fail(format!("import {:?} failed: {}", path, e));
+                return None;
+            }
+        };
+        let body = match parse(&source) {
+            Ok(Some(body)) => body,
+            Ok(None) => LocExpr {
+                start: self.loc.0,
+                end: self.loc.1,
+                expr: Expr::Null,
+            },
+            Err(e) => {
+                self.fail(format!("in import {:?}: {}", path, e.render(&source)));
+                return None;
+            }
+        };
+        Some(ImportedFile {
+            path: Rc::clone(path),
+            source: Rc::new(source),
+            body,
+        })
+    }
+
+    fn imported(&mut self, f: &mut ImportedFile) {
+        let had_error = self.error.is_some();
+        self.imports.push(Rc::clone(&f.path));
+        self.expr(&mut f.body);
+        self.imports.pop();
+        // errors in there have locations in its source
+        if !had_error {
+            if let Some(e) = self.error.take() {
+                self.fail(format!("in import {:?}: {}", f.path, e.render(&f.source)));
+            }
         }
     }
 
@@ -602,7 +655,17 @@ impl Resolver {
                 }
             }
             Expr::Break(_, e) | Expr::Return(e) => self.opt(e),
-            Expr::Throw(e) | Expr::Freeze(e) | Expr::Literally(e) | Expr::Import(e) => self.expr(e),
+            Expr::Throw(e) | Expr::Freeze(e) | Expr::Literally(e) => self.expr(e),
+            Expr::Import(path) => {
+                let path = Rc::clone(path);
+                if let Some(f) = self.load(&path) {
+                    e.expr = Expr::Imported(Box::new(f));
+                    if let Expr::Imported(f) = &mut e.expr {
+                        self.imported(f);
+                    }
+                }
+            }
+            Expr::Imported(f) => self.imported(f),
             Expr::Splat(e) => self.expr(e),
             Expr::Sequence(xs, _) => {
                 for x in xs {

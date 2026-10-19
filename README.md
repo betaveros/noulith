@@ -175,7 +175,7 @@ We got `eval`, a dumb dynamic guy; `vars` for examining local variables; `assert
 
 `freeze` is a wonky keyword that goes through an expression and eagerly resolves each free variable to what it points to outside. It can slightly optimize some functions, surface some name errors earlier, and more elegantly(??) handle some binding acrobatics that you might have to write IIFEs for in other languages.
 
-The `import` statement takes a filename and approximately just parses it and splices it in where written, sort of like how C/C++'s `#include` works. This is an awful hack and might be fixed one day.
+The `import` statement takes a filename, which must be a string literal, and splices the file's code in where written before anything runs, sort of like how C/C++'s `#include` works. So its declarations go into whatever scope the `import` is in. (The path is relative to the working directory, not the importing file, for now.)
 
 ### Variables and assignments
 
