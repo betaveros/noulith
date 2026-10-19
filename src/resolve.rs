@@ -50,6 +50,12 @@ struct Scope {
     lambda: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolveOptions {
+    // print warnings about things that look wrong
+    pub warn: bool,
+}
+
 // What a scope declares, in order of first declaration; slots[name] is name's index in names.
 #[derive(Default)]
 struct Collected {
@@ -68,6 +74,7 @@ impl Collected {
 
 struct Resolver {
     env: REnv,
+    opts: ResolveOptions,
     // scopes we're inside, innermost last
     scopes: Vec<Scope>,
     // Each scope gets two passes: collecting everything it declares, then rewriting names into
@@ -80,18 +87,22 @@ struct Resolver {
     // where we are, for errors
     loc: (CodeLoc, CodeLoc),
     error: Option<ParseError>,
+    // whether the expr we're about to resolve is somewhere an underscore makes sense
+    underscore_ok: bool,
 }
 
 impl Resolver {
     fn new(env: &REnv, expr: &LocExpr) -> Resolver {
         Resolver {
             env: Rc::clone(env),
+            opts: ResolveOptions::default(),
             scopes: Vec::new(),
             collecting: None,
             pending: Vec::new(),
             imports: Vec::new(),
             loc: (expr.start, expr.end),
             error: None,
+            underscore_ok: false,
         }
     }
 
@@ -105,8 +116,9 @@ impl Resolver {
 }
 
 // Resolve code to be evaluated directly in env.
-pub fn resolve(env: &REnv, expr: &mut LocExpr) -> Result<(), ParseError> {
+pub fn resolve(env: &REnv, expr: &mut LocExpr, opts: ResolveOptions) -> Result<(), ParseError> {
     let mut r = Resolver::new(env, expr);
+    r.opts = opts;
     // collecting pass over the top level, like scope() but for the live Env
     r.collecting = Some(Collected::default());
     r.expr(expr);
@@ -141,6 +153,26 @@ pub fn resolve_in_new_scope(env: &REnv, expr: &mut LocExpr) -> Result<SlotLayout
 }
 
 impl Resolver {
+    // Only during the rewriting pass, which visits everything exactly once.
+    fn warning_at(&self, msg: String, start: CodeLoc, end: CodeLoc) {
+        if self.opts.warn && self.collecting.is_none() {
+            let file = match self.imports.last() {
+                Some(path) => format!("{}:", path),
+                None => String::new(),
+            };
+            eprintln!(
+                "\x1b[1;33mWARNING\x1b[0;33m: {} (at {}{})\x1b[0m",
+                msg,
+                file,
+                FmtCodeLocRange(&start, &end)
+            );
+        }
+    }
+
+    fn warning(&self, msg: String) {
+        self.warning_at(msg, self.loc.0, self.loc.1)
+    }
+
     fn fail(&mut self, msg: String) {
         if self.error.is_none() {
             self.error = Some(ParseError::expr(msg, self.loc.0, self.loc.1));
@@ -294,6 +326,15 @@ impl Resolver {
             return None;
         }
         let slot = *self.scopes.last()?.slots.get(name)?;
+        if self.opts.warn {
+            let (outer, this) = self.scopes.split_at(self.scopes.len() - 1);
+            let redeclared =
+                this[0].declared.contains(name) || self.pending.iter().any(|p| p == name);
+            let shadows = outer.iter().any(|s| s.slots.contains_key(name));
+            if redeclared || shadows {
+                self.warning(format!("rebinding variable: {}", name));
+            }
+        }
         self.pending.push(name.to_string());
         Some(SlotRef {
             name: Rc::new(name.to_string()),
@@ -414,7 +455,7 @@ impl Resolver {
 
     fn ios(&mut self, ios: &mut IndexOrSlice) {
         match ios {
-            IndexOrSlice::Index(i) => self.expr(i),
+            IndexOrSlice::Index(i) => self.expr_underscore_ok(i),
             IndexOrSlice::Slice(a, b) => {
                 self.opt(a);
                 self.opt(b);
@@ -516,12 +557,19 @@ impl Resolver {
     }
 
     fn expr(&mut self, e: &mut LocExpr) {
+        let underscore_ok = std::mem::take(&mut self.underscore_ok);
         let outer_loc = std::mem::replace(&mut self.loc, (e.start, e.end));
-        self.expr_inner(e);
+        self.expr_inner(e, underscore_ok);
         self.loc = outer_loc;
     }
 
-    fn expr_inner(&mut self, e: &mut LocExpr) {
+    // where an underscore makes a section, like _ + 1 or f(_)
+    fn expr_underscore_ok(&mut self, e: &mut LocExpr) {
+        self.underscore_ok = true;
+        self.expr(e);
+    }
+
+    fn expr_inner(&mut self, e: &mut LocExpr, underscore_ok: bool) {
         match &mut e.expr {
             Expr::Ident(name) => {
                 if let Some(r) = self.reference(name) {
@@ -540,7 +588,6 @@ impl Resolver {
             | Expr::Symbol(_)
             | Expr::Backref(_)
             | Expr::Frozen(_)
-            | Expr::Underscore
             | Expr::Continue(_) => {}
             Expr::FormatString(parts) => {
                 for part in parts {
@@ -549,16 +596,21 @@ impl Resolver {
                     }
                 }
             }
+            Expr::Underscore => {
+                if !underscore_ok {
+                    self.warning(format!("underscore outside a section"));
+                }
+            }
             Expr::Call(f, args, _) => {
-                self.expr(f);
+                self.expr_underscore_ok(f);
                 for a in args {
-                    self.expr(a);
+                    self.expr_underscore_ok(a);
                 }
             }
             Expr::SymbolAccess(e, _) => self.expr(e),
             Expr::List(xs) => {
                 for x in xs {
-                    self.expr(x);
+                    self.expr_underscore_ok(x);
                 }
             }
             Expr::CommaSeq(xs) => {
@@ -574,21 +626,21 @@ impl Resolver {
                 }
             }
             Expr::Index(x, ios) => {
-                self.expr(x);
+                self.expr_underscore_ok(x);
                 self.ios(ios);
             }
             Expr::Update(x, pairs) => {
-                self.expr(x);
+                self.expr_underscore_ok(x);
                 for (k, v) in pairs {
                     self.expr(k);
                     self.expr(v);
                 }
             }
             Expr::Chain(x, ops) => {
-                self.expr(x);
+                self.expr_underscore_ok(x);
                 for (op, y) in ops {
                     self.expr(op);
-                    self.expr(y);
+                    self.expr_underscore_ok(y);
                 }
             }
             Expr::And(a, b) | Expr::Or(a, b) | Expr::Coalesce(a, b) => {
@@ -627,6 +679,16 @@ impl Resolver {
                 self.opt(b);
             }
             Expr::For(its, body) => {
+                if let ForBody::Yield(
+                    LocExpr {
+                        expr: Expr::Sequence(_, true),
+                        ..
+                    },
+                    _,
+                ) = &**body
+                {
+                    self.warning(format!("for loop yields semicolon-terminated sequence"));
+                }
                 self.for_body(its, body);
             }
             Expr::While(cond, body, layout) => {
@@ -638,6 +700,24 @@ impl Resolver {
                 }
             }
             Expr::Switch(scrutinee, cases) => {
+                let mut seen = HashSet::new();
+                for (pat, body, _) in cases.iter() {
+                    for t in to_archetypes(pat) {
+                        if seen.contains(&LvalueArchetype::Anything) {
+                            self.warning_at(
+                                format!("unreachable pattern in switch after a catch-all pattern"),
+                                body.start,
+                                body.end,
+                            );
+                        } else if !seen.insert(t) {
+                            self.warning_at(
+                                format!("unreachable pattern in switch, already saw same pattern"),
+                                body.start,
+                                body.end,
+                            );
+                        }
+                    }
+                }
                 self.expr(scrutinee);
                 for (pat, body, layout) in cases {
                     if let Some(l) = self.scope(false, |r| {

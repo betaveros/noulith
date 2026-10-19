@@ -1,5 +1,6 @@
 // TODO: isolate
 #[cfg(not(target_arch = "wasm32"))]
+use crate::resolve::ResolveOptions;
 use std::fs;
 
 use std::io;
@@ -1656,7 +1657,7 @@ pub fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &Co
     }
 }
 
-struct FmtCodeLocRange<'a>(&'a CodeLoc, &'a CodeLoc);
+pub struct FmtCodeLocRange<'a>(pub &'a CodeLoc, pub &'a CodeLoc);
 impl<'a> Display for FmtCodeLocRange<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         let FmtCodeLocRange(start, end) = self;
@@ -2190,16 +2191,13 @@ impl Lvalue {
 // statically catch some mistakes where a switch expression has overlapping cases or a catch-all
 // case followed by later cases. Very simple for now, don't think making this much more complicated
 // will catch many more mistakes.
-// FIXME: unused until the resolver warns about switches again
-#[allow(dead_code)]
 #[derive(Hash, PartialEq, Eq, Debug)]
-enum LvalueArchetype {
+pub(crate) enum LvalueArchetype {
     Anything,
     Seq(usize),
 }
 
-#[allow(dead_code)]
-fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
+pub(crate) fn to_archetypes(lvalue: &Lvalue) -> Vec<LvalueArchetype> {
     match lvalue {
         Lvalue::Underscore => vec![LvalueArchetype::Anything],
         Lvalue::IndexedIdent(_, ixs) if ixs.is_empty() => vec![LvalueArchetype::Anything],
@@ -4586,9 +4584,32 @@ pub fn parse_and_resolve_in(
     env: &Rc<RefCell<Env>>,
     code: &str,
 ) -> Result<Option<LocExpr>, ParseError> {
+    parse_and_resolve_in_with_options(env, code, ResolveOptions::default())
+}
+
+// parse_and_resolve_in, but also print warnings about things that look wrong (to stderr)
+pub fn parse_and_resolve_in_with_warnings(
+    env: &Rc<RefCell<Env>>,
+    code: &str,
+) -> Result<Option<LocExpr>, ParseError> {
+    parse_and_resolve_in_with_options(
+        env,
+        code,
+        ResolveOptions {
+            warn: true,
+            ..ResolveOptions::default()
+        },
+    )
+}
+
+fn parse_and_resolve_in_with_options(
+    env: &Rc<RefCell<Env>>,
+    code: &str,
+    opts: ResolveOptions,
+) -> Result<Option<LocExpr>, ParseError> {
     match parse(code)? {
         Some(mut expr) => {
-            crate::resolve::resolve(env, &mut expr)?;
+            crate::resolve::resolve(env, &mut expr, opts)?;
             Ok(Some(expr))
         }
         None => Ok(None),
