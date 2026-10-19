@@ -876,6 +876,31 @@ fn resolved_scopes() {
     );
 }
 
+// reads of builtins are inlined, except for ones the code declares or assigns to
+#[test]
+fn builtin_inlining() {
+    assert_eq!(simple_eval("f := \\ -> max(1, 2); f()"), i(2));
+    assert_eq!(
+        simple_eval("f := \\ -> max(1, 2); max = \\a, b -> 99; f()"),
+        i(99)
+    );
+    assert_eq!(
+        simple_eval("g := \\ -> (max = \\a, b -> 7); g(); max(1, 2)"),
+        i(7)
+    );
+    assert_eq!(
+        simple_eval("f := \\ -> (max := \\a, b -> 5; max(1, 2)); f()"),
+        i(5)
+    );
+    // assigning to a local with the same name doesn't stop inlining (or change the builtin)
+    assert_eq!(
+        simple_eval("f := \\ -> (g := \\ -> (max = 2); max := 1; g(); max); [f(), max(1, 2)]"),
+        simple_eval("[2, 2]")
+    );
+    // user variables are never inlined
+    assert_eq!(simple_eval("x := 3; eval('x = 4'); x"), i(4));
+}
+
 // freeze replaces variables from outside the frozen code with their current values
 #[test]
 fn freezing() {
