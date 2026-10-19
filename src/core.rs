@@ -49,7 +49,7 @@ pub enum Seq {
 }
 
 impl Seq {
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Seq::String(x) => x.is_empty(),
             Seq::List(x) => x.is_empty(),
@@ -59,7 +59,7 @@ impl Seq {
             Seq::Stream(x) => x.len() == Some(0),
         }
     }
-    pub fn len(&self) -> Option<usize> {
+    pub(crate) fn len(&self) -> Option<usize> {
         match self {
             Seq::List(d) => Some(d.len()),
             Seq::String(d) => Some(d.len()),
@@ -71,7 +71,7 @@ impl Seq {
     }
 }
 
-pub fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
+pub(crate) fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
     if n >= 0 && n < (xs.len() as isize) {
         return Ok(n as usize);
     }
@@ -88,7 +88,7 @@ pub fn pythonic_index_isize<T>(xs: &[T], n: isize) -> NRes<usize> {
     )))
 }
 
-pub fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
+pub(crate) fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
     match x {
         None => Ok(None),
         Some(Obj::Num(n)) => Ok(Some(n.to_isize().ok_or(NErr::index_error(format!(
@@ -102,14 +102,18 @@ pub fn obj_to_isize_slice_index(x: Option<&Obj>) -> NRes<Option<isize>> {
     }
 }
 
-pub fn pythonic_slice_obj<T>(xs: &[T], lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<(usize, usize)> {
+pub(crate) fn pythonic_slice_obj<T>(
+    xs: &[T],
+    lo: Option<&Obj>,
+    hi: Option<&Obj>,
+) -> NRes<(usize, usize)> {
     let lo = obj_to_isize_slice_index(lo)?;
     let hi = obj_to_isize_slice_index(hi)?;
     Ok(pythonic_slice(xs, lo, hi))
 }
 
 // for slicing
-pub fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
+pub(crate) fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
     if i >= 0 {
         return (i as usize).min(xs.len());
     }
@@ -118,7 +122,7 @@ pub fn clamped_pythonic_index<T>(xs: &[T], i: isize) -> usize {
     if i2 < 0 { 0 } else { i2 as usize }
 }
 
-pub fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
+pub(crate) fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     match i {
         Obj::Num(ii) => match ii.to_isize() {
             Some(n) => pythonic_index_isize(xs, n),
@@ -134,12 +138,12 @@ pub fn pythonic_index<T>(xs: &[T], i: &Obj) -> NRes<usize> {
     }
 }
 
-pub fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
+pub(crate) fn pythonic_mut<'a, 'b>(xs: &'a mut Vec<Obj>, i: &'b Obj) -> NRes<&'a mut Obj> {
     let ii = pythonic_index(xs, i)?;
     Ok(&mut xs[ii])
 }
 
-pub fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usize, usize) {
+pub(crate) fn pythonic_slice<T>(xs: &[T], lo: Option<isize>, hi: Option<isize>) -> (usize, usize) {
     let clo = match lo {
         Some(lo) => clamped_pythonic_index(xs, lo),
         None => 0,
@@ -237,7 +241,7 @@ pub trait Stream: Iterator<Item = NRes<Obj>> + Display + Debug + MaybeSync + May
 }
 
 // Sequences: iterators
-pub enum ObjToCloningIter<'a> {
+pub(crate) enum ObjToCloningIter<'a> {
     List(std::slice::Iter<'a, Obj>),
     Dict(std::collections::hash_map::Iter<'a, ObjKey, Obj>),
     String(std::str::Chars<'a>),
@@ -246,7 +250,7 @@ pub enum ObjToCloningIter<'a> {
     Stream(Box<dyn Stream>),
 }
 
-pub fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
+pub(crate) fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
     match seq {
         Seq::List(v) => ObjToCloningIter::List(v.iter()),
         Seq::Dict(v, _) => ObjToCloningIter::Dict(v.iter()),
@@ -257,7 +261,10 @@ pub fn seq_to_cloning_iter(seq: &Seq) -> ObjToCloningIter<'_> {
     }
 }
 
-pub fn obj_to_cloning_iter<'a, 'b>(obj: &'a Obj, purpose: &'b str) -> NRes<ObjToCloningIter<'a>> {
+pub(crate) fn obj_to_cloning_iter<'a, 'b>(
+    obj: &'a Obj,
+    purpose: &'b str,
+) -> NRes<ObjToCloningIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(seq_to_cloning_iter(s)),
         _ => Err(NErr::type_error(format!("{}; not iterable", purpose))),
@@ -280,7 +287,7 @@ impl Iterator for ObjToCloningIter<'_> {
 }
 
 // iterates over elements of lists, or just keys of dictionaries (as if they were sets)
-pub enum MutObjIntoIter<'a> {
+pub(crate) enum MutObjIntoIter<'a> {
     List(RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
     String(RcStringIter<'a>),
@@ -290,7 +297,7 @@ pub enum MutObjIntoIter<'a> {
 }
 
 // iterates over (index, value) or (key, value)
-pub enum MutObjIntoIterPairs<'a> {
+pub(crate) enum MutObjIntoIterPairs<'a> {
     List(usize, RcVecIter<'a, Obj>),
     Dict(RcHashMapIter<'a, ObjKey, Obj>),
     String(usize, RcStringIter<'a>),
@@ -299,7 +306,7 @@ pub enum MutObjIntoIterPairs<'a> {
     Stream(usize, &'a mut Rc<dyn Stream>),
 }
 
-pub fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
+pub(crate) fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     match seq {
         Seq::List(v) => MutObjIntoIter::List(RcVecIter::of(v)),
         Seq::Dict(v, _) => MutObjIntoIter::Dict(RcHashMapIter::of(v)),
@@ -310,7 +317,7 @@ pub fn mut_seq_into_iter(seq: &mut Seq) -> MutObjIntoIter<'_> {
     }
 }
 
-pub fn mut_seq_into_finite_iter<'a, 'b>(
+pub(crate) fn mut_seq_into_finite_iter<'a, 'b>(
     seq: &'a mut Seq,
     purpose: &'b str,
 ) -> NRes<MutObjIntoIter<'a>> {
@@ -324,7 +331,10 @@ pub fn mut_seq_into_finite_iter<'a, 'b>(
     }
 }
 
-pub fn mut_obj_into_iter<'a, 'b>(obj: &'a mut Obj, purpose: &'b str) -> NRes<MutObjIntoIter<'a>> {
+pub(crate) fn mut_obj_into_iter<'a, 'b>(
+    obj: &'a mut Obj,
+    purpose: &'b str,
+) -> NRes<MutObjIntoIter<'a>> {
     match obj {
         Obj::Seq(s) => Ok(mut_seq_into_iter(s)),
         e => Err(NErr::type_error(format!(
@@ -358,7 +368,7 @@ impl Iterator for MutObjIntoIter<'_> {
     }
 }
 
-pub fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
+pub(crate) fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
     match seq {
         Seq::List(v) => MutObjIntoIterPairs::List(0, RcVecIter::of(v)),
         Seq::Dict(v, _) => MutObjIntoIterPairs::Dict(RcHashMapIter::of(v)),
@@ -369,7 +379,7 @@ pub fn mut_seq_into_iter_pairs(seq: &mut Seq) -> MutObjIntoIterPairs<'_> {
     }
 }
 
-pub fn mut_obj_into_iter_pairs<'a, 'b>(
+pub(crate) fn mut_obj_into_iter_pairs<'a, 'b>(
     obj: &'a mut Obj,
     purpose: &'b str,
 ) -> NRes<MutObjIntoIterPairs<'a>> {
@@ -433,7 +443,7 @@ impl Iterator for MutObjIntoIterPairs<'_> {
 }
 
 #[derive(Debug, Clone)]
-pub struct WrappedVec<T>(pub Rc<Vec<T>>, pub usize);
+pub(crate) struct WrappedVec<T>(pub Rc<Vec<T>>, pub usize);
 
 impl<T: Clone + Into<Obj>> Iterator for WrappedVec<T> {
     type Item = NRes<Obj>;
@@ -484,7 +494,7 @@ impl<T: Clone + Into<Obj> + Display + Debug + 'static + MaybeSync + MaybeSend> S
 }
 
 impl Obj {
-    pub fn try_pop(&mut self) -> NRes<Obj> {
+    pub(crate) fn try_pop(&mut self) -> NRes<Obj> {
         match self {
             Obj::Seq(Seq::List(xs)) => Rc::make_mut(xs)
                 .pop()
@@ -492,7 +502,7 @@ impl Obj {
             _ => Err(NErr::type_error("can't pop".to_string())),
         }
     }
-    pub fn try_remove_index(&mut self, index: &Obj) -> NRes<Obj> {
+    pub(crate) fn try_remove_index(&mut self, index: &Obj) -> NRes<Obj> {
         match self {
             Obj::Seq(Seq::List(xs)) => {
                 let ii = pythonic_index(xs, index)?;
@@ -506,7 +516,7 @@ impl Obj {
             _ => Err(NErr::type_error("can't remove".to_string())),
         }
     }
-    pub fn try_remove_slice(&mut self, lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<Obj> {
+    pub(crate) fn try_remove_slice(&mut self, lo: Option<&Obj>, hi: Option<&Obj>) -> NRes<Obj> {
         match self {
             Obj::Seq(Seq::List(xs)) => {
                 let (lo, hi) = pythonic_slice_obj(xs, lo, hi)?;
@@ -529,10 +539,10 @@ pub enum Assoc {
 #[derive(Debug, Clone, Copy)]
 pub struct Precedence(pub f64, pub Assoc);
 impl Precedence {
-    pub fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Precedence(0.0, Assoc::Left)
     }
-    pub fn tighter_than_when_before(&self, other: &Precedence) -> bool {
+    pub(crate) fn tighter_than_when_before(&self, other: &Precedence) -> bool {
         match self.0.partial_cmp(&other.0) {
             Some(Ordering::Greater) => true,
             Some(Ordering::Less) => false,
@@ -552,9 +562,9 @@ static STRUCT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomi
 
 #[derive(Debug, Clone)]
 pub struct Struct {
-    pub id: usize,
-    pub name: Rc<String>,
-    pub fields: Rc<Vec<(String, Option<Obj>)>>,
+    pub(crate) id: usize,
+    pub(crate) name: Rc<String>,
+    pub(crate) fields: Rc<Vec<(String, Option<Obj>)>>,
 }
 impl PartialEq for Struct {
     fn eq(&self, other: &Self) -> bool {
@@ -564,7 +574,7 @@ impl PartialEq for Struct {
 impl Eq for Struct {}
 
 impl Struct {
-    pub fn new(name: Rc<String>, fields: Rc<Vec<(String, Option<Obj>)>>) -> Self {
+    pub(crate) fn new(name: Rc<String>, fields: Rc<Vec<(String, Option<Obj>)>>) -> Self {
         Struct {
             id: STRUCT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             name,
@@ -645,7 +655,7 @@ pub fn type_of(obj: &Obj) -> ObjType {
     }
 }
 
-pub fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
+pub(crate) fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
     match few(args) {
         Few::One(arg) => Ok(arg),
         t => Err(NErr::type_error(format!(
@@ -656,7 +666,7 @@ pub fn expect_one(args: Vec<Obj>, msg: &str) -> NRes<Obj> {
     }
 }
 
-pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
+pub(crate) fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     match ty {
         ObjType::Int => match arg {
             Obj::Num(n) => Ok(Obj::Num(
@@ -774,7 +784,7 @@ pub fn call_type1(ty: &ObjType, arg: Obj) -> NRes<Obj> {
     }
 }
 
-pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
+pub(crate) fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
     match ty {
         ObjType::Struct(s) => {
             args.reserve_exact(s.fields.len());
@@ -798,7 +808,7 @@ pub fn call_type(ty: &ObjType, mut args: Vec<Obj>) -> NRes<Obj> {
 
 // Obj conversions
 
-pub fn to_nnum(obj: Obj, reason: &'static str) -> NRes<NNum> {
+pub(crate) fn to_nnum(obj: Obj, reason: &'static str) -> NRes<NNum> {
     match obj {
         Obj::Num(n) => Ok(n),
         x => Err(NErr::type_error(format!(
@@ -809,7 +819,7 @@ pub fn to_nnum(obj: Obj, reason: &'static str) -> NRes<NNum> {
     }
 }
 
-pub fn to_byte(obj: Obj, reason: &'static str) -> NRes<u8> {
+pub(crate) fn to_byte(obj: Obj, reason: &'static str) -> NRes<u8> {
     match obj {
         Obj::Num(n) => n.to_u8().ok_or(NErr::value_error(format!(
             "{}: can't convert number to byte: {}",
@@ -822,14 +832,18 @@ pub fn to_byte(obj: Obj, reason: &'static str) -> NRes<u8> {
     }
 }
 
-pub fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
+pub(crate) fn to_obj_vector(iter: impl Iterator<Item = NRes<Obj>>) -> NRes<Obj> {
     Ok(Obj::Seq(Seq::Vector(Rc::new(
         iter.map(|e| to_nnum(e?, "can't convert to vector"))
             .collect::<NRes<Vec<NNum>>>()?,
     ))))
 }
 
-pub fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj, name: &str) -> NRes<Obj> {
+pub(crate) fn expect_nums_and_vectorize_1(
+    body: fn(NNum) -> NRes<Obj>,
+    a: Obj,
+    name: &str,
+) -> NRes<Obj> {
     match a {
         Obj::Num(a) => body(a),
         Obj::Seq(Seq::Vector(mut a)) => to_obj_vector(RcVecIter::of(&mut a).map(body)),
@@ -842,7 +856,7 @@ pub fn expect_nums_and_vectorize_1(body: fn(NNum) -> NRes<Obj>, a: Obj, name: &s
 }
 
 // TODO can we take?
-pub fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
+pub(crate) fn to_type(arg: &Obj, msg: &str) -> NRes<ObjType> {
     match arg {
         Obj::Null => Ok(ObjType::Null),
         Obj::Func(Func::Type(t), _) => Ok(t.clone()),
@@ -933,29 +947,29 @@ fn to_bigint_ok(n: &NNum) -> NRes<BigInt> {
     Ok(n.to_bigint().ok_or(NErr::value_error("bad number to int".to_string()))?.clone())
 }
 */
-pub fn to_usize_ok(n: &NNum) -> NRes<usize> {
+pub(crate) fn to_usize_ok(n: &NNum) -> NRes<usize> {
     n.to_usize()
         .ok_or(NErr::value_error("bad number to usize".to_string()))
 }
-pub fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
+pub(crate) fn clamp_to_usize_ok(n: &NNum) -> NRes<usize> {
     n.clamp_to_usize()
         .ok_or(NErr::value_error("bad number to usize".to_string()))
 }
-pub fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
+pub(crate) fn obj_clamp_to_usize_ok(n: &Obj) -> NRes<usize> {
     match n {
         Obj::Num(n) => clamp_to_usize_ok(n),
         _ => Err(NErr::type_error(format!("bad scalar {}", FmtObj::debug(n)))),
     }
 }
-pub fn into_nint_ok(n: NNum) -> NRes<NInt> {
+pub(crate) fn into_nint_ok(n: NNum) -> NRes<NInt> {
     n.into_nint()
         .ok_or(NErr::value_error("bad number to int".to_string()))
 }
-pub fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
+pub(crate) fn into_bigint_ok(n: NNum) -> NRes<BigInt> {
     n.into_bigint()
         .ok_or(NErr::value_error("bad number to int".to_string()))
 }
-pub fn to_f64_ok(n: &NNum) -> NRes<f64> {
+pub(crate) fn to_f64_ok(n: &NNum) -> NRes<f64> {
     n.to_f64()
         .ok_or(NErr::value_error("bad number to float".to_string()))
 }
@@ -1095,7 +1109,7 @@ fn check_if_valid_key(obj: &Obj) -> NRes<()> {
     }
 }
 
-pub fn to_key(obj: Obj) -> NRes<ObjKey> {
+pub(crate) fn to_key(obj: Obj) -> NRes<ObjKey> {
     match obj {
         Obj::Seq(Seq::Stream(s)) => to_key(Obj::list(s.force()?)),
         _ => {
@@ -1105,14 +1119,14 @@ pub fn to_key(obj: Obj) -> NRes<ObjKey> {
     }
 }
 
-pub fn key_to_obj(key: ObjKey) -> Obj {
+pub(crate) fn key_to_obj(key: ObjKey) -> Obj {
     key.0
 }
 
 // generic Obj impls
 
 impl Obj {
-    pub fn truthy(&self) -> bool {
+    pub(crate) fn truthy(&self) -> bool {
         match self {
             Obj::Null => false,
             Obj::Num(x) => x.is_nonzero(),
@@ -1125,29 +1139,29 @@ impl Obj {
     pub fn i64(n: i64) -> Self {
         Obj::Num(NNum::Int(NInt::Small(n)))
     }
-    pub fn usize(n: usize) -> Self {
+    pub(crate) fn usize(n: usize) -> Self {
         Obj::Num(NNum::usize(n))
     }
-    pub fn u64(n: u64) -> Self {
+    pub(crate) fn u64(n: u64) -> Self {
         Obj::Num(NNum::u64(n))
     }
-    pub fn u8(n: u8) -> Self {
+    pub(crate) fn u8(n: u8) -> Self {
         Obj::Num(NNum::u8(n))
     }
     pub fn list(n: Vec<Obj>) -> Self {
         Obj::Seq(Seq::List(Rc::new(n)))
     }
-    pub fn dict(m: HashMap<ObjKey, Obj>, def: Option<Obj>) -> Self {
+    pub(crate) fn dict(m: HashMap<ObjKey, Obj>, def: Option<Obj>) -> Self {
         Obj::Seq(Seq::Dict(Rc::new(m), def.map(Box::new)))
     }
 
-    pub fn zero() -> Self {
+    pub(crate) fn zero() -> Self {
         Obj::i64(0)
     }
-    pub fn one() -> Self {
+    pub(crate) fn one() -> Self {
         Obj::i64(1)
     }
-    pub fn neg_one() -> Self {
+    pub(crate) fn neg_one() -> Self {
         Obj::i64(-1)
     }
 }
@@ -1211,7 +1225,7 @@ impl PartialOrd for Seq {
 // all thins formatting
 
 #[derive(Clone, Debug)]
-pub enum FmtBase {
+pub(crate) enum FmtBase {
     Decimal,
     Binary,
     Octal,
@@ -1220,7 +1234,7 @@ pub enum FmtBase {
 }
 
 #[derive(Clone, Debug)]
-pub enum FmtAlign {
+pub(crate) enum FmtAlign {
     Left,
     Right,
     Center,
@@ -1228,16 +1242,16 @@ pub enum FmtAlign {
 
 #[derive(Clone, Debug)]
 pub struct MyFmtFlags {
-    pub base: FmtBase,
-    pub repr: bool,
-    pub pad: char,
-    pub pad_length: usize,
-    pub pad_align: FmtAlign,
-    pub budget: usize,
+    pub(crate) base: FmtBase,
+    pub(crate) repr: bool,
+    pub(crate) pad: char,
+    pub(crate) pad_length: usize,
+    pub(crate) pad_align: FmtAlign,
+    pub(crate) budget: usize,
 }
 
 impl MyFmtFlags {
-    pub const fn new() -> MyFmtFlags {
+    pub(crate) const fn new() -> MyFmtFlags {
         MyFmtFlags {
             base: FmtBase::Decimal,
             repr: false,
@@ -1298,7 +1312,7 @@ impl MyDisplay for NNum {
     }
 }
 
-pub fn write_string(
+pub(crate) fn write_string(
     s: &str,
     formatter: &mut dyn fmt::Write,
     flags: &mut MyFmtFlags,
@@ -1311,7 +1325,7 @@ pub fn write_string(
         write!(formatter, "{}", s)
     }
 }
-pub fn write_slice(
+pub(crate) fn write_slice(
     v: &[impl MyDisplay],
     formatter: &mut dyn fmt::Write,
     flags: &mut MyFmtFlags,
@@ -1342,7 +1356,7 @@ pub fn write_slice(
     Ok(())
 }
 
-pub fn write_pairs<'a, 'b>(
+pub(crate) fn write_pairs<'a, 'b>(
     it: impl Iterator<Item = (&'a (impl MyDisplay + 'a), &'b (impl MyDisplay + 'b))>,
     formatter: &mut dyn fmt::Write,
     flags: &mut MyFmtFlags,
@@ -1369,7 +1383,7 @@ pub fn write_pairs<'a, 'b>(
     Ok(())
 }
 
-pub struct FmtDictPairs<'f, T>(pub T, pub &'f MyFmtFlags);
+pub(crate) struct FmtDictPairs<'f, T>(pub T, pub &'f MyFmtFlags);
 impl<'f, 'a, 'b, A: MyDisplay + 'a, B: MyDisplay + 'b, T: Iterator<Item = (&'a A, &'b B)> + Clone>
     Display for FmtDictPairs<'f, T>
 {
@@ -1380,7 +1394,7 @@ impl<'f, 'a, 'b, A: MyDisplay + 'a, B: MyDisplay + 'b, T: Iterator<Item = (&'a A
     }
 }
 
-pub fn write_bytes(
+pub(crate) fn write_bytes(
     s: &[u8],
     formatter: &mut dyn fmt::Write,
     flags: &mut MyFmtFlags,
@@ -1417,15 +1431,15 @@ impl<'a, 'b> Display for FmtObj<'a, 'b> {
     }
 }
 
-pub const DEBUG_FMT: MyFmtFlags = MyFmtFlags::budgeted_repr(6);
+pub(crate) const DEBUG_FMT: MyFmtFlags = MyFmtFlags::budgeted_repr(6);
 
 impl FmtObj<'_, '_> {
-    pub fn debug<'a>(t: &'a Obj) -> FmtObj<'a, 'static> {
+    pub(crate) fn debug<'a>(t: &'a Obj) -> FmtObj<'a, 'static> {
         FmtObj(t, &DEBUG_FMT)
     }
 }
 
-pub struct CommaSeparatedDebug<'a>(pub &'a [Obj]);
+pub(crate) struct CommaSeparatedDebug<'a>(pub &'a [Obj]);
 
 impl<'a> Display for CommaSeparatedDebug<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1441,7 +1455,7 @@ impl<'a> Display for CommaSeparatedDebug<'a> {
     }
 }
 
-pub trait MyDisplay {
+pub(crate) trait MyDisplay {
     fn is_null(&self) -> bool;
     fn fmt_with_mut(&self, formatter: &mut dyn fmt::Write, flags: &mut MyFmtFlags) -> fmt::Result;
 }
@@ -1501,12 +1515,16 @@ impl MyDisplay for Obj {
 }
 
 impl Obj {
-    pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
+    pub(crate) fn fmt_with(
+        &self,
+        formatter: &mut dyn fmt::Write,
+        mut flags: MyFmtFlags,
+    ) -> fmt::Result {
         self.fmt_with_mut(formatter, &mut flags)
     }
 }
 
-pub struct CommaSeparated<'a, T>(pub &'a [T]);
+pub(crate) struct CommaSeparated<'a, T>(pub &'a [T]);
 
 impl<'a, T: Display> Display for CommaSeparated<'a, T> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1522,7 +1540,7 @@ impl<'a, T: Display> Display for CommaSeparated<'a, T> {
     }
 }
 
-pub struct FmtSectionSlot<'a>(&'a Option<Obj>);
+pub(crate) struct FmtSectionSlot<'a>(&'a Option<Obj>);
 
 impl<'a> Display for FmtSectionSlot<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1533,7 +1551,7 @@ impl<'a> Display for FmtSectionSlot<'a> {
     }
 }
 
-pub struct FmtSectionBoxedSlot<'a>(&'a Option<Box<Obj>>);
+pub(crate) struct FmtSectionBoxedSlot<'a>(&'a Option<Box<Obj>>);
 
 impl<'a> Display for FmtSectionBoxedSlot<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1544,7 +1562,7 @@ impl<'a> Display for FmtSectionBoxedSlot<'a> {
     }
 }
 
-pub struct FmtSectionSlots<'a>(&'a [Result<Obj, bool>]);
+pub(crate) struct FmtSectionSlots<'a>(&'a [Result<Obj, bool>]);
 
 impl<'a> Display for FmtSectionSlots<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1568,7 +1586,7 @@ impl<'a> Display for FmtSectionSlots<'a> {
     }
 }
 
-pub struct FmtSectionBoxedSlots<'a>(&'a [Option<Box<Obj>>]);
+pub(crate) struct FmtSectionBoxedSlots<'a>(&'a [Option<Box<Obj>>]);
 
 impl<'a> Display for FmtSectionBoxedSlots<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -1606,7 +1624,11 @@ impl MyDisplay for ObjKey {
 }
 
 impl ObjKey {
-    pub fn fmt_with(&self, formatter: &mut dyn fmt::Write, mut flags: MyFmtFlags) -> fmt::Result {
+    pub(crate) fn fmt_with(
+        &self,
+        formatter: &mut dyn fmt::Write,
+        mut flags: MyFmtFlags,
+    ) -> fmt::Result {
         self.fmt_with_mut(formatter, &mut flags)
     }
 }
@@ -1625,7 +1647,7 @@ pub enum NErr {
     Continue(usize),
 }
 
-pub fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &CodeLoc) {
+pub(crate) fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &CodeLoc) {
     use std::fmt::Write;
 
     let mut line = 1;
@@ -1657,7 +1679,7 @@ pub fn write_source_error(out: &mut String, src: &str, start: &CodeLoc, end: &Co
     }
 }
 
-pub struct FmtCodeLocRange<'a>(pub &'a CodeLoc, pub &'a CodeLoc);
+pub(crate) struct FmtCodeLocRange<'a>(pub &'a CodeLoc, pub &'a CodeLoc);
 impl<'a> Display for FmtCodeLocRange<'a> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         let FmtCodeLocRange(start, end) = self;
@@ -1674,7 +1696,7 @@ impl<'a> Display for FmtCodeLocRange<'a> {
 }
 
 impl NErr {
-    pub fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
+    pub(crate) fn supply_source(self: &mut NErr, src_file: Rc<String>, src: Rc<String>) {
         match self {
             NErr::Throw(_, trace) => {
                 for tup in trace {
@@ -1722,59 +1744,59 @@ impl NErr {
         }
     }
 
-    pub fn throw(s: String) -> NErr {
+    pub(crate) fn throw(s: String) -> NErr {
         NErr::Throw(Obj::from(s), Vec::new())
     }
-    pub fn argument_error(s: String) -> NErr {
+    pub(crate) fn argument_error(s: String) -> NErr {
         NErr::throw(format!("argument error: {}", s))
     }
-    pub fn index_error(s: String) -> NErr {
+    pub(crate) fn index_error(s: String) -> NErr {
         NErr::throw(format!("index error: {}", s))
     }
-    pub fn key_error(s: String) -> NErr {
+    pub(crate) fn key_error(s: String) -> NErr {
         NErr::throw(format!("key error: {}", s))
     }
-    pub fn empty_error(s: String) -> NErr {
+    pub(crate) fn empty_error(s: String) -> NErr {
         NErr::throw(format!("empty error: {}", s))
     }
-    pub fn name_error(s: String) -> NErr {
+    pub(crate) fn name_error(s: String) -> NErr {
         NErr::throw(format!("name error: {}", s))
     }
-    pub fn syntax_error(s: String) -> NErr {
+    pub(crate) fn syntax_error(s: String) -> NErr {
         NErr::throw(format!("syntax error: {}", s))
     }
-    pub fn syntax_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
+    pub(crate) fn syntax_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
         NErr::Throw(
             Obj::from(format!("syntax error: {}", s)),
             vec![(msg, start, end, None)],
         )
     }
-    pub fn type_error(s: String) -> NErr {
+    pub(crate) fn type_error(s: String) -> NErr {
         NErr::throw(format!("type error: {}", s))
     }
-    pub fn type_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
+    pub(crate) fn type_error_loc(s: String, msg: String, start: CodeLoc, end: CodeLoc) -> NErr {
         NErr::Throw(
             Obj::from(format!("type error: {}", s)),
             vec![(msg, start, end, None)],
         )
     }
-    pub fn value_error(s: String) -> NErr {
+    pub(crate) fn value_error(s: String) -> NErr {
         NErr::throw(format!("value error: {}", s))
     }
-    pub fn io_error(s: String) -> NErr {
+    pub(crate) fn io_error(s: String) -> NErr {
         NErr::throw(format!("io error: {}", s))
     }
-    pub fn assert_error(s: String) -> NErr {
+    pub(crate) fn assert_error(s: String) -> NErr {
         NErr::throw(format!("assert error: {}", s))
     }
 
-    pub fn argument_error_args(x: &[Obj]) -> NErr {
+    pub(crate) fn argument_error_args(x: &[Obj]) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types/count: {}",
             CommaSeparated(&x.iter().map(|k| type_of(k).name()).collect::<Vec<String>>())
         ))
     }
-    pub fn argument_error_few(x: &Few<Obj>) -> NErr {
+    pub(crate) fn argument_error_few(x: &Few<Obj>) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types/count: {}",
             CommaSeparated(&match x {
@@ -1784,7 +1806,7 @@ impl NErr {
             })
         ))
     }
-    pub fn argument_error_few2(x: &Few2<Obj>) -> NErr {
+    pub(crate) fn argument_error_few2(x: &Few2<Obj>) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types/count: {}",
             CommaSeparated(&match x {
@@ -1795,7 +1817,7 @@ impl NErr {
             })
         ))
     }
-    pub fn argument_error_few3(x: &Few3<Obj>) -> NErr {
+    pub(crate) fn argument_error_few3(x: &Few3<Obj>) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types/count: {}",
             CommaSeparated(&match x {
@@ -1808,22 +1830,22 @@ impl NErr {
             })
         ))
     }
-    pub fn argument_error_1(x: &Obj) -> NErr {
+    pub(crate) fn argument_error_1(x: &Obj) -> NErr {
         NErr::throw(format!("unrecognized argument type: {}", type_of(x).name()))
     }
-    pub fn argument_error_first(x: &Obj) -> NErr {
+    pub(crate) fn argument_error_first(x: &Obj) -> NErr {
         NErr::throw(format!(
             "unrecognized 1st argument type: {}",
             type_of(x).name()
         ))
     }
-    pub fn argument_error_second(x: &Obj) -> NErr {
+    pub(crate) fn argument_error_second(x: &Obj) -> NErr {
         NErr::throw(format!(
             "unrecognized 2nd argument type: {}",
             type_of(x).name()
         ))
     }
-    pub fn argument_error_2(x: &Obj, y: &Obj) -> NErr {
+    pub(crate) fn argument_error_2(x: &Obj, y: &Obj) -> NErr {
         NErr::throw(format!(
             "unrecognized argument types: ({}, {})",
             type_of(x).name(),
@@ -1861,7 +1883,7 @@ impl fmt::Display for NErr {
     }
 }
 
-pub type NRes<T> = Result<T, NErr>;
+pub(crate) type NRes<T> = Result<T, NErr>;
 
 // Expressions!!
 // Note that Obj depends on Func depends on Closure depends on LocExpr depends on Frozen depends on
@@ -1884,7 +1906,7 @@ pub enum ForIterationType {
 pub struct SlotLayout(Rc<HashMap<String, usize>>);
 
 impl SlotLayout {
-    pub fn new(slots: HashMap<String, usize>) -> SlotLayout {
+    pub(crate) fn new(slots: HashMap<String, usize>) -> SlotLayout {
         SlotLayout(Rc::new(slots))
     }
 
@@ -1913,7 +1935,7 @@ impl SlotLayout {
     }
 
     // Only for the root Env's layout. (Copies it if it's shared, which it shouldn't be.)
-    pub fn insert(&mut self, name: String, slot: usize) {
+    pub(crate) fn insert(&mut self, name: String, slot: usize) {
         Rc::make_mut(&mut self.0).insert(name, slot);
     }
 }
@@ -2057,26 +2079,26 @@ impl Expr {
 // Layout is for the Env each call creates, which the body also runs in. We put it here instead of directly in Closure to keep Obj small.
 #[derive(Debug)]
 pub struct LambdaParams {
-    pub lvalues: Vec<Box<Lvalue>>,
-    pub layout: SlotLayout,
+    pub(crate) lvalues: Vec<Box<Lvalue>>,
+    pub(crate) layout: SlotLayout,
 }
 
 // An imported file's code, parsed and resolved as if it were written where the import is.
 #[derive(Debug)]
 pub struct ImportedFile {
-    pub path: Rc<String>,
-    pub source: Rc<String>, // for rendering errors
-    pub body: LocExpr,
+    pub(crate) path: Rc<String>,
+    pub(crate) source: Rc<String>, // for rendering errors
+    pub(crate) body: LocExpr,
 }
 
 // A variable reference that resolve.rs has matched to the scope declaring it.
 #[derive(Debug, Clone)]
 pub struct SlotRef {
-    pub name: Rc<String>,
+    pub(crate) name: Rc<String>,
     // how many Envs up the variable's scope is
-    pub depth: usize,
+    pub(crate) depth: usize,
     // index into that Env's slots
-    pub slot: usize,
+    pub(crate) slot: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -2087,7 +2109,7 @@ pub enum Ident {
 }
 
 impl Ident {
-    pub fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             Ident::Ident(x) => Some(x),
             Ident::InternalPeek(_) => None,
@@ -2145,7 +2167,7 @@ impl Lvalue {
         }
     }
 
-    pub fn collect_identifiers(&self, declared_only: bool) -> HashSet<String> {
+    pub(crate) fn collect_identifiers(&self, declared_only: bool) -> HashSet<String> {
         match self {
             Lvalue::Underscore => HashSet::new(),
             Lvalue::Literal(_) => HashSet::new(),
@@ -2262,7 +2284,7 @@ pub trait Catamorphism {
     fn finish(&mut self) -> NRes<Obj>;
 }
 
-pub struct CataList(pub Vec<Obj>);
+pub(crate) struct CataList(pub Vec<Obj>);
 impl Catamorphism for CataList {
     fn give(&mut self, arg: Obj) -> NRes<()> {
         self.0.push(arg);
@@ -2273,7 +2295,7 @@ impl Catamorphism for CataList {
     }
 }
 
-pub struct CataFirst;
+pub(crate) struct CataFirst;
 impl Catamorphism for CataFirst {
     fn give(&mut self, arg: Obj) -> NRes<()> {
         Err(NErr::Break(0, Some(arg)))
@@ -2283,7 +2305,7 @@ impl Catamorphism for CataFirst {
     }
 }
 
-pub struct CataLast(pub Option<Obj>);
+pub(crate) struct CataLast(pub Option<Obj>);
 impl Catamorphism for CataLast {
     fn give(&mut self, arg: Obj) -> NRes<()> {
         self.0 = Some(arg);
@@ -2303,13 +2325,13 @@ pub enum ParseErrorLoc {
 #[derive(Debug)]
 pub struct ParseError(pub String, pub ParseErrorLoc, pub Vec<(String, CodeLoc)>);
 impl ParseError {
-    pub fn token(msg: String, token: LocToken) -> Self {
+    pub(crate) fn token(msg: String, token: LocToken) -> Self {
         ParseError(msg, ParseErrorLoc::Token(token), Vec::new())
     }
-    pub fn expr(msg: String, start: CodeLoc, end: CodeLoc) -> Self {
+    pub(crate) fn expr(msg: String, start: CodeLoc, end: CodeLoc) -> Self {
         ParseError(msg, ParseErrorLoc::Expr(start, end), Vec::new())
     }
-    pub fn eof(msg: String) -> Self {
+    pub(crate) fn eof(msg: String) -> Self {
         ParseError(msg, ParseErrorLoc::Eof, Vec::new())
     }
 
@@ -2346,7 +2368,7 @@ impl ParseError {
     }
 }
 
-pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
+pub(crate) fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
     match expr.expr {
         Expr::Null => Ok(Lvalue::Literal(Obj::Null)),
         Expr::Ident(s) => Ok(Lvalue::IndexedIdent(Ident::Ident(s), Vec::new())),
@@ -2422,7 +2444,7 @@ pub fn to_lvalue(expr: LocExpr) -> Result<Lvalue, ParseError> {
     }
 }
 
-pub fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
+pub(crate) fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
     let LocExpr { start, end, .. } = expr;
     let lvalue = to_lvalue(expr)?;
     if lvalue.any_literals() {
@@ -2438,9 +2460,9 @@ pub fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
 
 #[derive(Clone)]
 pub struct Closure {
-    pub params: Rc<LambdaParams>,
-    pub body: Rc<LocExpr>,
-    pub env: Rc<RefCell<Env>>,
+    pub(crate) params: Rc<LambdaParams>,
+    pub(crate) body: Rc<LocExpr>,
+    pub(crate) env: Rc<RefCell<Env>>,
 }
 
 // directly debug-printing env can easily recurse infinitely
@@ -2454,7 +2476,7 @@ impl Debug for Closure {
     }
 }
 
-pub fn strip_comments(mut tokens: Vec<LocToken>) -> (Vec<LocToken>, Vec<String>) {
+pub(crate) fn strip_comments(mut tokens: Vec<LocToken>) -> (Vec<LocToken>, Vec<String>) {
     let mut comments = Vec::new();
     tokens.retain_mut(|c| match &mut c.token {
         Token::Comment(s) => {
@@ -2466,7 +2488,7 @@ pub fn strip_comments(mut tokens: Vec<LocToken>) -> (Vec<LocToken>, Vec<String>)
     (tokens, comments)
 }
 
-pub struct Parser {
+pub(crate) struct Parser {
     tokens: Vec<LocToken>,
     i: usize,
 }
@@ -2474,19 +2496,19 @@ pub struct Parser {
 // This originally implemented the "freeze" keyword but is basically just a visitor pattern at this
 // point. Some constant optimizations occur.
 #[derive(Clone)]
-pub struct FreezeEnv {
+pub(crate) struct FreezeEnv {
     // the Env the frozen code will be evaluated in
-    pub env: REnv,
+    pub(crate) env: REnv,
     // how many Envs the code we're at will be inside, relative to env. Needed for resolving slot
     // references, a reference with depth d here is d - extra_depth Envs up from env.
-    pub extra_depth: usize,
+    pub(crate) extra_depth: usize,
     // what the frozen code declares directly in env, so far (in source order; references to these
     // stay as they are)
-    pub bound: HashSet<String>,
+    pub(crate) bound: HashSet<String>,
 }
 
 impl FreezeEnv {
-    pub fn new(env: &REnv) -> FreezeEnv {
+    pub(crate) fn new(env: &REnv) -> FreezeEnv {
         FreezeEnv {
             env: Rc::clone(env),
             extra_depth: 0,
@@ -2637,12 +2659,12 @@ fn freeze_ios(env: &mut FreezeEnv, ios: &IndexOrSlice) -> NRes<IndexOrSlice> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_import_to_string(s: &str) -> io::Result<String> {
+pub(crate) fn read_import_to_string(s: &str) -> io::Result<String> {
     fs::read_to_string(s)
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn read_import_to_string(s: &str) -> io::Result<String> {
+pub(crate) fn read_import_to_string(s: &str) -> io::Result<String> {
     if s == "html" {
         Ok(include_str!("../noulib/html.noul").to_string())
     } else if s == "colors" {
@@ -2695,7 +2717,7 @@ fn freeze_for(
 //
 // Which nodes make new Envs (see FreezeEnv::scoped) has to match resolve.rs and eval.rs.
 
-pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
+pub(crate) fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
     Ok(LocExpr {
         start: expr.start,
         end: expr.end,
@@ -4559,7 +4581,7 @@ pub fn lex(code: &str) -> Vec<LocToken> {
 
 // Parse syntax only (doesn't resolve variables, so the result isn't ready to evaluate). Allows the
 // empty expression.
-pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
+pub(crate) fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
     let (tokens, _) = strip_comments(lex(code));
     if tokens.is_empty() {
         Ok(None)
@@ -4692,13 +4714,13 @@ pub struct Env {
     // declarations.
     pub vars: SlotLayout,
     // None if the variable hasn't been declared yet, in which case using it is an error
-    pub slots: Vec<Option<(ObjType, RefCell<Obj>)>>,
-    pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
-    pub internal_stack: Vec<Obj>,
-    pub allow_redeclaration: bool,
+    pub(crate) slots: Vec<Option<(ObjType, RefCell<Obj>)>>,
+    pub(crate) parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
+    pub(crate) internal_stack: Vec<Obj>,
+    pub(crate) allow_redeclaration: bool,
 }
 // simple, linear-time, and at least finds when one is a subsequence of the other.
-pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
+pub(crate) fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
     let mut ai = 0;
     let mut bi = 0;
     let mut dist = 0;
@@ -4717,7 +4739,11 @@ pub fn fast_edit_distance(a: &[u8], b: &[u8]) -> usize {
     dist + a.len() - ai + b.len() - bi
 }
 
-pub fn try_borrow_nres<'a, T>(r: &'a RefCell<T>, msg1: &str, msg2: &str) -> NRes<Ref<'a, T>> {
+pub(crate) fn try_borrow_nres<'a, T>(
+    r: &'a RefCell<T>,
+    msg1: &str,
+    msg2: &str,
+) -> NRes<Ref<'a, T>> {
     match cell_try_borrow(r) {
         Ok(r) => Ok(r),
         Err(b) => Err(NErr::io_error(format!(
@@ -4726,7 +4752,7 @@ pub fn try_borrow_nres<'a, T>(r: &'a RefCell<T>, msg1: &str, msg2: &str) -> NRes
         ))),
     }
 }
-pub fn try_borrow_mut_nres<'a, T>(
+pub(crate) fn try_borrow_mut_nres<'a, T>(
     r: &'a RefCell<T>,
     msg1: &str,
     msg2: &str,
@@ -4740,17 +4766,17 @@ pub fn try_borrow_mut_nres<'a, T>(
     }
 }
 
-pub const DEFAULT_PRECEDENCE: f64 = 0.0;
-pub const COMPARISON_PRECEDENCE: f64 = 1.0;
-pub const STRING_PRECEDENCE: f64 = 2.0;
-pub const OR_PRECEDENCE: f64 = 3.0;
-pub const PLUS_PRECEDENCE: f64 = 4.0;
-pub const MULTIPLY_PRECEDENCE: f64 = 5.0;
-pub const EXPONENT_PRECEDENCE: f64 = 6.0;
-pub const INDEX_PRECEDENCE: f64 = 7.0;
-pub const DOT_PRECEDENCE: f64 = 8.0;
+pub(crate) const DEFAULT_PRECEDENCE: f64 = 0.0;
+pub(crate) const COMPARISON_PRECEDENCE: f64 = 1.0;
+pub(crate) const STRING_PRECEDENCE: f64 = 2.0;
+pub(crate) const OR_PRECEDENCE: f64 = 3.0;
+pub(crate) const PLUS_PRECEDENCE: f64 = 4.0;
+pub(crate) const MULTIPLY_PRECEDENCE: f64 = 5.0;
+pub(crate) const EXPONENT_PRECEDENCE: f64 = 6.0;
+pub(crate) const INDEX_PRECEDENCE: f64 = 7.0;
+pub(crate) const DOT_PRECEDENCE: f64 = 8.0;
 
-pub fn default_precedence(name: &str) -> f64 {
+pub(crate) fn default_precedence(name: &str) -> f64 {
     name.chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '_' {
@@ -4775,7 +4801,7 @@ pub fn default_precedence(name: &str) -> f64 {
         .unwrap_or(0.0)
 }
 
-pub fn add_trace<T>(
+pub(crate) fn add_trace<T>(
     res: NRes<T>,
     thing: impl FnOnce() -> String,
     start: CodeLoc,
@@ -4790,7 +4816,7 @@ pub fn add_trace<T>(
     }
 }
 
-pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
+pub(crate) fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
     match res {
         Ok(x) => Ok(x),
         Err(NErr::Throw(msg, trace)) => {
@@ -4825,7 +4851,7 @@ impl Env {
             RootVars::default(),
         )
     }
-    pub fn with_parent(env: &Rc<RefCell<Env>>, layout: &SlotLayout) -> Rc<RefCell<Env>> {
+    pub(crate) fn with_parent(env: &Rc<RefCell<Env>>, layout: &SlotLayout) -> Rc<RefCell<Env>> {
         let mut slots = Vec::new();
         slots.resize_with(layout.len(), || None);
         Rc::new(RefCell::new(Env {
@@ -4879,7 +4905,7 @@ impl Env {
     }
 
     // Everything evaluated should've gone through resolve.rs (see parse_and_resolve_in).
-    pub fn unresolved(s: &str) -> NErr {
+    pub(crate) fn unresolved(s: &str) -> NErr {
         NErr::io_error(format!("BUG: variable {} wasn't resolved", s))
     }
 
@@ -4890,13 +4916,13 @@ impl Env {
         ))
     }
 
-    pub fn try_borrow_get_slot(env: &Rc<RefCell<Env>>, s: &SlotRef) -> NRes<Obj> {
+    pub(crate) fn try_borrow_get_slot(env: &Rc<RefCell<Env>>, s: &SlotRef) -> NRes<Obj> {
         Env::modify_slot(env, s, s.depth, "variable", |(_, v)| {
             Ok(try_borrow_nres(v, "variable", &s.name)?.clone())
         })?
     }
 
-    pub fn try_borrow_get_ident(env: &Rc<RefCell<Env>>, ident: &Ident) -> NRes<Obj> {
+    pub(crate) fn try_borrow_get_ident(env: &Rc<RefCell<Env>>, ident: &Ident) -> NRes<Obj> {
         match ident {
             Ident::Ident(s) => Err(Env::unresolved(s)),
             Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i),
@@ -4904,7 +4930,7 @@ impl Env {
         }
     }
 
-    pub fn try_borrow_peek(env: &Rc<RefCell<Env>>, i: usize) -> NRes<Obj> {
+    pub(crate) fn try_borrow_peek(env: &Rc<RefCell<Env>>, i: usize) -> NRes<Obj> {
         let r = try_borrow_nres(env, "internal", "peek")?;
         let s = &r.internal_stack;
         let x = s[s.len() - i - 1].clone();
@@ -4912,7 +4938,7 @@ impl Env {
         Ok(x)
     }
 
-    pub fn try_borrow_set_peek(env: &Rc<RefCell<Env>>, i: usize, x: Obj) -> NRes<()> {
+    pub(crate) fn try_borrow_set_peek(env: &Rc<RefCell<Env>>, i: usize, x: Obj) -> NRes<()> {
         let mut r = try_borrow_mut_nres(env, "internal", "peek set")?;
         let s = &mut r.internal_stack;
         let n = s.len();
@@ -4956,7 +4982,7 @@ impl Env {
     }
 
     // Call f on a resolved variable.
-    pub fn modify_existing<T>(
+    pub(crate) fn modify_existing<T>(
         env: &Rc<RefCell<Env>>,
         ident: &Ident,
         op: &str,
@@ -4971,13 +4997,17 @@ impl Env {
         }
     }
 
-    pub fn modify_peek<T>(&mut self, i: usize, f: impl FnOnce(&mut Obj) -> NRes<T>) -> NRes<T> {
+    pub(crate) fn modify_peek<T>(
+        &mut self,
+        i: usize,
+        f: impl FnOnce(&mut Obj) -> NRes<T>,
+    ) -> NRes<T> {
         let s = &mut self.internal_stack;
         let n = s.len();
         f(&mut s[n - 1 - i])
     }
 
-    pub fn modify_ident<T>(
+    pub(crate) fn modify_ident<T>(
         env: &Rc<RefCell<Env>>,
         ident: &Ident,
         f: impl FnOnce(&ObjType, &mut Obj) -> NRes<T>,
@@ -5010,7 +5040,7 @@ impl Env {
 
     // The slot for a variable in the root Env, making an empty one if there isn't one, so code
     // resolved later can refer to it before it's declared.
-    pub fn reserve_root_slot(&mut self, key: &str) -> usize {
+    pub(crate) fn reserve_root_slot(&mut self, key: &str) -> usize {
         match self.vars.get(key) {
             Some(i) => i,
             None => {
@@ -5022,7 +5052,7 @@ impl Env {
         }
     }
 
-    pub fn declare(&mut self, ident: &Ident, ty: ObjType, val: Obj) -> NRes<()> {
+    pub(crate) fn declare(&mut self, ident: &Ident, ty: ObjType, val: Obj) -> NRes<()> {
         match ident {
             Ident::Ident(s) => Err(Env::unresolved(s)),
             Ident::Slot(SlotRef {
@@ -5059,7 +5089,7 @@ impl RootVars {
         self.slots.push(Some((ty, RefCell::new(val))));
         Ok(())
     }
-    pub fn insert_type(&mut self, b: ObjType) {
+    pub(crate) fn insert_type(&mut self, b: ObjType) {
         self.insert(
             b.name(),
             ObjType::Any,
@@ -5067,7 +5097,11 @@ impl RootVars {
         )
         .unwrap()
     }
-    pub fn insert_builtin_with_precedence(&mut self, b: impl Builtin + 'static, p: Precedence) {
+    pub(crate) fn insert_builtin_with_precedence(
+        &mut self,
+        b: impl Builtin + 'static,
+        p: Precedence,
+    ) {
         self.insert(
             b.builtin_name().to_string(),
             ObjType::Any,
@@ -5075,15 +5109,19 @@ impl RootVars {
         )
         .unwrap()
     }
-    pub fn insert_builtin(&mut self, b: impl Builtin + 'static) {
+    pub(crate) fn insert_builtin(&mut self, b: impl Builtin + 'static) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b, p)
     }
-    pub fn insert_rassoc_builtin(&mut self, b: impl Builtin + 'static) {
+    pub(crate) fn insert_rassoc_builtin(&mut self, b: impl Builtin + 'static) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Right);
         self.insert_builtin_with_precedence(b, p)
     }
-    pub fn insert_builtin_with_alias(&mut self, b: impl Builtin + 'static + Clone, alias: &str) {
+    pub(crate) fn insert_builtin_with_alias(
+        &mut self,
+        b: impl Builtin + 'static + Clone,
+        alias: &str,
+    ) {
         let p = Precedence(default_precedence(b.builtin_name()), Assoc::Left);
         self.insert_builtin_with_precedence(b.clone(), p);
         let pp = Precedence(default_precedence(alias), Assoc::Left);
@@ -5094,7 +5132,7 @@ impl RootVars {
         )
         .unwrap()
     }
-    pub fn insert_rassoc_builtin_with_alias(
+    pub(crate) fn insert_rassoc_builtin_with_alias(
         &mut self,
         b: impl Builtin + 'static + Clone,
         alias: &str,
@@ -5111,7 +5149,7 @@ impl RootVars {
     }
 }
 
-pub type REnv = Rc<RefCell<Env>>;
+pub(crate) type REnv = Rc<RefCell<Env>>;
 
 impl Display for Func {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
