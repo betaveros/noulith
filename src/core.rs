@@ -4606,9 +4606,9 @@ pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
 }
 
 impl Env {
-    pub fn new(top: TopEnv, allow_redeclaration: bool) -> Env {
+    pub fn new(top: TopEnv, allow_redeclaration: bool, vars: RootVars) -> Env {
         Env {
-            vars: HashMap::new(),
+            vars: vars.vars,
             parent: Err(Rc::new(RefCell::new(top))),
             internal_stack: Vec::new(),
             allow_redeclaration,
@@ -4623,6 +4623,7 @@ impl Env {
                 output: Box::new(io::sink()),
             },
             false,
+            RootVars::default(),
         )
     }
     pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
@@ -4737,6 +4738,26 @@ impl Env {
                 Ok(())
             }
         }
+    }
+}
+
+// The variables a root Env starts with: builtins and the like, collected before making it with
+// Env::new.
+#[derive(Default)]
+pub struct RootVars {
+    vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
+}
+
+impl RootVars {
+    pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
+        if self.vars.contains_key(&key) {
+            return Err(NErr::name_error(format!(
+                "root variable {:?} declared twice",
+                key
+            )));
+        }
+        self.vars.insert(key, (ty, Box::new(RefCell::new(val))));
+        Ok(())
     }
     pub fn insert_type(&mut self, b: ObjType) {
         self.insert(
