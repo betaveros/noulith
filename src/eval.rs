@@ -1461,7 +1461,6 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             let mut frenv = FreezeEnv {
                 bound: HashSet::new(),
                 env: Rc::clone(env),
-                warn: false,
             };
             evaluate(env, &freeze(&mut frenv, expr)?)
         }
