@@ -1,4 +1,6 @@
-use noulith::{Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, TopEnv, evaluate, initialize, parse};
+use noulith::{
+    Env, Expr, LocExpr, Obj, ObjType, Rc, RefCell, RootVars, TopEnv, evaluate, initialize, parse,
+};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
@@ -23,16 +25,17 @@ fn prompt(input: &mut String) -> bool {
 }
 #[cfg(not(feature = "cli"))]
 fn repl() {
-    let mut env = Env::new(
+    let mut vars = RootVars::default();
+    initialize(&mut vars);
+    let e = Rc::new(RefCell::new(Env::new(
         TopEnv {
             backrefs: Vec::new(),
             input: Box::new(BufReader::new(io::stdin())),
             output: Box::new(io::stdout()),
         },
         true,
-    );
-    initialize(&mut env);
-    let e = Rc::new(RefCell::new(env));
+        vars,
+    )));
 
     let mut input = String::new();
     while prompt(&mut input) {
@@ -63,16 +66,9 @@ fn repl() {
 }
 
 fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>, filename: String) {
-    let mut env = Env::new(
-        TopEnv {
-            backrefs: Vec::new(),
-            input: Box::new(BufReader::new(io::stdin())),
-            output: Box::new(io::stdout()),
-        },
-        false,
-    );
-    initialize(&mut env);
-    match env.insert(
+    let mut vars = RootVars::default();
+    initialize(&mut vars);
+    match vars.insert(
         "argv".to_string(),
         ObjType::Any,
         Obj::list(args.into_iter().map(|arg| Obj::from(arg)).collect()),
@@ -80,11 +76,19 @@ fn run_code(code: &str, args: Vec<String>, invoke_wrapper: Option<&'static str>,
         Ok(()) => (),
         Err(e) => panic!("inserting argv failed: {}", e),
     }
-    match env.insert("__file__".to_string(), ObjType::Any, Obj::from(filename)) {
+    match vars.insert("__file__".to_string(), ObjType::Any, Obj::from(filename)) {
         Ok(()) => (),
         Err(e) => panic!("inserting __file__ failed: {}", e),
     }
-    let e = Rc::new(RefCell::new(env));
+    let e = Rc::new(RefCell::new(Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(BufReader::new(io::stdin())),
+            output: Box::new(io::stdout()),
+        },
+        false,
+        vars,
+    )));
 
     match parse(&code) {
         Ok(Some(expr)) => {

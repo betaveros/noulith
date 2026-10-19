@@ -2526,10 +2526,17 @@ fn plusplus_concatenate(a: Obj, b: Obj) -> NRes<Obj> {
 }
 
 pub fn simple_eval(code: &str) -> Obj {
-    let mut env = Env::empty();
-    initialize(&mut env);
-
-    let e = Rc::new(RefCell::new(env));
+    let mut vars = RootVars::default();
+    initialize(&mut vars);
+    let e = Rc::new(RefCell::new(Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(io::empty()),
+            output: Box::new(io::sink()),
+        },
+        false,
+        vars,
+    )));
     evaluate(&e, &parse(code).unwrap().unwrap()).unwrap()
 }
 
@@ -3253,7 +3260,7 @@ fn string_match(a: &Obj, b: &Obj) -> NRes<bool> {
     }
 }
 
-pub fn initialize(env: &mut Env) {
+pub fn initialize(env: &mut RootVars) {
     env.insert("true".to_string(), ObjType::Int, Obj::one())
         .unwrap();
     env.insert("false".to_string(), ObjType::Int, Obj::zero())
@@ -6412,15 +6419,8 @@ pub fn make_env(
 ) -> Rc<RefCell<Env>> {
     Struct::reset_counter(); // i knew this was a terrible idea
 
-    let mut env = Env::new(
-        TopEnv {
-            backrefs: Vec::new(),
-            input: Box::new(io::Cursor::new(input.to_vec())),
-            output: Box::new(io::LineWriter::new(JsWriter(js_write))),
-        },
-        /* allow_redeclaration */ true,
-    );
-    initialize(&mut env);
+    let mut vars = RootVars::default();
+    initialize(&mut vars);
 
     let tag_struct = Struct::new(
         Rc::new("HtmlTag".to_string()),
@@ -6433,7 +6433,7 @@ pub fn make_env(
             ),
         ]),
     );
-    env.insert(
+    vars.insert(
         "HtmlTag".to_string(),
         ObjType::Func,
         Obj::Func(
@@ -6442,7 +6442,7 @@ pub fn make_env(
         ),
     )
     .unwrap();
-    env.insert(
+    vars.insert(
         "html_tag_name".to_string(),
         ObjType::Func,
         Obj::Func(
@@ -6451,7 +6451,7 @@ pub fn make_env(
         ),
     )
     .unwrap();
-    env.insert(
+    vars.insert(
         "html_tag_children".to_string(),
         ObjType::Func,
         Obj::Func(
@@ -6460,7 +6460,7 @@ pub fn make_env(
         ),
     )
     .unwrap();
-    env.insert(
+    vars.insert(
         "html_tag_attributes".to_string(),
         ObjType::Func,
         Obj::Func(
@@ -6470,7 +6470,7 @@ pub fn make_env(
     )
     .unwrap();
 
-    env.insert_builtin(BasicBuiltin {
+    vars.insert_builtin(BasicBuiltin {
         name: "console_log".to_string(),
         body: |_env, args| {
             for arg in args.iter() {
@@ -6480,9 +6480,17 @@ pub fn make_env(
         },
     });
 
-    env.insert_builtin(JsDisplay(js_display));
+    vars.insert_builtin(JsDisplay(js_display));
 
-    Rc::new(RefCell::new(env))
+    Rc::new(RefCell::new(Env::new(
+        TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(io::Cursor::new(input.to_vec())),
+            output: Box::new(io::LineWriter::new(JsWriter(js_write))),
+        },
+        /* allow_redeclaration */ true,
+        vars,
+    )))
 }
 
 // Can't be bothered to write the code to create JavaScript objects with nice keys and everything

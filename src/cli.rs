@@ -1,7 +1,7 @@
 use std::io;
 use std::io::BufReader;
 
-use noulith::{Env, Obj, Token, TopEnv, evaluate, initialize, lex, parse, type_of};
+use noulith::{Env, Obj, RootVars, Token, TopEnv, evaluate, initialize, lex, parse, type_of};
 use noulith::{Rc, RefCell, cell_borrow, cell_borrow_mut};
 
 use rustyline::Editor;
@@ -158,16 +158,17 @@ impl rustyline::completion::Completer for NoulithHelper {
 }
 
 pub fn repl() {
-    let mut env = Env::new(
+    let mut vars = RootVars::default();
+    initialize(&mut vars);
+    let e = Rc::new(RefCell::new(Env::new(
         TopEnv {
             backrefs: Vec::new(),
             input: Box::new(BufReader::new(io::stdin())),
             output: Box::new(io::stdout()),
         },
         true,
-    );
-    initialize(&mut env);
-    let e = Rc::new(RefCell::new(env));
+        vars,
+    )));
 
     let mut rl = Editor::<NoulithHelper>::new().expect("readline failed");
     match app_dir_root() {
