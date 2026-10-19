@@ -770,6 +770,197 @@ fn namespace_poc() {
 }
 
 #[test]
+fn scopes() {
+    assert_eq!(
+        simple_eval("a, b := 1, 2; c := \\a, c -> (b := 3; 100 * a + 10 * b + c);  c(b, a)"),
+        i(231)
+    );
+}
+
+// Returns the rendered error, whether from parsing or evaluation.
+fn eval_error(code: &str) -> String {
+    let mut vars = noulith::RootVars::default();
+    noulith::initialize(&mut vars);
+    let env = Rc::new(RefCell::new(Env::new(
+        noulith::TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(std::io::empty()),
+            output: Box::new(std::io::sink()),
+        },
+        false,
+        vars,
+    )));
+    match parse_and_resolve_in(&env, code) {
+        Err(e) => e.render(code),
+        Ok(expr) => match evaluate(&env, &expr.unwrap()) {
+            Ok(x) => panic!("expected an error from {}, got {}", code, x),
+            Err(e) => e.render(code),
+        },
+    }
+}
+
+// resolve.rs turns variables into slot references, and scoping is strict
+#[test]
+fn resolved_scopes() {
+    // closures can refer to things declared later in the same scope
+    assert_eq!(
+        simple_eval("f := \\ -> (h := \\ -> k(); k := \\ -> 10; h()); f()"),
+        i(10)
+    );
+    // each iteration gets its own Env
+    assert_eq!(
+        simple_eval("fs := []; for (i <- 1 to 3) fs = fs ++ [\\ -> i]; fs map (\\f -> f())"),
+        simple_eval("[1, 2, 3]")
+    );
+    assert_eq!(
+        simple_eval(
+            "fs := []; for (i <- 1 to 2; j <- (m := i * 5; 1 to 2)) fs = fs ++ [\\ -> i + j + m]; fs map (\\f -> f())"
+        ),
+        simple_eval("[7, 8, 13, 14]")
+    );
+    assert_eq!(
+        simple_eval("f := \\ -> (xs := [1, 2, 3]; every xs[:] += 1; xs); f()"),
+        simple_eval("[2, 3, 4]")
+    );
+    // vars() shouldn't include b, which is in f's layout but not declared yet
+    assert_eq!(
+        simple_eval("f := \\ -> (a := 1; v := vars(); b := 2; v); f()"),
+        simple_eval("{'a': 1}")
+    );
+    // eval can read locals, but runs in its own scope, so its declarations stay inside it
+    assert_eq!(simple_eval("f := \\a -> eval('a + 1'); f(41)"), i(42));
+    assert_eq!(simple_eval("eval('w := 3; w + 1')"), i(4));
+    assert!(eval_error("eval('w := 3'); w").contains("No such variable: \"w\""));
+    assert_eq!(simple_eval("f := \\ -> (eval('q := 2'); 0); f()"), i(0));
+    // it can still assign to what's outside
+    assert_eq!(simple_eval("x := 1; eval('x = 5'); x"), i(5));
+
+    // using a local before its declaration ran, visibly in the source...
+    assert!(
+        eval_error("x := 1; f := \\ -> (x := x + 1; x); f()")
+            .contains("x is used before it's declared")
+    );
+    assert!(
+        eval_error("f := \\ -> (for (i <- 1 to 2) i + y; y := 1); f()")
+            .contains("y is used before it's declared")
+    );
+    // ...or only at runtime
+    assert!(
+        eval_error("x := 1; f := \\c -> (if (c) x := 5; x); f(false)")
+            .contains("\"x\" used before it was declared")
+    );
+    assert!(
+        eval_error("x := 'outer'; f := \\ -> (g := \\ -> x; g(); x := 'inner'); f()")
+            .contains("\"x\" used before it was declared")
+    );
+    // the top level is just as strict
+    assert!(eval_error("print(x); x := 1").contains("x is used before it's declared"));
+    assert!(eval_error("if (0) (x := 1); x").contains("\"x\" used before it was declared"));
+    assert_eq!(simple_eval("f := \\ -> later; later := 3; f()"), i(3));
+    // a closure's names are resolved by scope, not by what's declared when it's created
+    assert_eq!(
+        simple_eval("f := \\ -> (h := \\ -> max(1, 2); max := \\a, b -> 99; h()); f()"),
+        i(99)
+    );
+    // names declared nowhere are errors before anything runs, even where they'd never be evaluated
+    assert!(
+        eval_error("print(1); if (0) undeclared_thing")
+            .contains("No such variable: \"undeclared_thing\"")
+    );
+    assert!(eval_error("y = 3").contains("No such variable: \"y\""));
+    assert!(eval_error("foo := 1; f := \\ -> fooo; f()").contains("Did you mean: \"foo\""));
+    // eval resolves against the Env it's called in
+    assert_eq!(
+        simple_eval("f := \\ -> (a := 5; g := \\ -> eval('a * max(2, 3)'); g()); f()"),
+        i(15)
+    );
+}
+
+// freeze replaces variables from outside the frozen code with their current values
+#[test]
+fn freezing() {
+    assert_eq!(simple_eval("x := 1; f := freeze \\ -> x; x = 2; f()"), i(1));
+    assert_eq!(simple_eval("x := 1; f := \\ -> x; x = 2; f()"), i(2));
+    // including from enclosing scopes, at any depth
+    assert_eq!(
+        simple_eval("f := \\k -> (y := k; freeze \\ -> y + k); g := f(3); g()"),
+        i(6)
+    );
+    // but not what it declares itself, in any scope inside it
+    assert_eq!(simple_eval("freeze (q := 3; q * 2)"), i(6));
+    assert_eq!(
+        simple_eval("g := freeze \\a -> (b := a * 2; for (i <- 1 to a) b += i; b); g(3)"),
+        i(12)
+    );
+    assert_eq!(
+        simple_eval(
+            "x := 10; g := freeze \\a -> switch (a) case 0 -> x case y -> y + x; [g(0), g(1)]"
+        ),
+        simple_eval("[10, 11]")
+    );
+    assert!(
+        eval_error("x := 1; f := freeze \\ -> (x = 5)")
+            .contains("can't assign to outside variable")
+    );
+    assert!(eval_error("g := freeze \\ -> undefined_thing").contains("No such variable"));
+}
+
+// REPL lines are resolved one at a time against the same root Env
+#[test]
+fn repl_lines() {
+    let mut vars = noulith::RootVars::default();
+    noulith::initialize(&mut vars);
+    let env = Rc::new(RefCell::new(Env::new(
+        noulith::TopEnv {
+            backrefs: Vec::new(),
+            input: Box::new(std::io::empty()),
+            output: Box::new(std::io::sink()),
+        },
+        true,
+        vars,
+    )));
+    let parse_and_resolve = |code: &str| noulith::parse_and_resolve_in(&env, code);
+    let run = |code: &str| evaluate(&env, &parse_and_resolve(code).unwrap().unwrap()).unwrap();
+    // a line can only use what's declared by it or earlier lines
+    assert!(parse_and_resolve("f := \\ -> later").is_err());
+    run("g := \\ -> 2");
+    assert_eq!(run("g()"), i(2));
+    // which closures see by their slots
+    run("x := 1");
+    run("h := \\ -> x");
+    run("x = 10");
+    assert_eq!(run("h()"), i(10));
+    // and the REPL allows redeclaring
+    run("x := x + 1");
+    assert_eq!(run("x"), i(11));
+}
+
+// imports are spliced in by resolve.rs, so their declarations are normal ones
+#[test]
+fn imports() {
+    let dir = std::env::temp_dir().join(format!("noulith-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let lib = dir.join("lib.noul");
+    std::fs::write(&lib, "helper := \\x -> x * 10; counter := 2;").unwrap();
+    let cyc = dir.join("cyc.noul");
+    std::fs::write(&cyc, format!("import {:?};", cyc.to_str().unwrap())).unwrap();
+    let lib = lib.to_str().unwrap();
+
+    assert_eq!(
+        simple_eval(&format!("import {:?}; helper(counter)", lib)),
+        i(20)
+    );
+    // into whatever scope it's in
+    assert_eq!(
+        simple_eval(&format!("f := \\ -> (import {:?}; helper(3)); f()", lib)),
+        i(30)
+    );
+    assert!(eval_error(&format!("import {:?}", cyc.to_str().unwrap())).contains("import cycle"));
+    assert!(eval_error("p := 'lib.noul'; import p").contains("need a string literal"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn breaking() {
     assert_eq!(
         simple_eval("x := 0; for (i <- 1 to 10) (x = i; if (i == 5) break); x"),
