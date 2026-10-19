@@ -1,7 +1,9 @@
 use std::io;
 use std::io::BufReader;
 
-use noulith::{Env, Obj, RootVars, Token, TopEnv, evaluate, initialize, lex, parse, type_of};
+use noulith::{
+    Env, Obj, RootVars, Token, TopEnv, evaluate, initialize, lex, parse_and_resolve_in, type_of,
+};
 use noulith::{Rc, RefCell, cell_borrow, cell_borrow_mut};
 
 use rustyline::Editor;
@@ -32,7 +34,7 @@ impl rustyline::highlight::Highlighter for NoulithHelper {
             let color = match token.token {
                 Token::Invalid(_) => Some("\x1b[31m"),
                 Token::Ident(s) => {
-                    if cell_borrow(&self.0).vars.contains_key(&s) {
+                    if cell_borrow(&self.0).vars.contains(&s) {
                         Some("\x1b[36m")
                     } else {
                         None
@@ -140,7 +142,7 @@ impl rustyline::completion::Completer for NoulithHelper {
                     Token::Ident(x) => {
                         let v = cell_borrow(&self.0)
                             .vars
-                            .keys()
+                            .names()
                             .filter(|s| s.starts_with(&x))
                             .map(|s| Pair {
                                 display: s.to_string(),
@@ -198,7 +200,7 @@ pub fn repl() {
         match readline {
             Ok(line) => {
                 rl.add_history_entry(line.as_str());
-                match parse(&line) {
+                match parse_and_resolve_in(&e, &line) {
                     Ok(Some(expr)) => match evaluate(&e, &expr) {
                         Ok(Obj::Null) => {}
                         Ok(x) => {

@@ -6,7 +6,7 @@ use crate::nint::NInt;
 use crate::nnum::NNum;
 use crate::rc::*;
 use num::complex::Complex64;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Display;
 
@@ -419,12 +419,12 @@ fn evaluate_for(
             Err(NErr::Continue(0)) => Ok(()),
             Err(e) => Err(e),
         },
-        [ForIteration::Iteration(ty, lvalue, expr), rest @ ..] => {
+        [ForIteration::Iteration(ty, lvalue, expr, layout), rest @ ..] => {
             let mut itr = evaluate(env, expr)?;
             match ty {
                 ForIterationType::Normal => {
                     for x in mut_obj_into_iter(&mut itr, "for iteration")? {
-                        let ee = Env::with_parent(env);
+                        let ee = Env::with_parent(env, layout);
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
@@ -435,7 +435,7 @@ fn evaluate_for(
                 ForIterationType::Item => {
                     for kv in mut_obj_into_iter_pairs(&mut itr, "for (item) iteration")? {
                         let (k, v) = kv?;
-                        let ee = Env::with_parent(env);
+                        let ee = Env::with_parent(env, layout);
                         let p = eval_lvalue(&ee, lvalue)?;
 
                         // should assign take x
@@ -449,7 +449,7 @@ fn evaluate_for(
                     }
                 }
                 ForIterationType::Declare => {
-                    let ee = Env::with_parent(env);
+                    let ee = Env::with_parent(env, layout);
                     let p = eval_lvalue(&ee, lvalue)?;
                     assign(&ee, &p, Some(&ObjType::Any), itr)?;
 
@@ -594,7 +594,13 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             Precedence::zero(),
         )),
         Expr::Ident(s) => add_trace(
-            Env::try_borrow_get_var(env, s),
+            Err(Env::unresolved(s)),
+            || format!("ident"),
+            expr.start,
+            expr.end,
+        ),
+        Expr::Slot(s) => add_trace(
+            Env::try_borrow_get_slot(env, s),
             || format!("ident"),
             expr.start,
             expr.end,
@@ -1307,10 +1313,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 expr.end,
             )
         }
-        Expr::While(cond, body) => {
+        Expr::While(cond, body, layout) => {
             // FIXME :(
             loop {
-                let ee = Env::with_parent(env);
+                let ee = Env::with_parent(env, layout);
                 if !(add_trace(
                     evaluate(&ee, cond),
                     || "while-cond".to_string(),
@@ -1343,8 +1349,8 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 expr.start,
                 expr.end,
             )?;
-            for (pat, body) in arms {
-                let ee = Env::with_parent(env);
+            for (pat, body, layout) in arms {
+                let ee = Env::with_parent(env, layout);
                 let p = eval_lvalue(&ee, pat)?;
                 // drop asap
                 // TODO this clone isn't great but isn't trivial to eliminate. maybe pattern match
@@ -1374,11 +1380,11 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 expr.end,
             )
         }
-        Expr::Try(body, pat, catcher) => {
+        Expr::Try(body, pat, catcher, layout) => {
             match evaluate(env, body) {
                 x @ (Ok(_) | Err(NErr::Break(..) | NErr::Continue(_) | NErr::Return(_))) => x,
                 Err(NErr::Throw(e, trace)) => {
-                    let ee = Env::with_parent(env);
+                    let ee = Env::with_parent(env, layout);
                     let p = eval_lvalue(&ee, pat)?;
                     // drop asap
                     // TODO as above, this clone isn't great but isn't trivial to eliminate
@@ -1417,7 +1423,7 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                 }
             })
         }
-        Expr::Struct(name, field_names) => {
+        Expr::Struct(name, field_names, ids) => {
             let s = Struct::new(
                 name.clone(),
                 Rc::new(
@@ -1435,19 +1441,19 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
                         .collect::<NRes<_>>()?,
                 ),
             );
+            let (name_id, field_ids) = ids
+                .split_first()
+                .ok_or_else(|| NErr::syntax_error("BUG: struct declares nothing".to_string()))?;
             assign(
                 &env,
-                &EvaluatedLvalue::IndexedIdent(Ident::Ident((&**name).clone()), Vec::new()),
+                &EvaluatedLvalue::IndexedIdent(name_id.clone(), Vec::new()),
                 Some(&ObjType::Func),
                 Obj::Func(Func::Type(ObjType::Struct(s.clone())), Precedence::zero()),
             )?;
-            for (i, field) in field_names.iter().enumerate() {
+            for (i, field_id) in field_ids.iter().enumerate() {
                 assign(
                     &env,
-                    &EvaluatedLvalue::IndexedIdent(
-                        Ident::Ident((&*(*field).0).clone()),
-                        Vec::new(),
-                    ),
+                    &EvaluatedLvalue::IndexedIdent(field_id.clone(), Vec::new()),
                     Some(&ObjType::Func),
                     Obj::Func(
                         Func::StructField(Box::new(s.clone()), i),
@@ -1457,45 +1463,14 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
             }
             Ok(Obj::Null)
         }
-        Expr::Freeze(expr) => {
-            let mut frenv = FreezeEnv {
-                bound: HashSet::new(),
-                env: Rc::clone(env),
-            };
-            evaluate(env, &freeze(&mut frenv, expr)?)
-        }
-        Expr::Import(arg) => {
-            // l m a o
-            // we'd really like to try importing relative to the current file's path. but then for that to
-            // be sensible we probably need to nest envs so whe we import a file we stick its path in its
-            // env. so either the imported file has to explicitly export stuff outside, or the import
-            // statement has to pull things out. might procrastinate after christmas... FIXME
-            add_trace(
-                match evaluate(&env, arg)? {
-                    // FIXME refactor out with freeze
-                    Obj::Seq(Seq::String(f)) => match read_import_to_string(&*f) {
-                        Ok(c) => match match parse(&c) {
-                            Ok(Some(code)) => evaluate(env, &code),
-                            Ok(None) => Err(NErr::value_error("empty file".to_string())),
-                            Err(s) => {
-                                Err(NErr::value_error(format!("lex failed: {}", s.render(&c))))
-                            }
-                        } {
-                            Ok(x) => Ok(x),
-                            Err(mut e) => {
-                                e.supply_source(f.clone(), Rc::new(c));
-                                Err(e)
-                            }
-                        },
-                        Err(e) => Err(NErr::io_error(format!("failed: {}", e))),
-                    },
-                    a => Err(NErr::type_error(format!("can't import: {}", a))),
-                },
-                || "import".to_string(),
-                expr.start,
-                expr.end,
-            )
-        }
+        Expr::Freeze(expr) => evaluate(env, &freeze(&mut FreezeEnv::new(env), expr)?),
+        // FIXME: temporarily unsupported, until the resolver handles imports
+        Expr::Import(_) => Err(NErr::syntax_error_loc(
+            "import isn't supported right now".to_string(),
+            "import".to_string(),
+            expr.start,
+            expr.end,
+        )),
         Expr::Literally(_) => Err(NErr::syntax_error_loc(
             "'literally' can only be in lvalues / patterns".to_string(),
             "literally".to_string(),
@@ -1645,9 +1620,10 @@ pub fn evaluate(env: &Rc<RefCell<Env>>, expr: &LocExpr) -> NRes<Obj> {
 
 impl Closure {
     fn run(&self, args: Vec<Obj>) -> NRes<Obj> {
-        let ee = Env::with_parent(&self.env);
+        let ee = Env::with_parent(&self.env, &self.params.layout);
         let p = self
             .params
+            .lvalues
             .iter()
             .map(|e| Ok(Box::new(eval_lvalue(&ee, e)?)))
             .collect::<NRes<Vec<Box<EvaluatedLvalue>>>>()?;
@@ -1829,10 +1805,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             "Can't evaluate underscore on LHS of assignment??".to_string(),
         )),
         EvaluatedLvalue::IndexedIdent(s, v) => {
-            let mut sr = match s {
-                Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
-                Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
-            };
+            let mut sr = Env::try_borrow_get_ident(env, s)?;
             for ix in v {
                 sr = index_or_slice(sr, ix)?.clone();
             }
@@ -1843,10 +1816,7 @@ pub fn eval_lvalue_as_obj(env: &REnv, expr: &EvaluatedLvalue) -> NRes<Obj> {
             // There's only one incredibly specific scenario where a default could make sense.
             // I guess it's fine! Ban others though.
             EvaluatedLvalue::IndexedIdent(s, v) => {
-                let mut sr = match s {
-                    Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
-                    Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
-                };
+                let mut sr = Env::try_borrow_get_ident(env, s)?;
                 match v.split_last() {
                     None => Ok(sr),
                     Some((vlast, vp)) => {
@@ -2459,7 +2429,7 @@ pub fn modify_every_existing_index(
     }
 }
 
-pub fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
+pub fn insert_declare(env: &REnv, id: &Ident, ty: ObjType, rhs: Obj) -> NRes<()> {
     if !is_type(&ty, &rhs)? {
         Err(NErr::name_error(format!(
             "Declaring, type mismatch: {} is not of type {}",
@@ -2467,39 +2437,52 @@ pub fn insert_declare(env: &REnv, s: &str, ty: ObjType, rhs: Obj) -> NRes<()> {
             ty.name()
         )))
     } else {
-        try_borrow_mut_nres(env, "variable declaration", s)?.insert(s.to_string(), ty, rhs)
+        try_borrow_mut_nres(env, "variable declaration", id.name().unwrap_or("?"))?
+            .declare(id, ty, rhs)
     }
 }
 
 pub fn assign_respecting_type(
     env: &REnv,
-    s: &str,
+    id: &Ident,
     ixs: &[EvaluatedIndexOrSlice],
     rhs: Obj,
     every: bool,
 ) -> NRes<()> {
-    try_borrow_nres(env, "env for assigning", s)?.modify_existing_var(s, |(ty, v)| {
+    let s = id.name().unwrap_or("?");
+    Env::modify_existing(env, id, "env for assigning", |(ty, v)| {
         // Eagerly check type only if ixs is empty, otherwise we can't really do
         // that (at least not in full generality)
         // FIXME is there possibly a double borrow here? maybe not because we only use immutable
         // borrows, so we'd only conflict with mutable borrows, and the type couldn't have been
         // constructed to mutably borrow the variable it's for?
         if ixs.is_empty() && !is_type(ty, &rhs)? {
-            Err(NErr::type_error(format!("Assignment to {} type check failed: {} not {}", s, FmtObj::debug(&rhs), ty.name())))?
+            Err(NErr::type_error(format!(
+                "Assignment to {} type check failed: {} not {}",
+                s,
+                FmtObj::debug(&rhs),
+                ty.name()
+            )))?
         }
-        set_index(&mut *try_borrow_mut_nres(v, "var for assigning", s)?, ixs, Some(rhs), every)?;
+        set_index(
+            &mut *try_borrow_mut_nres(v, "var for assigning", s)?,
+            ixs,
+            Some(rhs),
+            every,
+        )?;
         // Check type after the fact. TODO if we ever do subscripted types: this
         // will be super inefficient lmao, we can be smart tho
-        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?)? {
-            Err(NErr::type_error(format!("Assignment to {} LATE type check failed (the assignment still happened): not {}", s, ty.name())))
+        if !ixs.is_empty() && !is_type(ty, &*try_borrow_nres(v, "assignment late type check", s)?)?
+        {
+            Err(NErr::type_error(format!(
+                "Assignment to {} LATE type check failed (the assignment still happened): not {}",
+                s,
+                ty.name()
+            )))
         } else {
             Ok(())
         }
-    }).ok_or_else(|| NErr::name_error(if ixs.is_empty() {
-         format!("Variable {:?} not found (use := to declare)", s)
-    } else {
-         format!("Variable {:?} not found, couldn't set into index {:?}", s, ixs)
-    }))?
+    })?
 }
 
 pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> NRes<()> {
@@ -2521,19 +2504,20 @@ pub fn assign(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj)
         }
         EvaluatedLvalue::IndexedIdent(id, ixs) => {
             match id {
-                Ident::Ident(s) => match rt {
+                Ident::Ident(_) | Ident::Slot(_) => match rt {
                     Some(ty) => {
                         // declaration
                         if ixs.is_empty() {
-                            insert_declare(env, s, ty.clone(), rhs)
+                            insert_declare(env, id, ty.clone(), rhs)
                         } else {
                             return Err(NErr::name_error(format!(
                                 "Can't declare new value into index expression: {:?} {:?}",
-                                s, ixs
+                                id.name().unwrap_or("?"),
+                                ixs
                             )));
                         }
                     }
-                    None => assign_respecting_type(env, s, ixs, rhs, /* every */ false),
+                    None => assign_respecting_type(env, id, ixs, rhs, /* every */ false),
                 },
                 Ident::InternalPeek(i) => match rt {
                     Some(_) => Err(NErr::name_error(format!("Can't declare into peek"))),
@@ -2706,19 +2690,20 @@ pub fn drop_lhs(env: &REnv, lhs: &EvaluatedLvalue) -> NRes<()> {
 pub fn assign_every(env: &REnv, lhs: &EvaluatedLvalue, rt: Option<&ObjType>, rhs: Obj) -> NRes<()> {
     match lhs {
         EvaluatedLvalue::Underscore => Ok(()),
-        EvaluatedLvalue::IndexedIdent(Ident::Ident(s), ixs) => match rt {
+        EvaluatedLvalue::IndexedIdent(id @ (Ident::Ident(_) | Ident::Slot(_)), ixs) => match rt {
             Some(ty) => {
                 // declaration
                 if ixs.is_empty() {
-                    insert_declare(env, s, ty.clone(), rhs)
+                    insert_declare(env, id, ty.clone(), rhs)
                 } else {
                     Err(NErr::name_error(format!(
                         "Can't declare new value into index expression: {:?} {:?}",
-                        s, ixs
+                        id.name().unwrap_or("?"),
+                        ixs
                     )))
                 }
             }
-            None => assign_respecting_type(env, s, ixs, rhs, /* every */ true),
+            None => assign_respecting_type(env, id, ixs, rhs, /* every */ true),
         },
         EvaluatedLvalue::IndexedIdent(Ident::InternalPeek(i), ixs) => {
             if rt.is_some() {
@@ -2814,10 +2799,7 @@ pub fn modify_every(
         EvaluatedLvalue::Underscore => Err(NErr::type_error(format!("Can't modify underscore"))),
         EvaluatedLvalue::IndexedIdent(s, ixs) => {
             // drop borrow immediately
-            let mut old: Obj = match s {
-                Ident::Ident(s) => Env::try_borrow_get_var(env, s)?,
-                Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i)?,
-            };
+            let mut old: Obj = Env::try_borrow_get_ident(env, s)?;
 
             if ixs.is_empty() {
                 let new = rhs(old)?;
@@ -2832,7 +2814,7 @@ pub fn modify_every(
                         } else {
                             Err(NErr::name_error(format!(
                                 "Modify every: assignment to {} type check failed: {} not {}",
-                                s,
+                                s.name().unwrap_or("?"),
                                 new,
                                 ty.name()
                             )))
@@ -2847,7 +2829,7 @@ pub fn modify_every(
                 })?;
 
                 match s {
-                    Ident::Ident(s) => {
+                    Ident::Ident(_) | Ident::Slot(_) => {
                         assign_respecting_type(env, s, &[], old, false /* every */)
                     }
                     Ident::InternalPeek(i) => Env::try_borrow_set_peek(env, *i, old),

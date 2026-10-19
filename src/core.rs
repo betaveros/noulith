@@ -1876,9 +1876,52 @@ pub enum ForIterationType {
     Declare,
 }
 
+// Maps the names declared directly in a scope to indices into its Env's slots. resolve.rs makes
+// these for the scopes inside code; the root Env's grows as resolve.rs reserves slots in it (needed to support REPL and other interactive use). Cheap
+// to clone, since every Env made for the same scope shares one.
+#[derive(Debug, Clone, Default)]
+pub struct SlotLayout(Rc<HashMap<String, usize>>);
+
+impl SlotLayout {
+    pub fn new(slots: HashMap<String, usize>) -> SlotLayout {
+        SlotLayout(Rc::new(slots))
+    }
+
+    #[inline]
+    pub fn get(&self, name: &str) -> Option<usize> {
+        self.0.get(name).copied()
+    }
+
+    #[inline]
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    // in no particular order
+    pub fn iter(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.0.iter().map(|(name, &slot)| (name.as_str(), slot))
+    }
+
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.0.keys().map(String::as_str)
+    }
+
+    // Only for the root Env's layout. (Copies it if it's shared, which it shouldn't be.)
+    pub fn insert(&mut self, name: String, slot: usize) {
+        Rc::make_mut(&mut self.0).insert(name, slot);
+    }
+}
+
 #[derive(Debug)]
 pub enum ForIteration {
-    Iteration(ForIterationType, Box<Lvalue>, Box<LocExpr>),
+    // the layout is for the Env each iteration creates, which the later iterations and the body
+    // also run in
+    Iteration(ForIterationType, Box<Lvalue>, Box<LocExpr>, SlotLayout),
     Guard(Box<LocExpr>),
 }
 
@@ -1922,6 +1965,7 @@ pub enum Expr {
     BytesLit(Rc<Vec<u8>>),
     FormatString(Vec<Result<char, (LocExpr, MyFmtFlags)>>),
     Ident(String),
+    Slot(SlotRef),
     Symbol(Rc<String>),
     Underscore,
     Backref(usize),
@@ -1949,22 +1993,29 @@ pub enum Expr {
     OpAssign(bool, Box<Lvalue>, Box<LocExpr>, Box<LocExpr>),
     If(Box<LocExpr>, Box<LocExpr>, Option<Box<LocExpr>>),
     For(Vec<ForIteration>, Box<ForBody>),
-    While(Box<LocExpr>, Box<LocExpr>),
-    Switch(Box<LocExpr>, Vec<(Box<Lvalue>, Box<LocExpr>)>),
-    Try(Box<LocExpr>, Box<Lvalue>, Box<LocExpr>),
+    // the SlotLayouts are for the Envs these create: each while iteration, each switch case,
+    // and the catch
+    While(Box<LocExpr>, Box<LocExpr>, SlotLayout),
+    Switch(Box<LocExpr>, Vec<(Box<Lvalue>, Box<LocExpr>, SlotLayout)>),
+    Try(Box<LocExpr>, Box<Lvalue>, Box<LocExpr>, SlotLayout),
     Break(usize, Option<Box<LocExpr>>),
     Continue(usize),
     Return(Option<Box<LocExpr>>),
     Throw(Box<LocExpr>),
     Sequence(Vec<Box<LocExpr>>, bool), // semicolon ending to swallow nulls
-    Struct(Rc<String>, Vec<(Rc<String>, Option<Box<LocExpr>>)>),
+    // the Idents are the variables it declares: the name, then the fields
+    Struct(
+        Rc<String>,
+        Vec<(Rc<String>, Option<Box<LocExpr>>)>,
+        Vec<Ident>,
+    ),
     Freeze(Box<LocExpr>),
     Import(Box<LocExpr>),
     // lvalues only
     Literally(Box<LocExpr>),
 
     // these get cloned in particular
-    Lambda(Rc<Vec<Box<Lvalue>>>, Rc<LocExpr>),
+    Lambda(Rc<LambdaParams>, Rc<LocExpr>),
 
     // shouldn't stay in the tree:
     CommaSeq(Vec<Box<LocExpr>>),
@@ -2000,10 +2051,38 @@ impl Expr {
     }
 }
 
+// Layout is for the Env each call creates, which the body also runs in. We put it here instead of directly in Closure to keep Obj small.
+#[derive(Debug)]
+pub struct LambdaParams {
+    pub lvalues: Vec<Box<Lvalue>>,
+    pub layout: SlotLayout,
+}
+
+// A variable reference that resolve.rs has matched to the scope declaring it.
+#[derive(Debug, Clone)]
+pub struct SlotRef {
+    pub name: Rc<String>,
+    // how many Envs up the variable's scope is
+    pub depth: usize,
+    // index into that Env's slots
+    pub slot: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum Ident {
     Ident(String),
     InternalPeek(usize),
+    Slot(SlotRef),
+}
+
+impl Ident {
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Ident::Ident(x) => Some(x),
+            Ident::InternalPeek(_) => None,
+            Ident::Slot(s) => Some(&s.name),
+        }
+    }
 }
 
 impl Display for Ident {
@@ -2011,6 +2090,10 @@ impl Display for Ident {
         match self {
             Ident::Ident(x) => write!(formatter, "{}", x),
             Ident::InternalPeek(x) => write!(formatter, "🐉{}", x),
+            // for debugging; error messages should use name()
+            Ident::Slot(SlotRef { name, depth, slot }) => {
+                write!(formatter, "{}@{}#{}", name, depth, slot)
+            }
         }
     }
 }
@@ -2055,14 +2138,10 @@ impl Lvalue {
         match self {
             Lvalue::Underscore => HashSet::new(),
             Lvalue::Literal(_) => HashSet::new(),
-            Lvalue::IndexedIdent(Ident::Ident(x), _) => {
-                if declared_only {
-                    HashSet::new()
-                } else {
-                    HashSet::from([x.clone()])
-                }
-            }
-            Lvalue::IndexedIdent(Ident::InternalPeek(_), _) => HashSet::new(),
+            Lvalue::IndexedIdent(id, _) => match id.name() {
+                Some(x) if !declared_only => HashSet::from([x.to_string()]),
+                _ => HashSet::new(),
+            },
             Lvalue::Annotation(x, _) => x.collect_identifiers(false),
             Lvalue::WithDefault(x, _) => x.collect_identifiers(declared_only),
             Lvalue::CommaSeq(x, _) => x
@@ -2351,7 +2430,7 @@ pub fn to_lvalue_no_literals(expr: LocExpr) -> Result<Lvalue, ParseError> {
 
 #[derive(Clone)]
 pub struct Closure {
-    pub params: Rc<Vec<Box<Lvalue>>>,
+    pub params: Rc<LambdaParams>,
     pub body: Rc<LocExpr>,
     pub env: Rc<RefCell<Env>>,
 }
@@ -2362,7 +2441,7 @@ impl Debug for Closure {
         write!(
             fmt,
             "Closure {{ params: {:?}, body: {:?}, env: ... }}",
-            self.params, self.body
+            self.params.lvalues, self.body
         )
     }
 }
@@ -2388,15 +2467,44 @@ pub struct Parser {
 // point. Some constant optimizations occur.
 #[derive(Clone)]
 pub struct FreezeEnv {
-    // bound variables
-    pub bound: HashSet<String>,
-
+    // the Env the frozen code will be evaluated in
     pub env: REnv,
+    // how many Envs the code we're at will be inside, relative to env. Needed for resolving slot
+    // references, a reference with depth d here is d - extra_depth Envs up from env.
+    pub extra_depth: usize,
+    // what the frozen code declares directly in env, so far (in source order; references to these
+    // stay as they are)
+    pub bound: HashSet<String>,
 }
 
 impl FreezeEnv {
+    pub fn new(env: &REnv) -> FreezeEnv {
+        FreezeEnv {
+            env: Rc::clone(env),
+            extra_depth: 0,
+            bound: HashSet::new(),
+        }
+    }
+
     fn bind(&mut self, ids: HashSet<String>) {
-        self.bound.extend(ids);
+        // declarations in Envs inside the frozen code are bound by being inside it
+        if self.extra_depth == 0 {
+            self.bound.extend(ids);
+        }
+    }
+
+    // whether s refers to something outside the frozen code
+    fn is_free(&self, s: &SlotRef) -> bool {
+        s.depth > self.extra_depth
+            || (s.depth == self.extra_depth && !self.bound.contains(&*s.name))
+    }
+
+    // for the parts of a node evaluated in a new Env; must match resolve.rs and eval.rs
+    fn scoped<T>(&mut self, f: impl FnOnce(&mut FreezeEnv) -> NRes<T>) -> NRes<T> {
+        self.extra_depth += 1;
+        let ret = f(self);
+        self.extra_depth -= 1;
+        ret
     }
 }
 
@@ -2451,16 +2559,16 @@ fn freeze_lvalue(env: &mut FreezeEnv, lvalue: &Lvalue) -> NRes<Lvalue> {
         Lvalue::Underscore => Ok(Lvalue::Underscore),
         Lvalue::Literal(x) => Ok(Lvalue::Literal(x.clone())),
         Lvalue::IndexedIdent(s, ioses) => {
-            if let Ident::Ident(id) = s {
-                if env.bound.contains(id) {
-                    // fine
-                } else {
-                    // frozen code can't write to an outside lvalue
+            match s {
+                // frozen code can't write to an outside lvalue
+                Ident::Slot(r) if env.is_free(r) => {
                     return Err(NErr::name_error(format!(
-                        "ident in lvalue not bound: {}",
-                        id
+                        "frozen code can't assign to outside variable: {}",
+                        r.name
                     )));
                 }
+                Ident::Ident(x) => return Err(Env::unresolved(x)),
+                _ => {}
             }
             Ok(Lvalue::IndexedIdent(
                 s.clone(),
@@ -2539,18 +2647,45 @@ pub fn read_import_to_string(s: &str) -> io::Result<String> {
     }
 }
 
-// OK what's the actual contract of this function
+// Each iteration makes an Env, which the later iterations and the body are evaluated in.
+fn freeze_for(
+    env: &mut FreezeEnv,
+    its: &[ForIteration],
+    body: &[&LocExpr],
+) -> NRes<(Vec<ForIteration>, Vec<LocExpr>)> {
+    match its.split_first() {
+        None => Ok((
+            Vec::new(),
+            body.iter()
+                .map(|b| freeze(env, b))
+                .collect::<NRes<Vec<LocExpr>>>()?,
+        )),
+        Some((ForIteration::Guard(g), rest)) => {
+            let g = box_freeze(env, g)?;
+            let (mut its, body) = freeze_for(env, rest, body)?;
+            its.insert(0, ForIteration::Guard(g));
+            Ok((its, body))
+        }
+        Some((ForIteration::Iteration(ty, lv, iteratee, layout), rest)) => {
+            let iteratee = box_freeze(env, iteratee)?;
+            env.scoped(|env| {
+                let lv = box_freeze_lvalue(env, lv)?;
+                let (mut its, body) = freeze_for(env, rest, body)?;
+                its.insert(
+                    0,
+                    ForIteration::Iteration(*ty, lv, iteratee, layout.clone()),
+                );
+                Ok((its, body))
+            })
+        }
+    }
+}
+
+// Given a resolved expression, replace all its free variables with
+// their current values in env.env, where the expression will be evaluated. Error if any free variable isn't
+// already declared or gets assigned to inside this expression. Also folds a few constants.
 //
-// Given an expression, go through it and resolve all free variables (those not bound by
-// declarations internal to the expression) to their values in the outer env. Also collect
-// bound variables. Error if
-//
-// - any free variable isn't found in the outer env
-// - any free variables are assigned to
-// - (??) any bound variable is redeclared
-//
-// This is fragile because it has its own idea of what things introduce scopes and one day it wil
-// get out of sync with the actual evaluation code. Shrug.
+// Which nodes make new Envs (see FreezeEnv::scoped) has to match resolve.rs and eval.rs.
 
 pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
     Ok(LocExpr {
@@ -2568,13 +2703,11 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::BytesLit(x) => Ok(Expr::BytesLit(x.clone())),
             Expr::Backref(x) => Ok(Expr::Backref(x.clone())),
             Expr::Frozen(x) => Ok(Expr::Frozen(x.clone())),
-            Expr::Struct(name, field_names) => {
-                env.bind(HashSet::from([(&**name).clone()]));
+            Expr::Struct(name, field_names, ids) => {
                 env.bind(
-                    field_names
-                        .iter()
-                        .map(|s| (&*((*s).0)).clone())
-                        .collect::<HashSet<String>>(),
+                    ids.iter()
+                        .filter_map(|id| id.name().map(str::to_string))
+                        .collect(),
                 );
                 Ok(Expr::Struct(
                     name.clone(),
@@ -2582,6 +2715,7 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                         .iter()
                         .map(|(name, def)| Ok((name.clone(), opt_box_freeze(env, def)?)))
                         .collect::<NRes<_>>()?,
+                    ids.clone(),
                 ))
             }
             Expr::FormatString(s) => Ok(Expr::FormatString(
@@ -2592,14 +2726,16 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     })
                     .collect::<NRes<Vec<Result<char, (LocExpr, MyFmtFlags)>>>>()?,
             )),
-            Expr::Ident(s) => {
-                if env.bound.contains(s) {
-                    Ok(Expr::Ident(s.clone()))
+            Expr::Ident(s) => Err(Env::unresolved(s)),
+            Expr::Slot(s) => {
+                if env.is_free(s) {
+                    let outside = SlotRef {
+                        depth: s.depth - env.extra_depth,
+                        ..s.clone()
+                    };
+                    Ok(Expr::Frozen(Env::try_borrow_get_slot(&env.env, &outside)?))
                 } else {
-                    match Env::try_borrow_get_var(&env.env, s) {
-                        Ok(v) => Ok(Expr::Frozen(v)),
-                        Err(e) => Err(e),
-                    }
+                    Ok(Expr::Slot(s.clone()))
                 }
             }
             Expr::Underscore => Err(NErr::syntax_error_loc(
@@ -2701,96 +2837,65 @@ pub fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                 box_freeze(env, b)?,
                 opt_box_freeze(env, c)?,
             )),
-            Expr::For(iteratees, body) => {
-                let mut env2 = env.clone();
-                Ok(Expr::For(
-                    iteratees
-                        .iter()
-                        .map(|x| match x {
-                            ForIteration::Iteration(ty, lv, expr) => {
-                                // have to bind first so box_freeze_lvalue works
-                                // also recursive functions work ig
-                                env2.bind(lv.collect_identifiers(
-                                    match ty {
-                                        ForIterationType::Normal => false,
-                                        ForIterationType::Item => false,
-                                        ForIterationType::Declare => true, // thonk
-                                    }, /* declared_only */
-                                ));
-                                Ok(ForIteration::Iteration(
-                                    *ty,
-                                    box_freeze_lvalue(&mut env2, lv)?,
-                                    box_freeze(&mut env2, expr)?,
-                                ))
-                            }
-                            ForIteration::Guard(expr) => {
-                                Ok(ForIteration::Guard(box_freeze(&mut env2, expr)?))
-                            }
-                        })
-                        .collect::<NRes<Vec<ForIteration>>>()?,
-                    Box::new(match &**body {
-                        ForBody::Execute(b) => ForBody::Execute(freeze(&mut env2, b)?),
-                        ForBody::Yield(b, None) => ForBody::Yield(freeze(&mut env2, b)?, None),
-                        // this is technically wrong order
-                        ForBody::Yield(b, Some(s)) => {
-                            ForBody::Yield(freeze(&mut env2, b)?, Some(freeze(&mut env2, s)?))
-                        }
-                        ForBody::YieldItem(kb, vb, None) => {
-                            ForBody::YieldItem(freeze(&mut env2, kb)?, freeze(&mut env2, vb)?, None)
-                        }
-                        ForBody::YieldItem(kb, vb, Some(s)) => ForBody::YieldItem(
-                            freeze(&mut env2, kb)?,
-                            freeze(&mut env2, vb)?,
-                            Some(freeze(&mut env2, s)?),
-                        ),
-                    }),
-                ))
+            Expr::For(its, body) => {
+                // the into is outside the loop, so freeze it first
+                let into = |env: &mut FreezeEnv, into: &Option<LocExpr>| match into {
+                    Some(s) => Ok(Some(freeze(env, s)?)),
+                    None => Ok(None),
+                };
+                let (its, body) = match &**body {
+                    ForBody::Execute(b) => {
+                        let (its, mut bs) = freeze_for(env, its, &[b])?;
+                        (its, ForBody::Execute(bs.remove(0)))
+                    }
+                    ForBody::Yield(b, i) => {
+                        let i = into(env, i)?;
+                        let (its, mut bs) = freeze_for(env, its, &[b])?;
+                        (its, ForBody::Yield(bs.remove(0), i))
+                    }
+                    ForBody::YieldItem(k, v, i) => {
+                        let i = into(env, i)?;
+                        let (its, mut bs) = freeze_for(env, its, &[k, v])?;
+                        let k = bs.remove(0);
+                        (its, ForBody::YieldItem(k, bs.remove(0), i))
+                    }
+                };
+                Ok(Expr::For(its, Box::new(body)))
             }
-            Expr::While(cond, body) => {
-                let mut env2 = env.clone();
+            Expr::While(cond, body, layout) => env.scoped(|env| {
                 Ok(Expr::While(
-                    box_freeze(&mut env2, cond)?,
-                    box_freeze(&mut env2, body)?,
+                    box_freeze(env, cond)?,
+                    box_freeze(env, body)?,
+                    layout.clone(),
                 ))
-            }
-            Expr::Switch(scrutinee, arms) => {
-                Ok(Expr::Switch(
-                    box_freeze(env, scrutinee)?,
-                    arms.iter()
-                        .map(|(pat, rhs)| {
-                            let mut env2 = env.clone();
-                            env2.bind(pat.collect_identifiers(false /* declared_only */));
+            }),
+            Expr::Switch(scrutinee, arms) => Ok(Expr::Switch(
+                box_freeze(env, scrutinee)?,
+                arms.iter()
+                    .map(|(pat, rhs, layout)| {
+                        env.scoped(|env| {
                             Ok((
-                                box_freeze_lvalue(&mut env2, pat)?,
-                                box_freeze(&mut env2, rhs)?,
+                                box_freeze_lvalue(env, pat)?,
+                                box_freeze(env, rhs)?,
+                                layout.clone(),
                             ))
                         })
-                        .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>)>>>()?,
-                ))
-            }
-            Expr::Try(a, pat, catcher) => {
-                // FIXME hmmm is the main try branch really scoped this way
+                    })
+                    .collect::<NRes<Vec<(Box<Lvalue>, Box<LocExpr>, SlotLayout)>>>()?,
+            )),
+            Expr::Try(a, pat, catcher, layout) => {
                 let body = box_freeze(env, a)?;
-                let mut env2 = env.clone();
-                env2.bind(pat.collect_identifiers(false /* declared_only */));
-                Ok(Expr::Try(
-                    body,
-                    box_freeze_lvalue(&mut env2, pat)?,
-                    box_freeze(&mut env2, catcher)?,
-                ))
+                env.scoped(|env| {
+                    Ok(Expr::Try(
+                        body,
+                        box_freeze_lvalue(env, pat)?,
+                        box_freeze(env, catcher)?,
+                        layout.clone(),
+                    ))
+                })
             }
             Expr::Lambda(params, body) => {
-                let mut env2 = env.clone();
-                env2.bind(
-                    params
-                        .iter()
-                        .flat_map(|x| x.collect_identifiers(false /* declared_only */))
-                        .collect::<HashSet<String>>(),
-                );
-                Ok(Expr::Lambda(
-                    params.clone(),
-                    Rc::new(freeze(&mut env2, body)?),
-                ))
+                env.scoped(|env| Ok(Expr::Lambda(Rc::clone(params), Rc::new(freeze(env, body)?))))
             }
             Expr::Freeze(e) => Ok(Expr::Freeze(box_freeze(env, e)?)),
             Expr::Import(_) => Err(NErr::syntax_error(format!("cannot freeze import"))),
@@ -3457,16 +3562,19 @@ impl Parser {
                                     )?;
                                     self.require(Token::RightArrow, "lambda-case mid: ->")?;
                                     let res = self.single("lambda-switch body")?;
-                                    v.push((Box::new(pat), Box::new(res)));
+                                    v.push((Box::new(pat), Box::new(res), SlotLayout::default()));
                                 }
                                 match v.last() {
-                                    Some((_, e)) => {
+                                    Some((_, e, _)) => {
                                         let end = e.end;
                                         Ok(LocExpr {
                                             start,
-                                            end: e.end,
+                                            end,
                                             expr: Expr::Lambda(
-                                                Rc::new(vec![Box::new(param)]),
+                                                Rc::new(LambdaParams {
+                                                    lvalues: vec![Box::new(param)],
+                                                    layout: SlotLayout::default(),
+                                                }),
                                                 Rc::new(LocExpr {
                                                     expr: Expr::Switch(Box::new(scrutinee), v),
                                                     start,
@@ -3486,7 +3594,13 @@ impl Parser {
                                 Ok(LocExpr {
                                     start,
                                     end: body.end,
-                                    expr: Expr::Lambda(Rc::new(params), Rc::new(body)),
+                                    expr: Expr::Lambda(
+                                        Rc::new(LambdaParams {
+                                            lvalues: params,
+                                            layout: SlotLayout::default(),
+                                        }),
+                                        Rc::new(body),
+                                    ),
                                 })
                             }
                         }
@@ -3571,7 +3685,7 @@ impl Parser {
                     Ok(LocExpr {
                         start,
                         end: body.end,
-                        expr: Expr::While(Box::new(cond), Box::new(body)),
+                        expr: Expr::While(Box::new(cond), Box::new(body), SlotLayout::default()),
                     })
                 }
                 Token::Switch => {
@@ -3584,10 +3698,10 @@ impl Parser {
                         let pat = to_lvalue(self.annotated_pattern(true, "switch pat")?)?;
                         self.require(Token::RightArrow, "case mid: ->")?;
                         let res = self.single("switch body")?;
-                        v.push((Box::new(pat), Box::new(res)));
+                        v.push((Box::new(pat), Box::new(res), SlotLayout::default()));
                     }
                     match v.last() {
-                        Some((_, e)) => Ok(LocExpr {
+                        Some((_, e, _)) => Ok(LocExpr {
                             start,
                             end: e.end,
                             expr: Expr::Switch(Box::new(scrutinee), v),
@@ -3605,7 +3719,12 @@ impl Parser {
                     Ok(LocExpr {
                         start,
                         end: body.end,
-                        expr: Expr::Try(Box::new(body), Box::new(pat), Box::new(catcher)),
+                        expr: Expr::Try(
+                            Box::new(body),
+                            Box::new(pat),
+                            Box::new(catcher),
+                            SlotLayout::default(),
+                        ),
                     })
                 }
                 Token::Struct => {
@@ -3644,8 +3763,12 @@ impl Parser {
                         }
                         let end = self.require(Token::RightParen, "struct end")?;
 
+                        let ids = std::iter::once(&name)
+                            .chain(fields.iter().map(|(f, _)| f))
+                            .map(|n| Ident::Ident((**n).clone()))
+                            .collect();
                         Ok(LocExpr {
-                            expr: Expr::Struct(name, fields),
+                            expr: Expr::Struct(name, fields, ids),
                             start,
                             end,
                         })
@@ -3806,6 +3929,7 @@ impl Parser {
                 ty,
                 Box::new(pat),
                 Box::new(iteratee),
+                SlotLayout::default(),
             ))
         }
     }
@@ -4160,7 +4284,8 @@ impl Parser {
     // b: list = 3, [4]` doesn't work. We trade one thing off for now: ideally `a, b: satisfying(3
     // < _ < 5) = 4` would evaluate the type expression only once, so the translated Lvalue needs
     // to be aware that substrings of variables in a flat list of things share the same annotation,
-    // but that's annoying. Let's just clone the type expression.
+    // but that's annoying. Let's just parse the type expression again for each variable, so each
+    // gets its own copy.
     fn annotated_comma_separated(
         &mut self,
         annotations: bool,
@@ -4197,19 +4322,22 @@ impl Parser {
                             "annotated-comma-separated: extra colon covers nothing"
                         )))?
                     }
-                    let anno = if self.peek_csc_stopper() {
-                        None
-                    } else {
-                        Some(Rc::new(self.single("annotation")?))
-                    };
+                    let anno_start = self.i;
+                    let has_anno = !self.peek_csc_stopper();
                     // lol annotated expressions may not be contiguous
-                    annotated.extend(pending_annotation.drain(..).map(|e| {
-                        Box::new(LocExpr {
+                    for e in std::mem::take(&mut pending_annotation) {
+                        let anno = if has_anno {
+                            self.i = anno_start;
+                            Some(Rc::new(self.single("annotation")?))
+                        } else {
+                            None
+                        };
+                        annotated.push(Box::new(LocExpr {
                             start: e.start,
                             end: e.end,
-                            expr: Expr::Annotation(e, anno.clone()),
-                        })
-                    }));
+                            expr: Expr::Annotation(e, anno),
+                        }));
+                    }
                 }
                 _ => {
                     annotated.extend(pending_annotation);
@@ -4405,7 +4533,8 @@ pub fn lex(code: &str) -> Vec<LocToken> {
     lexer.tokens
 }
 
-// allow the empty expression
+// Parse syntax only (doesn't resolve variables, so the result isn't ready to evaluate). Allows the
+// empty expression.
 pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
     let (tokens, _) = strip_comments(lex(code));
     if tokens.is_empty() {
@@ -4422,6 +4551,21 @@ pub fn parse(code: &str) -> Result<Option<LocExpr>, ParseError> {
             }
             Err(err) => Err(err),
         }
+    }
+}
+
+// Parse code and resolve it for evaluating in env. May mutate the root Env (by reserving slots for
+// variables, but not declaring them or assigning values).
+pub fn parse_and_resolve_in(
+    env: &Rc<RefCell<Env>>,
+    code: &str,
+) -> Result<Option<LocExpr>, ParseError> {
+    match parse(code)? {
+        Some(mut expr) => {
+            crate::resolve::resolve(env, &mut expr)?;
+            Ok(Some(expr))
+        }
+        None => Ok(None),
     }
 }
 
@@ -4495,7 +4639,13 @@ impl Debug for TopEnv {
 
 #[derive(Debug)]
 pub struct Env {
-    pub vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
+    // name -> index into slots. For scopes inside the code, this is the SlotLayout from the AST and
+    // never changes. The root Env's grows whenever code is resolved against it (once for a whole
+    // program, once per line in a REPL), as resolve.rs reserves slots for its top-level
+    // declarations.
+    pub vars: SlotLayout,
+    // None if the variable hasn't been declared yet, in which case using it is an error
+    pub slots: Vec<Option<(ObjType, RefCell<Obj>)>>,
     pub parent: Result<Rc<RefCell<Env>>, Rc<RefCell<TopEnv>>>,
     pub internal_stack: Vec<Obj>,
     pub allow_redeclaration: bool,
@@ -4606,9 +4756,11 @@ pub fn err_add_name<T>(res: NRes<T>, s: &str) -> NRes<T> {
 }
 
 impl Env {
+    // a root Env, starting with vars
     pub fn new(top: TopEnv, allow_redeclaration: bool, vars: RootVars) -> Env {
         Env {
-            vars: vars.vars,
+            vars: SlotLayout::new(vars.vars),
+            slots: vars.slots,
             parent: Err(Rc::new(RefCell::new(top))),
             internal_stack: Vec::new(),
             allow_redeclaration,
@@ -4626,9 +4778,12 @@ impl Env {
             RootVars::default(),
         )
     }
-    pub fn with_parent(env: &Rc<RefCell<Env>>) -> Rc<RefCell<Env>> {
+    pub fn with_parent(env: &Rc<RefCell<Env>>, layout: &SlotLayout) -> Rc<RefCell<Env>> {
+        let mut slots = Vec::new();
+        slots.resize_with(layout.len(), || None);
         Rc::new(RefCell::new(Env {
-            vars: HashMap::new(),
+            vars: layout.clone(),
+            slots,
             parent: Ok(Rc::clone(&env)),
             internal_stack: Vec::new(),
             allow_redeclaration: false,
@@ -4641,30 +4796,64 @@ impl Env {
         }
     }
 
-    pub fn try_borrow_get_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
-        let r = try_borrow_nres(env, "env", s)?;
-        match r.vars.get(s) {
-            Some(v) => Ok(try_borrow_nres(&*v.1, "variable", s)?.clone()),
-            None => {
-                let inner = match &r.parent {
-                    Ok(p) => Env::try_borrow_get_var(p, s),
-                    Err(_) => Err(NErr::name_error(format!("No such variable: \"{}\".", s))),
-                };
-                match inner {
-                    Err(NErr::Throw(x, _)) => {
-                        let mut msg = format!("{}", x);
-                        if let Some(k) = r
-                            .vars
-                            .keys()
-                            .min_by_key(|k| fast_edit_distance(k.as_bytes(), s.as_bytes()))
-                        {
-                            msg += &format!(" Did you mean: \"{}\"?", k);
-                        }
-                        Err(NErr::throw(msg))
-                    }
-                    x => x,
-                }
+    // Look up a variable in the root Env by name. Code doesn't need this, since it's resolved to
+    // slots; it's for the CLI's invocation wrappers.
+    pub fn try_borrow_get_root_var(env: &Rc<RefCell<Env>>, s: &str) -> NRes<Obj> {
+        let found = {
+            let r = try_borrow_nres(env, "env", s)?;
+            match r.vars.get(s).and_then(|i| r.slots[i].as_ref()) {
+                Some((_, v)) => Some(try_borrow_nres(v, "variable", s)?.clone()),
+                None => None,
             }
+        };
+        found.ok_or_else(|| NErr::throw(Env::no_such_variable(env, s)))
+    }
+
+    // with "Did you mean"s from each Env, outermost first
+    fn no_such_variable(env: &Rc<RefCell<Env>>, s: &str) -> String {
+        let r = match cell_try_borrow(env) {
+            Ok(r) => r,
+            Err(_) => return format!("name error: No such variable: \"{}\".", s),
+        };
+        let mut msg = match &r.parent {
+            Ok(p) => Env::no_such_variable(p, s),
+            Err(_) => format!("name error: No such variable: \"{}\".", s),
+        };
+        if let Some(k) = r
+            .vars
+            .iter()
+            .filter(|&(_, i)| r.slots[i].is_some())
+            .map(|(k, _)| k)
+            .min_by_key(|k| fast_edit_distance(k.as_bytes(), s.as_bytes()))
+        {
+            msg += &format!(" Did you mean: \"{}\"?", k);
+        }
+        msg
+    }
+
+    // Everything evaluated should've gone through resolve.rs (see parse_and_resolve_in).
+    pub fn unresolved(s: &str) -> NErr {
+        NErr::io_error(format!("BUG: variable {} wasn't resolved", s))
+    }
+
+    fn used_before_declaration(s: &str) -> NErr {
+        NErr::name_error(format!(
+            "Variable \"{}\" used before it was declared. (It's declared later in this scope, or only conditionally.)",
+            s
+        ))
+    }
+
+    pub fn try_borrow_get_slot(env: &Rc<RefCell<Env>>, s: &SlotRef) -> NRes<Obj> {
+        Env::modify_slot(env, s, s.depth, "variable", |(_, v)| {
+            Ok(try_borrow_nres(v, "variable", &s.name)?.clone())
+        })?
+    }
+
+    pub fn try_borrow_get_ident(env: &Rc<RefCell<Env>>, ident: &Ident) -> NRes<Obj> {
+        match ident {
+            Ident::Ident(s) => Err(Env::unresolved(s)),
+            Ident::InternalPeek(i) => Env::try_borrow_peek(env, *i),
+            Ident::Slot(s) => Env::try_borrow_get_slot(env, s),
         }
     }
 
@@ -4684,17 +4873,54 @@ impl Env {
         Ok(())
     }
 
-    pub fn modify_existing_var<T>(
-        &self,
-        key: &str,
-        f: impl FnOnce(&(ObjType, Box<RefCell<Obj>>)) -> T,
-    ) -> Option<T> {
-        match self.vars.get(key) {
-            Some(target) => Some(f(target)),
-            None => match &self.parent {
-                Ok(p) => cell_borrow(p).modify_existing_var(key, f),
-                Err(_) => None,
-            },
+    // The fast path for resolved variables: walk up `depth` Envs (the depth argument counts down)
+    // and call f on the slot there.
+    fn modify_slot<T>(
+        env: &Rc<RefCell<Env>>,
+        s: &SlotRef,
+        depth: usize,
+        op: &str,
+        f: impl FnOnce(&(ObjType, RefCell<Obj>)) -> T,
+    ) -> NRes<T> {
+        // a loop instead of recursing, which is measurably faster for builtins (several Envs up)
+        let mut cur = Rc::clone(env);
+        for _ in 0..depth {
+            let parent = match &try_borrow_nres(&cur, op, &s.name)?.parent {
+                Ok(p) => Rc::clone(p),
+                Err(_) => {
+                    return Err(NErr::io_error(format!(
+                        "BUG: resolved variable {} is above the root Env",
+                        s.name
+                    )));
+                }
+            };
+            cur = parent;
+        }
+        let r = try_borrow_nres(&cur, op, &s.name)?;
+        match r.slots.get(s.slot) {
+            Some(Some(e)) => Ok(f(e)),
+            Some(None) => Err(Env::used_before_declaration(&s.name)),
+            // e.g. an internal lambda called from a different Env than the one it's written in
+            None => Err(NErr::io_error(format!(
+                "BUG: resolved variable {} isn't in the Env it was resolved for",
+                s.name
+            ))),
+        }
+    }
+
+    // Call f on a resolved variable.
+    pub fn modify_existing<T>(
+        env: &Rc<RefCell<Env>>,
+        ident: &Ident,
+        op: &str,
+        f: impl FnOnce(&(ObjType, RefCell<Obj>)) -> T,
+    ) -> NRes<T> {
+        match ident {
+            Ident::Ident(s) => Err(Env::unresolved(s)),
+            Ident::Slot(s) => Env::modify_slot(env, s, s.depth, op, f),
+            Ident::InternalPeek(_) => {
+                Err(NErr::name_error(format!("{}: peek isn't a variable", op)))
+            }
         }
     }
 
@@ -4711,41 +4937,67 @@ impl Env {
         op: &str,
     ) -> NRes<T> {
         match ident {
-            Ident::Ident(s) => try_borrow_nres(env, op, &s)?
-                .modify_existing_var(&s, |(ty, vv)| f(ty, &mut *try_borrow_mut_nres(vv, op, &s)?))
-                .ok_or_else(|| NErr::name_error(format!("Variable {} not found", op)))?,
             Ident::InternalPeek(i) => {
                 try_borrow_mut_nres(env, op, "peek")?.modify_peek(*i, |x| f(&ObjType::Any, x))
+            }
+            _ => Env::modify_existing(env, ident, op, |(ty, vv)| {
+                f(
+                    ty,
+                    &mut *try_borrow_mut_nres(vv, op, ident.name().unwrap_or("?"))?,
+                )
+            })?,
+        }
+    }
+
+    fn declare_in_slot(&mut self, slot_idx: usize, key: &str, ty: ObjType, val: Obj) -> NRes<()> {
+        if self.allow_redeclaration || self.slots[slot_idx].is_none() {
+            self.slots[slot_idx] = Some((ty, RefCell::new(val)));
+            Ok(())
+        } else {
+            Err(NErr::name_error(format!(
+                "Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables",
+                key
+            )))
+        }
+    }
+
+    // The slot for a variable in the root Env, making an empty one if there isn't one, so code
+    // resolved later can refer to it before it's declared.
+    pub fn reserve_root_slot(&mut self, key: &str) -> usize {
+        match self.vars.get(key) {
+            Some(i) => i,
+            None => {
+                let i = self.slots.len();
+                self.slots.push(None);
+                self.vars.insert(key.to_string(), i);
+                i
             }
         }
     }
 
-    pub fn insert(&mut self, key: String, ty: ObjType, val: Obj) -> NRes<()> {
-        match self.vars.entry(key) {
-            std::collections::hash_map::Entry::Occupied(mut e) => {
-                if self.allow_redeclaration {
-                    e.insert((ty, Box::new(RefCell::new(val))));
-                    Ok(())
-                } else {
-                    Err(NErr::name_error(format!(
-                        "Declaring/assigning variable that already exists: {:?}. If in pattern with other declarations, parenthesize existent variables",
-                        e.key()
-                    )))
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((ty, Box::new(RefCell::new(val))));
-                Ok(())
-            }
+    pub fn declare(&mut self, ident: &Ident, ty: ObjType, val: Obj) -> NRes<()> {
+        match ident {
+            Ident::Ident(s) => Err(Env::unresolved(s)),
+            Ident::Slot(SlotRef {
+                name,
+                depth: 0,
+                slot,
+            }) if *slot < self.slots.len() => self.declare_in_slot(*slot, name, ty, val),
+            Ident::Slot(_) => Err(NErr::io_error(format!(
+                "BUG: resolved variable {} declared outside its scope",
+                ident
+            ))),
+            Ident::InternalPeek(_) => Err(NErr::name_error(format!("Can't declare into peek"))),
         }
     }
 }
 
 // The variables a root Env starts with: builtins and the like, collected before making it with
-// Env::new.
+// Env::new. Code can't add variables by name; everything else goes through slots resolve.rs makes.
 #[derive(Default)]
 pub struct RootVars {
-    vars: HashMap<String, (ObjType, Box<RefCell<Obj>>)>,
+    vars: HashMap<String, usize>,
+    slots: Vec<Option<(ObjType, RefCell<Obj>)>>,
 }
 
 impl RootVars {
@@ -4756,7 +5008,8 @@ impl RootVars {
                 key
             )));
         }
-        self.vars.insert(key, (ty, Box::new(RefCell::new(val))));
+        self.vars.insert(key, self.slots.len());
+        self.slots.push(Some((ty, RefCell::new(val))));
         Ok(())
     }
     pub fn insert_type(&mut self, b: ObjType) {
