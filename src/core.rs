@@ -2039,6 +2039,114 @@ impl Expr {
     }
 }
 
+// Constant folding, for freeze and resolve.rs's optimizing pass: what a node evaluates to, if
+// its parts are all constants and evaluating it can't do anything else. Anything that would error
+// is left alone, so it errors at runtime as usual.
+
+// Builtins that are pure functions of numbers. A call or chain of them on constant numbers can be
+// computed in advance, so code like [-1] or 2^20 - 1 doesn't call functions every time. They only
+// count as constants once they've been inlined (by the resolver or freeze), which is what makes
+// sure they're the builtins and not shadowed or reassigned.
+const FOLDABLE: &[&str] = &[
+    "+", "-", "*", "/", "%", "//", "%%", "&", "|", "~", "^", "<<", ">>",
+];
+// ^ and << can make huge numbers, so they aren't folded if the result could be bigger than this
+// many bits
+const FOLD_MAX_BITS: u64 = 1 << 16;
+
+// e evaluated, if it's a call or chain of FOLDABLE builtins on constant numbers that's
+// cheap to compute and gives a number.
+pub(crate) fn fold_arithmetic(env: &REnv, e: &LocExpr) -> Option<Obj> {
+    let (ops, operands): (Vec<&Expr>, Vec<&Expr>) = match &e.expr {
+        Expr::Call(f, args, _) => (vec![&f.expr], args.iter().map(|a| &a.expr).collect()),
+        Expr::Chain(a, ops) => (
+            ops.iter().map(|(op, _)| &op.expr).collect(),
+            std::iter::once(&a.expr)
+                .chain(ops.iter().map(|(_, b)| &b.expr))
+                .collect(),
+        ),
+        _ => return None,
+    };
+    let mut names = Vec::new();
+    for op in ops {
+        match op.constant_value() {
+            Some(Obj::Func(Func::Builtin(b), _)) if FOLDABLE.contains(&b.builtin_name()) => {
+                names.push(b.builtin_name().to_string())
+            }
+            _ => return None,
+        }
+    }
+    let mut nums = Vec::new();
+    for x in operands {
+        match x.constant_value() {
+            Some(Obj::Num(n)) => nums.push(n),
+            _ => return None,
+        }
+    }
+    // ^, << and >> have the highest precedence, so if no two of them are adjacent, each one's
+    // operands are the constants on either side, and we can check it's cheap. (Op i of a chain is
+    // between operands i and i + 1, and so is a call's f between its two args.)
+    let top = |i: usize| matches!(names.get(i).map(String::as_str), Some("^" | "<<" | ">>"));
+    for i in 0..names.len() {
+        if top(i) {
+            if top(i + 1) {
+                return None;
+            }
+            if let (Some(a), Some(b)) = (nums.get(i), nums.get(i + 1)) {
+                if !cheap_to_compute(&names[i], a, b) {
+                    return None;
+                }
+            }
+        }
+    }
+    match crate::eval::evaluate(env, e) {
+        Ok(x @ Obj::Num(_)) => Some(x),
+        _ => None,
+    }
+}
+
+// whether a op b is safe to compute in advance: it won't panic or make a huge number
+fn cheap_to_compute(op: &str, a: &NNum, b: &NNum) -> bool {
+    match op {
+        // only fold exact numbers to integer powers, which is what it'd be documentation for
+        "^" => match (a.to_rational(), b.to_nint()) {
+            (Some(a), Some(_)) => b.abs().to_u64().map_or(false, |e| {
+                (a.numer().bits() + a.denom().bits()).saturating_mul(e) <= FOLD_MAX_BITS
+            }),
+            _ => false,
+        },
+        "<<" => b.to_u64().map_or(true, |s| s <= FOLD_MAX_BITS),
+        _ => true,
+    }
+}
+
+pub(crate) fn fold_list(xs: &[Box<LocExpr>]) -> Option<Obj> {
+    xs.iter()
+        .map(|e| e.expr.constant_value())
+        .collect::<Option<Vec<Obj>>>()
+        .map(Obj::list)
+}
+
+pub(crate) fn fold_dict(
+    def: &Option<Box<LocExpr>>,
+    xs: &[(Box<LocExpr>, Option<Box<LocExpr>>)],
+) -> Option<Obj> {
+    let def = match def {
+        Some(d) => Some(d.expr.constant_value()?),
+        None => None,
+    };
+    let mut acc = HashMap::new();
+    for (k, v) in xs {
+        let k = to_key(k.expr.constant_value()?).ok()?;
+        let v = match v {
+            Some(v) => v.expr.constant_value()?,
+            None => Obj::Null,
+        };
+        acc.insert(k, v);
+    }
+    Some(Obj::dict(acc, def))
+}
+
 // Layout is for the Env each call creates, which the body also runs in. We put it here instead of directly in Closure to keep Obj small.
 #[derive(Debug)]
 pub struct LambdaParams {
@@ -2680,6 +2788,19 @@ fn freeze_for(
 //
 // Which nodes make new Envs (see FreezeEnv::scoped) has to match resolve.rs and eval.rs.
 
+// frozen, at expr's location, or its value if it can be folded
+fn folded(env: &REnv, expr: &LocExpr, frozen: Expr) -> Expr {
+    let e = LocExpr {
+        start: expr.start,
+        end: expr.end,
+        expr: frozen,
+    };
+    match fold_arithmetic(env, &e) {
+        Some(x) => Expr::Frozen(x),
+        None => e.expr,
+    }
+}
+
 pub(crate) fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
     Ok(LocExpr {
         start: expr.start,
@@ -2747,12 +2868,14 @@ pub(crate) fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
                     .map(|(k, v)| Ok((box_freeze(env, k)?, box_freeze(env, v)?)))
                     .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?,
             )),
-            Expr::Chain(op1, ops) => Ok(Expr::Chain(
-                box_freeze_underscore_ok(env, op1)?,
-                ops.iter()
+            Expr::Chain(op1, ops) => {
+                let op1 = box_freeze_underscore_ok(env, op1)?;
+                let ops = ops
+                    .iter()
                     .map(|(op, d)| Ok((box_freeze(env, op)?, box_freeze_underscore_ok(env, d)?)))
-                    .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?,
-            )),
+                    .collect::<NRes<Vec<(Box<LocExpr>, Box<LocExpr>)>>>()?;
+                Ok(folded(&env.env, expr, Expr::Chain(op1, ops)))
+            }
             Expr::And(lhs, rhs) => Ok(Expr::And(box_freeze(env, lhs)?, box_freeze(env, rhs)?)),
             Expr::Or(lhs, rhs) => Ok(Expr::Or(box_freeze(env, lhs)?, box_freeze(env, rhs)?)),
             Expr::Coalesce(lhs, rhs) => {
@@ -2786,35 +2909,15 @@ pub(crate) fn freeze(env: &mut FreezeEnv, expr: &LocExpr) -> NRes<LocExpr> {
             Expr::Call(f, args, syntax) => {
                 let f = box_freeze_underscore_ok(env, f)?;
                 let args = vec_box_freeze_underscore_ok(env, args)?;
-                let opt_result = match f.expr.constant_value() {
-                    Some(Obj::Func(Func::Builtin(b), _)) => {
-                        if b.builtin_name() == "-" && args.len() == 1 {
-                            match args[0].expr.constant_value() {
-                                Some(Obj::Num(x)) => Some(Obj::from(-x)),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                match opt_result {
-                    Some(x) => Ok(Expr::Frozen(x)),
-                    None => Ok(Expr::Call(f, args, *syntax)),
-                }
+                Ok(folded(&env.env, expr, Expr::Call(f, args, *syntax)))
             }
             Expr::SymbolAccess(e, f) => Ok(Expr::SymbolAccess(box_freeze(env, e)?, f.clone())),
             Expr::CommaSeq(s) => Ok(Expr::CommaSeq(vec_box_freeze(env, s)?)),
             Expr::Splat(s) => Ok(Expr::Splat(box_freeze(env, s)?)),
             Expr::List(xs) => {
                 let v = vec_box_freeze_underscore_ok(env, xs)?;
-                match v
-                    .iter()
-                    .map(|e| e.expr.constant_value())
-                    .collect::<Option<Vec<Obj>>>()
-                {
-                    Some(xs) => Ok(Expr::Frozen(Obj::list(xs))),
+                match fold_list(&v) {
+                    Some(x) => Ok(Expr::Frozen(x)),
                     None => Ok(Expr::List(v)),
                 }
             }

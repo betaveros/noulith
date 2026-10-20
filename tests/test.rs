@@ -897,8 +897,76 @@ fn builtin_inlining() {
         simple_eval("f := \\ -> (g := \\ -> (max = 2); max := 1; g(); max); [f(), max(1, 2)]"),
         simple_eval("[2, 2]")
     );
+    // which we can tell because inlined reads don't see eval assigning to the builtin
+    assert_eq!(
+        simple_eval(
+            "f := \\ -> (max := 1; max = 2); g := \\ -> max(1, 2); eval('max = \\\\a, b -> 9'); g()"
+        ),
+        i(2)
+    );
+    assert_eq!(
+        simple_eval("f := \\ -> (max = 1); g := \\ -> max(1, 2); eval('max = \\\\a, b -> 9'); g()"),
+        i(9)
+    );
     // user variables are never inlined
     assert_eq!(simple_eval("x := 3; eval('x = 4'); x"), i(4));
+}
+
+// constant lists, dicts, and + and - on numbers are computed once when resolving, but only when
+// the operator is the builtin
+#[test]
+fn constant_folding() {
+    assert_eq!(
+        simple_eval("[-1, 2 + 3, 4 - 5, -(-6), 1/2 + 1]"),
+        simple_eval("[0 - 1, 5, 0 - 1, 6, 3/2]")
+    );
+    assert_eq!(simple_eval("{1: [-2], 3}[1]"), simple_eval("[0 - 2]"));
+    // folded values are still values
+    assert_eq!(
+        simple_eval("f := \\ -> [-1]; a := f(); a[0] = 9; [a, f()]"),
+        simple_eval("[[9], [0 - 1]]")
+    );
+    assert_eq!(
+        simple_eval("f := \\ -> 1 + 2; (+) = \\a, b -> 99; f()"),
+        i(99)
+    );
+    assert_eq!(
+        simple_eval("f := \\ -> ((+) := \\a, b -> 42; 1 + 2); [f(), 1 + 2]"),
+        simple_eval("[42, 3]")
+    );
+    assert_eq!(
+        simple_eval("[2^20 - 1, 1 << 20 | 1, 7 // 2, 7 %% 2, 6 & 3, 6 ~ 3, ~5, 1 + 2 * 3 - 4]"),
+        simple_eval("[1048575, 1048577, 3, 1, 2, 5, 0 - 6, 3]")
+    );
+    assert_eq!(
+        simple_eval("[2^20 + 2^10 + 1, 1 << 20 | 1 << 10 | 1]"),
+        simple_eval("[1049601, 1049601]")
+    );
+    // adjacent ^, <<, >> aren't folded, but still work
+    assert_eq!(simple_eval("[2^3^2, 1 << 3 >> 1]"), simple_eval("[512, 4]"));
+    // errors still happen at runtime
+    assert_eq!(simple_eval("try -'a' catch _ -> 5"), i(5));
+    assert_eq!(simple_eval("if (0) 0 ^ (-1) else 5"), i(5));
+    assert_eq!(
+        simple_eval("[7 % 3, if (0) 5 % 0 else 5]"),
+        simple_eval("[1, 5]")
+    );
+    // and huge numbers aren't computed in advance
+    assert_eq!(simple_eval("if (0) 1 << (10^12) else 5"), i(5));
+    assert_eq!(simple_eval("if (0) 3^(10^9) else 5"), i(5));
+    assert_eq!(simple_eval("if (0) 1 + 3^(10^9) + 2^2 else 5"), i(5));
+}
+
+#[test]
+fn division_by_zero() {
+    for code in ["5 % 0", "1.5 % 0", "V(1, 2) % 0", "0 ^ (-1)", "0.0 ^ (-1)"] {
+        assert!(
+            eval_error(code).contains("division by zero"),
+            "{}: {}",
+            code,
+            eval_error(code)
+        );
+    }
 }
 
 // freeze replaces variables from outside the frozen code with their current values

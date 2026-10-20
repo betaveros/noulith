@@ -2526,10 +2526,11 @@ fn plusplus_concatenate(a: Obj, b: Obj) -> NRes<Obj> {
     }
 }
 
-pub fn simple_eval(code: &str) -> Obj {
+// a fresh root Env with the builtins, no input, and output discarded
+pub(crate) fn simple_env() -> REnv {
     let mut vars = RootVars::default();
     initialize(&mut vars);
-    let e = Rc::new(RefCell::new(Env::new(
+    Rc::new(RefCell::new(Env::new(
         TopEnv {
             backrefs: Vec::new(),
             input: Box::new(io::empty()),
@@ -2537,7 +2538,11 @@ pub fn simple_eval(code: &str) -> Obj {
         },
         false,
         vars,
-    )));
+    )))
+}
+
+pub fn simple_eval(code: &str) -> Obj {
+    let e = simple_env();
     evaluate(&e, &parse_and_resolve_in(&e, code).unwrap().unwrap()).unwrap()
 }
 
@@ -3377,9 +3382,15 @@ pub fn initialize(env: &mut RootVars) {
         "≥",
     );
     env.insert_builtin(Divide);
-    env.insert_builtin(TwoNumsToNumsBuiltin {
+    env.insert_builtin(TwoNumsBuiltin {
         name: "%".to_string(),
-        body: |a, b| a % b,
+        body: |a, b| {
+            if b.is_nonzero() {
+                Ok(Obj::Num(a % b))
+            } else {
+                Err(NErr::value_error("division by zero".to_string()))
+            }
+        },
     });
     env.insert_builtin(TwoNumsBuiltin {
         name: "//".to_string(),
@@ -3427,9 +3438,15 @@ pub fn initialize(env: &mut RootVars) {
         name: "lcm".to_string(),
         body: |a, b| a.lcm(&b),
     });
-    env.insert_rassoc_builtin(TwoNumsToNumsBuiltin {
+    env.insert_rassoc_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
-        body: |a, b| a.pow_num(&b),
+        body: |a, b| {
+            if !a.is_nonzero() && b < NNum::from(0) {
+                Err(NErr::value_error("division by zero".to_string()))
+            } else {
+                Ok(Obj::Num(a.pow_num(&b)))
+            }
+        },
     });
     env.insert_builtin(TwoNumsToNumsBuiltin {
         name: "&".to_string(),

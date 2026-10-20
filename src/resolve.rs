@@ -63,6 +63,16 @@ struct Collected {
     slots: HashMap<String, usize>,
 }
 
+// The code gets resolved in passes. Each scope gets two: collecting everything it declares, then
+// rewriting names into SlotRefs. Then, if there's anything to optimize, the whole code gets one
+// more, which can use everything rewriting found out about it.
+enum Pass {
+    // holding what's been collected
+    Collecting(Collected),
+    Rewriting,
+    Optimizing,
+}
+
 impl Collected {
     fn add(&mut self, name: &str) {
         if !self.slots.contains_key(name) {
@@ -77,9 +87,7 @@ struct Resolver {
     opts: ResolveOptions,
     // scopes we're inside, innermost last
     scopes: Vec<Scope>,
-    // Each scope gets two passes: collecting everything it declares, then rewriting names into
-    // SlotRefs. This is Some during the collecting pass, holding what's been collected.
-    collecting: Option<Collected>,
+    pass: Pass,
     // declarations in the current statement, which take effect after its RHS
     pending: Vec<String>,
     // the files we're inside, to catch import cycles
@@ -89,18 +97,13 @@ struct Resolver {
     error: Option<ParseError>,
     // whether the expr we're about to resolve is somewhere an underscore makes sense
     underscore_ok: bool,
-    // Whether to inline builtins: replace reads of variables the root Env already had filled
-    // before this code (builtins, argv, __file__) with their values, unless the code assigns to
-    // them anywhere. Off when the root Env allows redeclaration (the REPL), where a later line
-    // could assign to one; eval assigning to one won't update code that inlined it.
+    // Whether to inline builtins in the optimizing pass: replace reads of variables the root Env
+    // already had filled before this code (builtins, argv, __file__) with their values, unless the
+    // code assigns to them anywhere. Off when the root Env allows redeclaration (the REPL), where
+    // a later line could assign to one; eval assigning to one won't update code that inlined it.
     inline_builtins: bool,
-    // What the code assigns to (rather than declares) in the live Env, found during the top
-    // level's collecting pass, which only when inlining builtins also scans the nested scopes for
-    // assignments. The nested scopes it's inside, and what they declare, are in scanned, so
-    // assignments to their own variables don't count.
+    // what the code assigns to (rather than declares) in the live Env, found while rewriting
     assigned: HashSet<String>,
-    scanning: bool,
-    scanned: Vec<HashMap<String, usize>>,
 }
 
 impl Resolver {
@@ -109,7 +112,7 @@ impl Resolver {
             env: Rc::clone(env),
             opts: ResolveOptions::default(),
             scopes: Vec::new(),
-            collecting: None,
+            pass: Pass::Rewriting,
             pending: Vec::new(),
             imports: Vec::new(),
             loc: (expr.start, expr.end),
@@ -117,8 +120,6 @@ impl Resolver {
             underscore_ok: false,
             inline_builtins: false,
             assigned: HashSet::new(),
-            scanning: false,
-            scanned: Vec::new(),
         }
     }
 
@@ -140,11 +141,7 @@ pub fn resolve(env: &REnv, expr: &mut LocExpr, opts: ResolveOptions) -> Result<(
         Err(_) => false,
     };
     // collecting pass over the top level, like scope() but for the live Env
-    r.collecting = Some(Collected::default());
-    r.scanning = r.inline_builtins;
-    r.expr(expr);
-    r.scanning = false;
-    let declares = r.collecting.take().unwrap().names;
+    let declares = r.collect(|r| r.expr(expr)).names;
     r.check()?;
     let slots = r.make_room(&declares);
     r.check()?;
@@ -156,6 +153,11 @@ pub fn resolve(env: &REnv, expr: &mut LocExpr, opts: ResolveOptions) -> Result<(
         lambda: false,
     });
     r.expr(expr);
+    r.check()?;
+    if r.inline_builtins {
+        r.pass = Pass::Optimizing;
+        r.expr(expr);
+    }
     r.check()
 }
 
@@ -177,7 +179,7 @@ pub fn resolve_in_new_scope(env: &REnv, expr: &mut LocExpr) -> Result<SlotLayout
 impl Resolver {
     // Only during the rewriting pass, which visits everything exactly once.
     fn warning_at(&self, msg: String, start: CodeLoc, end: CodeLoc) {
-        if self.opts.warn && self.collecting.is_none() {
+        if self.opts.warn && matches!(self.pass, Pass::Rewriting) {
             let file = match self.imports.last() {
                 Some(path) => format!("{}:", path),
                 None => String::new(),
@@ -246,9 +248,11 @@ impl Resolver {
         }
     }
 
-    // The value to inline for a read of r, if it's a builtin (see inline_builtins).
+    // The value to inline for a read of r, if it's a builtin (see inline_builtins). This is what
+    // makes constant folding safe: an operator that's still a Slot might not be the builtin.
     fn builtin(&self, r: &SlotRef) -> Option<Obj> {
-        if !self.inline_builtins
+        if !matches!(self.pass, Pass::Optimizing)
+            || !self.inline_builtins
             || r.depth != self.scopes.len() - 1
             || self.scopes[0].slots.contains_key(&*r.name)
             || self.assigned.contains(&*r.name)
@@ -258,6 +262,19 @@ impl Resolver {
         let env = cell_try_borrow(&self.env).ok()?;
         let (_, v) = env.slots.get(r.slot)?.as_ref()?;
         Some(cell_try_borrow(v).ok()?.clone())
+    }
+
+    // Replace e with its value if it's made of constants (see fold_arithmetic etc. in core.rs).
+    fn fold(&self, e: &mut LocExpr) {
+        let v = match &e.expr {
+            Expr::List(xs) => fold_list(xs),
+            Expr::Dict(def, xs) => fold_dict(def, xs),
+            Expr::Call(..) | Expr::Chain(..) => fold_arithmetic(&self.env, e),
+            _ => None,
+        };
+        if let Some(v) = v {
+            e.expr = Expr::Frozen(v);
+        }
     }
 
     // " Did you mean ...?" with the closest name in scope, for a name that isn't
@@ -319,7 +336,7 @@ impl Resolver {
     }
 
     fn reference(&mut self, name: &str) -> Option<SlotRef> {
-        if self.collecting.is_some() {
+        if !matches!(self.pass, Pass::Rewriting) {
             return None;
         }
         let n = self.scopes.len();
@@ -357,9 +374,13 @@ impl Resolver {
     }
 
     fn declaration(&mut self, name: &str) -> Option<SlotRef> {
-        if let Some(c) = &mut self.collecting {
-            c.add(name);
-            return None;
+        match &mut self.pass {
+            Pass::Collecting(c) => {
+                c.add(name);
+                return None;
+            }
+            Pass::Rewriting => {}
+            Pass::Optimizing => return None,
         }
         let slot = *self.scopes.last()?.slots.get(name)?;
         if self.opts.warn {
@@ -388,30 +409,38 @@ impl Resolver {
         }
     }
 
-    // Resolve the parts of a node that run in a new Env. Takes two passes: collecting everything
-    // the scope declares (including later in it, so e.g. a closure can call a function declared
-    // after it), then rewriting. Does nothing in an outer scope's collecting pass, since
-    // declarations in here don't go there.
-    fn scope(&mut self, lambda: bool, mut f: impl FnMut(&mut Self)) -> Option<SlotLayout> {
-        if self.collecting.is_some() {
-            if self.scanning {
-                // like the two passes below, but only to find assignments to the live Env: first
-                // what this scope declares, then the assignments in it that aren't to those
-                let outer = self.collecting.replace(Collected::default());
-                self.scanning = false;
-                f(self);
-                self.scanning = true;
-                let declares = self.collecting.replace(Collected::default()).unwrap().slots;
-                self.scanned.push(declares);
-                f(self);
-                self.scanned.pop();
-                self.collecting = outer;
-            }
-            return None;
-        }
-        self.collecting = Some(Collected::default());
+    // Run a collecting pass over what f resolves, and return what it declares.
+    fn collect(&mut self, f: impl FnOnce(&mut Self)) -> Collected {
+        let outer = std::mem::replace(&mut self.pass, Pass::Collecting(Collected::default()));
         f(self);
-        let slots = self.collecting.take().unwrap().slots;
+        match std::mem::replace(&mut self.pass, outer) {
+            Pass::Collecting(c) => c,
+            _ => panic!("BUG: resolver pass changed while collecting"),
+        }
+    }
+
+    // Resolve the parts of a node that run in a new Env. When rewriting, takes two passes:
+    // collecting everything the scope declares (including later in it, so e.g. a closure can call
+    // a function declared after it), then rewriting. Does nothing in an outer scope's collecting
+    // pass, since declarations in here don't go there. When optimizing, the layout's already
+    // there, and the scope is only tracked for depths.
+    fn scope(&mut self, lambda: bool, mut f: impl FnMut(&mut Self)) -> Option<SlotLayout> {
+        match self.pass {
+            Pass::Collecting(_) => return None,
+            Pass::Rewriting => {}
+            Pass::Optimizing => {
+                self.scopes.push(Scope {
+                    slots: HashMap::new(),
+                    live: false,
+                    declared: HashSet::new(),
+                    lambda,
+                });
+                f(self);
+                self.scopes.pop();
+                return None;
+            }
+        }
+        let slots = self.collect(|r| f(r)).slots;
         let outer_pending = std::mem::take(&mut self.pending);
         self.scopes.push(Scope {
             slots,
@@ -475,16 +504,15 @@ impl Resolver {
 
     fn ident(&mut self, id: &mut Ident, declaring: bool) {
         if let Ident::Ident(name) = id {
-            if self.scanning && !declaring && !self.scanned.iter().any(|d| d.contains_key(&**name))
-            {
-                self.assigned.insert(name.clone());
-            }
             let resolved = if declaring {
                 self.declaration(name)
             } else {
                 self.reference(name)
             };
             if let Some(r) = resolved {
+                if !declaring && r.depth == self.scopes.len() - 1 {
+                    self.assigned.insert(name.clone());
+                }
                 *id = Ident::Slot(r);
             }
         }
@@ -613,6 +641,10 @@ impl Resolver {
         let underscore_ok = std::mem::take(&mut self.underscore_ok);
         let outer_loc = std::mem::replace(&mut self.loc, (e.start, e.end));
         self.expr_inner(e, underscore_ok);
+        if matches!(self.pass, Pass::Optimizing) {
+            // e's parts have been optimized, so if they're constants now, e might be too
+            self.fold(e);
+        }
         self.loc = outer_loc;
     }
 
@@ -626,10 +658,12 @@ impl Resolver {
         match &mut e.expr {
             Expr::Ident(name) => {
                 if let Some(r) = self.reference(name) {
-                    e.expr = match self.builtin(&r) {
-                        Some(v) => Expr::Frozen(v),
-                        None => Expr::Slot(r),
-                    };
+                    e.expr = Expr::Slot(r);
+                }
+            }
+            Expr::Slot(r) => {
+                if let Some(v) = self.builtin(r) {
+                    e.expr = Expr::Frozen(v);
                 }
             }
             Expr::Null
@@ -640,7 +674,6 @@ impl Resolver {
             | Expr::ImaginaryFloatLit(_)
             | Expr::StringLit(_)
             | Expr::BytesLit(_)
-            | Expr::Slot(_)
             | Expr::Symbol(_)
             | Expr::Backref(_)
             | Expr::Frozen(_)
@@ -863,5 +896,72 @@ impl Resolver {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{simple_env, simple_eval};
+
+    // code resolved like a script, or its last expression if it's a sequence
+    fn resolved(code: &str) -> Expr {
+        let env = simple_env();
+        match parse_and_resolve_in(&env, code).unwrap().unwrap().expr {
+            Expr::Sequence(mut xs, _) => xs.pop().unwrap().expr,
+            e => e,
+        }
+    }
+
+    fn assert_folds(code: &str, value: &str) {
+        match resolved(code) {
+            Expr::Frozen(x) => assert_eq!(x, simple_eval(value), "{}", code),
+            e => panic!("{} wasn't folded: {:?}", code, e),
+        }
+    }
+
+    fn assert_not_folded(code: &str) {
+        if let Expr::Frozen(x) = resolved(code) {
+            panic!("{} was folded to {}", code, x);
+        }
+    }
+
+    #[test]
+    fn folds_constants() {
+        assert_folds("-1", "0 - 1");
+        assert_folds("[1, -2, 'a']", "[1, 0 - 2, 'a']");
+        assert_folds("{1: [-2], 3}", "{1: [0 - 2], 3: null}");
+        assert_folds("1/2 + 1", "3/2");
+        assert_folds("7 % 3", "1");
+        assert_folds("1 + 2 * 3 - 4", "3");
+        assert_folds("2^20 - 1", "1048575");
+        assert_folds("2^20 + 2^10 + 1", "1049601");
+        assert_folds("1 << 20 | 1 << 10 | 1", "1049601");
+        // inside out
+        assert_folds("2^(3^2)", "512");
+        assert_folds("[2^(1 + 1)]", "[4]");
+    }
+
+    #[test]
+    fn doesnt_fold() {
+        // not constants
+        assert_not_folded("x := 1; x + 1");
+        assert_not_folded("[1, ...[2]]");
+        // not pure arithmetic on numbers
+        assert_not_folded("max(1, 2)");
+        assert_not_folded("+(1)");
+        // not the builtin
+        assert_not_folded("(+) = \\a, b -> 9; 1 + 2");
+        // errors, which should happen at runtime
+        assert_not_folded("-'a'");
+        assert_not_folded("5 % 0");
+        assert_not_folded("0 ^ (-1)");
+        // adjacent ^, <<, >>, whose operands the guard can't see
+        assert_not_folded("2^3^2");
+        assert_not_folded("1 << 3 >> 1");
+        // too big
+        assert_not_folded("3^(10^9)");
+        assert_not_folded("1 << (10^12)");
+        assert_not_folded("1 + 3^(10^9) + 2^2");
     }
 }
