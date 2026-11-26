@@ -247,7 +247,18 @@ impl Builtin for Divide {
                 "/ only accepts numbers (or vectors), got {}",
                 a
             ))),
-            Few2::Two(a, b) => expect_nums_and_vectorize_2_nums(|a, b| a / b, a, b, "/"),
+            Few2::Two(a, b) => expect_nums_and_vectorize_2(
+                |a, b| {
+                    if b.is_nonzero() {
+                        Ok(Obj::Num(a / b))
+                    } else {
+                        Err(NErr::value_error("division by zero".to_string()))
+                    }
+                },
+                a,
+                b,
+                "/",
+            ),
             f => Err(NErr::argument_error(format!(
                 "/ only accepts two numbers, got {}",
                 f.len()

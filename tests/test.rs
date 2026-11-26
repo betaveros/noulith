@@ -947,6 +947,7 @@ fn constant_folding() {
     // errors still happen at runtime
     assert_eq!(simple_eval("try -'a' catch _ -> 5"), i(5));
     assert_eq!(simple_eval("if (0) 0 ^ (-1) else 5"), i(5));
+    assert_eq!(simple_eval("if (0) 1 / 0 else 5"), i(5));
     assert_eq!(
         simple_eval("[7 % 3, if (0) 5 % 0 else 5]"),
         simple_eval("[1, 5]")
@@ -959,7 +960,20 @@ fn constant_folding() {
 
 #[test]
 fn division_by_zero() {
-    for code in ["5 % 0", "1.5 % 0", "V(1, 2) % 0", "0 ^ (-1)", "0.0 ^ (-1)"] {
+    for code in [
+        "1 / 0",
+        "1.5 / 0",
+        "1 / 0.0",
+        "1i / 0",
+        "V(1, 2) / 0",
+        "5 % 0",
+        "1.5 % 0",
+        "V(1, 2) % 0",
+        "5 // 0",
+        "5 %% 0",
+        "0 ^ (-1)",
+        "0.0 ^ (-1)",
+    ] {
         assert!(
             eval_error(code).contains("division by zero"),
             "{}: {}",
