@@ -973,6 +973,8 @@ fn division_by_zero() {
         "5 %% 0",
         "0 ^ (-1)",
         "0.0 ^ (-1)",
+        "0 ^ (0 - 1i)",
+        "0 ^ 1i",
     ] {
         assert!(
             eval_error(code).contains("division by zero"),
