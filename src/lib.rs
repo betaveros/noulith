@@ -3452,7 +3452,10 @@ pub fn initialize(env: &mut RootVars) {
     env.insert_rassoc_builtin(TwoNumsBuiltin {
         name: "^".to_string(),
         body: |a, b| {
-            if !a.is_nonzero() && b < NNum::from(0) {
+            // like Python: zero to a negative or non-real power
+            if !a.is_nonzero()
+                && (b.real_part() < NNum::from(0) || b.imaginary_part().is_nonzero())
+            {
                 Err(NErr::value_error("division by zero".to_string()))
             } else {
                 Ok(Obj::Num(a.pow_num(&b)))
