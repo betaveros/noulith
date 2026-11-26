@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="utf-8" />
-  <meta name="generator" content="pandoc 3.10.2" />
+  <meta name="generator" content="pandoc 3.14" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
   <title>Built-in Functions</title>
   <style>
@@ -11,7 +11,10 @@
     */
     html {
       color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
       background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
     }
     body {
       margin: 0 auto;
@@ -34,30 +37,11 @@
         font-size: 1.8em;
       }
     }
-    @media print {
-      html {
-        background-color: white;
-      }
-      body {
-        background-color: transparent;
-        color: black;
-      }
-      p, h2, h3 {
-        orphans: 3;
-        widows: 3;
-      }
-      h2, h3, h4 {
-        page-break-after: avoid;
-      }
-    }
     p {
       margin: 1em 0;
     }
-    a {
-      color: #1a1a1a;
-    }
-    a:visited {
-      color: #1a1a1a;
+    a, a:visited {
+      color: inherit;
     }
     img {
       max-width: 100%;
@@ -86,8 +70,11 @@
     blockquote {
       margin: 1em 0 1em 1.7em;
       padding-left: 1em;
-      border-left: 2px solid #e6e6e6;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
       color: #606060;
+      color: light-dark(#606060, #b6b6b6);
     }
     code {
       white-space: pre-wrap;
@@ -111,7 +98,7 @@
     }
     hr {
       border: none;
-      border-top: 1px solid #1a1a1a;
+      border-top: 1px solid currentColor;
       height: 1px;
       margin: 1em 0;
     }
@@ -128,11 +115,11 @@
     }
     tbody {
       margin-top: 0.5em;
-      border-top: 1px solid #1a1a1a;
-      border-bottom: 1px solid #1a1a1a;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
     }
     th {
-      border-top: 1px solid #1a1a1a;
+      border-top: 1px solid currentColor;
       padding: 0.25em 0.5em 0.25em 0.5em;
     }
     td {
@@ -155,6 +142,12 @@
       text-decoration: none;
     }
     span.smallcaps{font-variant: small-caps;}
+    em, em em em, em em em em em {
+      font-style: italic;
+    }
+    em em, em em em em {
+      font-style: normal;
+    }
     div.columns{display: flex; gap: 1.5em;}
     div.column{flex: auto;}
     @media screen {
@@ -171,8 +164,27 @@
       margin: 0 0.8em 0.2em -1.6em;
       vertical-align: middle;
     }
-    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
-  </style>
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }  </style>
   <meta name="theme-color" content="#337722">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
@@ -295,7 +307,7 @@ positive the result is nonegative, and pairs with <code>//</code></td>
 <td>Bitwise XOR, or bitwise NOT with one argument</td>
 </tr>
 <tr>
-<td><code>xor</code></td>
+<td><code>xor</code>, <code>⊕</code></td>
 <td>Bitwise XOR</td>
 </tr>
 <tr>
@@ -323,6 +335,8 @@ integer from a fraction</li>
 component from a complex number</li>
 <li><code>complex_parts</code>: retrieve both float components from a
 complex number</li>
+<li><code>float_to_bits</code>, <code>bits_to_float</code>: convert
+between a float and its bits as a 64-bit integer</li>
 </ul>
 <p>All of these basically just naively lift the
 <code>f64 -&gt; f64</code> function of the same name from Rust:
@@ -335,15 +349,24 @@ complex number</li>
 <li><code>factorize</code></li>
 </ul>
 <p>We have <code>atan2</code> though it’s not technically unary.</p>
+<p><code>b_spline(t, values)</code>: cubic B-spline over a sequence of
+numbers, <code>t</code> in [0, 1]</p>
+<p>Constants: <code>E</code> <code>PI</code> <code>TAU</code>;
+<code>true</code> and <code>false</code> are just 1 and 0</p>
 <h3 id="comparisons">Comparisons</h3>
 <p><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code>
-<code>&lt;=</code> <code>&gt;=</code> <code>max</code>
-<code>min</code></p>
+<code>&lt;=</code> (<code>≤</code>) <code>&gt;=</code> (<code>≥</code>)
+<code>max</code> <code>min</code></p>
 <p>These functions don’t vectorize. Sequences are compared
 lexicographically.</p>
 <p><code>&lt;=&gt;</code> returns -1 if the left argument is less, 0 if
 they’re equal, 1 if the left argument is greater. <code>&gt;=&lt;</code>
 does the opposite.</p>
+<p><code>=~</code> tests if a string matches a regex anywhere.
+<code>!~</code> does the opposite.</p>
+<p><code>not</code>. <code>and'</code> and <code>or'</code> are
+<code>and</code> and <code>or</code> as functions (so no
+short-circuiting).</p>
 <h3 id="randomness">Randomness</h3>
 <ul>
 <li><code>random</code>: [0.0, 1.0)</li>
@@ -489,22 +512,22 @@ e.g. <code>suffixes([1, 2, 3]) == [[], [3], [2, 3], [1, 2, 3]]</code></td>
 e.g. <code>frequencies([1, 1, 2, 1]) == {:0, 1: 3, 2: 1}</code></td>
 </tr>
 <tr>
-<td><code>++</code></td>
+<td><code>++</code>, <code>⧺</code></td>
 <td>2</td>
 <td>Concatenate two lists or like sequences.</td>
 </tr>
 <tr>
-<td><code>.+</code></td>
+<td><code>.+</code>, <code>prepend</code></td>
 <td>2</td>
 <td>Prepend an element to a list.</td>
 </tr>
 <tr>
-<td><code>+.</code></td>
+<td><code>+.</code>, <code>append</code></td>
 <td>2</td>
 <td>Take a list and append an element.</td>
 </tr>
 <tr>
-<td><code>..</code></td>
+<td><code>..</code>, <code>=&gt;</code></td>
 <td>2</td>
 <td>Make a two-element list.</td>
 </tr>
@@ -515,7 +538,7 @@ e.g. <code>frequencies([1, 1, 2, 1]) == {:0, 1: 3, 2: 1}</code></td>
 of the <code>.</code>.</td>
 </tr>
 <tr>
-<td><code>**</code></td>
+<td><code>**</code>, <code>×</code></td>
 <td>any</td>
 <td>Cartesian product</td>
 </tr>
@@ -535,6 +558,11 @@ basically <code>a[b]</code>.</td>
 <td><code>!?</code>, <code>index?</code></td>
 <td>2</td>
 <td>Index into a sequence or access a dict or <code>null</code>.</td>
+</tr>
+<tr>
+<td><code>!%</code></td>
+<td>2</td>
+<td>Index into a sequence cyclically, i.e. modulo its length.</td>
 </tr>
 <tr>
 <td><code>find</code></td>
@@ -658,6 +686,12 @@ key function)</td>
 <code>-</code></td>
 </tr>
 <tr>
+<td><code>\|\|++</code></td>
+<td>2</td>
+<td>Union dictionaries, merging values at key collisions with
+<code>++</code></td>
+</tr>
+<tr>
 <td><code>-.</code>, <code>discard</code></td>
 <td>2</td>
 <td>Remove key</td>
@@ -676,6 +710,20 @@ key function)</td>
 <td><code>--</code></td>
 <td>2</td>
 <td>Removes right keys from left dictionary</td>
+</tr>
+<tr>
+<td><code>L</code>, <code>V</code>, <code>B</code></td>
+<td>any</td>
+<td>Make a list, vector, or bytes out of the arguments.</td>
+</tr>
+<tr>
+<td><code>rearrange</code></td>
+<td>2 or 3</td>
+<td>Reshape nested sequences einops-style,
+e.g. <code>([[1, 2], [3, 4]] rearrange "a b -&gt; b a") == [[1, 3], [2, 4]]</code>.
+Parentheses group dimensions into one. Third argument, which can be
+specified by chaining with <code>with</code>, is a dictionary of
+dimension sizes.</td>
 </tr>
 </tbody>
 </table>
@@ -777,6 +825,8 @@ length-1 string and vice versa</li>
 <li><code>compress</code>/<code>decompress</code></li>
 <li><code>join</code>: join a sequence of values by a string</li>
 <li><code>split</code>: split a string by another</li>
+<li><code>rsplit</code>: split a string by another, from the right</li>
+<li><code>split_re</code>: split a string by a regex</li>
 <li><code>starts_with</code> <code>ends_with</code></li>
 <li><code>words</code>: split by runs of whitespace</li>
 <li><code>unwords</code>: join by space</li>
@@ -785,7 +835,8 @@ it’s ignored</li>
 <li><code>unlines</code>: join by newlines and add a trailing
 newline</li>
 <li><code>strip</code> <code>strip_start</code> <code>strip_end</code>.
-Synonymous with <code>trim</code> etc.; I haven’t decided yet.</li>
+Synonymous with <code>trim</code> <code>trim_start</code>
+<code>trim_end</code>; I haven’t decided yet.</li>
 <li><code>search</code>: find a regex, or <code>null</code>. If the
 regex has capture groups then return a list of captured strings, else
 return the found string.</li>
@@ -798,6 +849,7 @@ string.</li>
 </ul>
 <h2 id="types">Types</h2>
 <ul>
+<li><code>nulltype</code></li>
 <li><code>number</code>: <code>int</code> <code>rational</code>
 <code>float</code> <code>complex</code></li>
 <li><code>str</code> <code>list</code> <code>dict</code>
@@ -839,6 +891,12 @@ argument juggling</h3>
 <td>2</td>
 <td>Constant function, always returns its second argument. Can be
 partially applied.</td>
+</tr>
+<tr>
+<td><code>flip</code></td>
+<td>1</td>
+<td>Swap a function’s two arguments:
+<code>flip(f)(a, b) = f(b, a)</code></td>
 </tr>
 <tr>
 <td><code>.</code></td>
@@ -914,6 +972,12 @@ is to convert a “key function” into a comparator with
 <code>f</code> or <code>g</code> are not functions they get used
 directly.</td>
 </tr>
+<tr>
+<td><code>lift</code></td>
+<td>any</td>
+<td>The same thing for any function, which goes last:
+<code>lift(f, g, h)(...) = h(f(...), g(...))</code></td>
+</tr>
 </tbody>
 </table>
 <h3 id="higher-order-functions-on-sequences">Higher-order functions on
@@ -959,6 +1023,24 @@ preserving keys, to produce a new dict</td>
 <td><code>flatten</code></td>
 <td>1</td>
 <td>Flatten one level, producing a list</td>
+</tr>
+<tr>
+<td><code>mapmap</code>, <code>map2</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each element of each element of
+first</td>
+</tr>
+<tr>
+<td><code>mapply</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each element of first, splatting
+each element</td>
+</tr>
+<tr>
+<td><code>vector_map</code></td>
+<td>2</td>
+<td>(Eagerly) Map second function over each element of first, producing
+a vector</td>
 </tr>
 <tr>
 <td><code>flat_map</code></td>
@@ -1021,6 +1103,23 @@ satisfying the predicate, the second has the rest</td>
 <td>Count distinct results after mapping</td>
 </tr>
 <tr>
+<td><code>sum</code></td>
+<td>1 or 2</td>
+<td>Sum of elements, optionally after mapping</td>
+</tr>
+<tr>
+<td><code>product</code></td>
+<td>1 or 2</td>
+<td>Product of elements, optionally after mapping</td>
+</tr>
+<tr>
+<td><code>classify</code></td>
+<td>2</td>
+<td>Dictionary from each result of the function to the same-type
+sequence of elements producing it,
+e.g. <code>([1, 2, 3, 4] classify even) == {0: [1, 3], 1: [2, 4]}</code></td>
+</tr>
+<tr>
 <td><code>group</code></td>
 <td>1 or 2</td>
 <td>Split up sequence into same-type sequences of adjacent elements that
@@ -1044,14 +1143,15 @@ have to be adjacent)</td>
 <tr>
 <td><code>zip</code></td>
 <td>any</td>
-<td>Zip two or more sequences with an optional function.</td>
+<td>Zip two or more sequences with an optional function (chainable with
+<code>with</code>).</td>
 </tr>
 <tr>
 <td><code>ziplongest</code></td>
 <td>any</td>
-<td>Zip two or more sequences with an optional function. If a function
-is provided, it’s used to reduce each batch of elements pairwise instead
-of just called with all at once.</td>
+<td>Zip two or more sequences with an optional function (chainable with
+<code>with</code>). If a function is provided, it’s used to reduce each
+batch of elements pairwise instead of just called with all at once.</td>
 </tr>
 <tr>
 <td><code>pairwise</code></td>
@@ -1098,6 +1198,7 @@ by a newline</li>
 <li><code>write</code>: Output arguments</li>
 <li><code>input</code>: read one line</li>
 <li><code>read</code>: read until EOF</li>
+<li><code>read_bytes</code>: read until EOF as bytes</li>
 <li><code>read_compressed</code>: read gzipped</li>
 <li><code>interact</code>: Read all input, call the argument with it,
 then output the result. If multiple arguments, just runs ’em left to
@@ -1149,6 +1250,7 @@ accepts one optional argument, a number of hours N to get UTC+N</li>
 (writing to it doesn’t do anything)</li>
 <li><code>assert</code>: assert a condition is true else throw an
 error</li>
+<li><code>throw'</code>: throw the argument as a string</li>
 <li><code>memoize</code>: make a function memoized</li>
 <li><code>is_big</code>: does an int internally use the small int or big
 int representation</li>
