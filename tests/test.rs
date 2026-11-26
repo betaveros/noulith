@@ -57,6 +57,12 @@ fn splat_call() {
     assert_eq!(simple_eval("f := \\...x -> len(x); f(1, 2)"), i(2));
     assert_eq!(simple_eval("f := \\...x -> len(x); f(...[1, 2])"), i(2));
     assert_eq!(simple_eval("f := \\...x -> len(x); f(1, ...[2])"), i(2));
+    assert_eq!(
+        simple_eval("f := \\a, ...x, b -> [a, x, b]; f(1, 2)"),
+        simple_eval("[1, [], 2]")
+    );
+    assert!(eval_error("f := \\a, ...x, b -> x; f(1)").contains("expected at least 2"));
+    assert!(eval_error("a, b, ...x, c := [1]").contains("expected at least 3"));
 }
 
 #[test]

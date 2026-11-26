@@ -2037,7 +2037,17 @@ pub fn assign_all(
                 rhs.push(evaluate(env, e)?);
             }
 
-            let rrhs = rhs.drain(rhs.len() - lhs.len() + si + 1..).collect();
+            // there are lhs.len() - 1 non-splat variables that need a value
+            if rhs.len() < lhs.len() - 1 {
+                return Err(NErr::value_error(format!(
+                    "{}: expected at least {} ({}), got {}",
+                    err_msg,
+                    lhs.len() - 1,
+                    CommaSeparated(lhs),
+                    rhs.len()
+                )));
+            }
+            let rrhs = rhs.drain(rhs.len() + si + 1 - lhs.len()..).collect();
             let srhs = rhs.drain(si..).collect();
             assign_all_basic(env, &lhs[..si], rt, rhs, err_msg)?;
             match inner {
