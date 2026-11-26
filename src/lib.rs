@@ -3453,8 +3453,7 @@ pub fn initialize(env: &mut RootVars) {
         name: "^".to_string(),
         body: |a, b| {
             // like Python: zero to a negative or non-real power
-            if !a.is_nonzero()
-                && (b.real_part() < NNum::from(0) || b.imaginary_part().is_nonzero())
+            if !a.is_nonzero() && (b.real_part() < NNum::from(0) || b.imaginary_part().is_nonzero())
             {
                 Err(NErr::value_error("division by zero".to_string()))
             } else {
