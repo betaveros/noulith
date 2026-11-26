@@ -912,8 +912,8 @@ fn builtin_inlining() {
     assert_eq!(simple_eval("x := 3; eval('x = 4'); x"), i(4));
 }
 
-// constant lists, dicts, and + and - on numbers are computed once when resolving, but only when
-// the operator is the builtin
+// constant lists, dicts, and arithmetic on numbers (+, -, *, ^, <<, and so on) are computed once
+// when resolving, but only when the operator is the builtin
 #[test]
 fn constant_folding() {
     assert_eq!(
