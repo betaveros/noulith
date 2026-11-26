@@ -43,7 +43,7 @@ It's a standard Rust project, so, in brief:
 
 This will drop you into a REPL, or you can pass a filename to run it. If you just want to build an executable so you can alias it or add it to `$PATH`, just run `cargo build --release --features cli,request,crypto` and look inside `target/release`.
 
-None of the command-line options to `cargo run` or `cargo build` are required; they just give you better run-time performance and features for a slower compile time and larger binary size. (Without `--release`, stack frames are so large that one of the tests overflows the stack...)
+None of the command-line options to `cargo run` or `cargo build` are required; they just give you better run-time performance and features for a slower compile time and larger binary size. (Without `--release`, stack frames are so large that one of the tests overflows the default test thread stack...)
 
 ## Features (and anti-features) (and claims that will become false as I keep hacking on this)
 

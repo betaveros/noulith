@@ -13,10 +13,18 @@ fn i(n: i64) -> Obj {
 
 #[test]
 fn demos() {
-    assert_eq!(
-        simple_eval("fact := \\n -> if (n == 0) 1 else n * fact(n - 1); fact 10"),
-        i(3628800)
-    );
+    // unoptimized stack frames are so large that this overflows the default 2MB test thread
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(|| {
+            assert_eq!(
+                simple_eval("fact := \\n -> if (n == 0) 1 else n * fact(n - 1); fact 10"),
+                i(3628800)
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
     assert_eq!(
         simple_eval(
             "(for (x <- 1 to 15) yield (o := ''; for (f, s <- [[3, 'Fizz'], [5, 'Buzz']]) if (x % f == 0) o $= s; if (o == '') x else o)) join ';'"
