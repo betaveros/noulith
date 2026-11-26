@@ -23,7 +23,7 @@ All functions take two arguments and partially apply on the right if called with
 | `&` | Bitwise AND
 | `\|` | Bitwise OR
 | `~` | Bitwise XOR, or bitwise NOT with one argument
-| `xor` | Bitwise XOR
+| `xor`, `⊕` | Bitwise XOR
 | `<<` | Bitwise left shift
 | `>>` | Bitwise right shift
 
@@ -35,6 +35,7 @@ All functions take two arguments and partially apply on the right if called with
 - `numerator`, `denominator`: retrieve an integer from a fraction
 - `real_part`, `imag_part`: retrieve a float component from a complex number
 - `complex_parts`: retrieve both float components from a complex number
+- `float_to_bits`, `bits_to_float`: convert between a float and its bits as a 64-bit integer
 
 All of these basically just naively lift the `f64 -> f64` function of the same name from Rust: `sin` `sinh` `cos` `cosh` `tan` `tanh` `asin` `asinh` `acos` `acosh` `atan` `atanh` `sqrt` `cbrt` `exp` `ln` `log10` `log2`
 
@@ -42,13 +43,21 @@ All of these basically just naively lift the `f64 -> f64` function of the same n
 
 We have `atan2` though it's not technically unary.
 
+`b_spline(t, values)`: cubic B-spline over a sequence of numbers, `t` in [0, 1]
+
+Constants: `E` `PI` `TAU`; `true` and `false` are just 1 and 0
+
 ### Comparisons
 
-`==` `!=` `<` `>` `<=` `>=` `max` `min`
+`==` `!=` `<` `>` `<=` (`≤`) `>=` (`≥`) `max` `min`
 
 These functions don't vectorize. Sequences are compared lexicographically.
 
 `<=>` returns -1 if the left argument is less, 0 if they're equal, 1 if the left argument is greater. `>=<` does the opposite.
+
+`=~` tests if a string matches a regex anywhere. `!~` does the opposite.
+
+`not`. `and'` and `or'` are `and` and `or` as functions (so no short-circuiting).
 
 ### Randomness
 
@@ -83,15 +92,16 @@ These functions don't vectorize. Sequences are compared lexicographically.
 | `prefixes` | 2 | List of same-type slices from the start by increasing length, e.g. `prefixes([1, 2, 3]) == [[], [1], [1, 2], [1, 2, 3]]`
 | `suffixes` | 2 | List of same-type slices until the end by increasing length, e.g. `suffixes([1, 2, 3]) == [[], [3], [2, 3], [1, 2, 3]]`
 | `frequencies` | 1 | Dictionary of elements to how often they appear, e.g. `frequencies([1, 1, 2, 1]) == {:0, 1: 3, 2: 1}`
-| `++` | 2 | Concatenate two lists or like sequences.
-| `.+` | 2 | Prepend an element to a list.
-| `+.` | 2 | Take a list and append an element.
-| `..` | 2 | Make a two-element list.
+| `++`, `⧺` | 2 | Concatenate two lists or like sequences.
+| `.+`, `prepend` | 2 | Prepend an element to a list.
+| `+.`, `append` | 2 | Take a list and append an element.
+| `..`, `=>` | 2 | Make a two-element list.
 | `.*`, `*.` | 2 | Make a list with n copies of something. The element is on the side of the `.`.
-| `**` | any | Cartesian product
+| `**`, `×` | any | Cartesian product
 | `^^` | 2 | Cartesian "exponentiation", repeated Cartesian product with itself.
 | `!!`, `index` | 2 | Index into a sequence or access a dict, i.e. `a !! b` is basically `a[b]`.
 | `!?`, `index?` | 2 | Index into a sequence or access a dict or `null`.
+| `!%` | 2 | Index into a sequence cyclically, i.e. modulo its length.
 | `find` | 2 | First element equalling a value or satisfying a predicate.
 | `find?` | 2 | First element equalling a value or satisfying a predicate, or null
 | `locate` | 2 | Index of first element equalling a value or satisfying a predicate.
@@ -115,10 +125,13 @@ These functions don't vectorize. Sequences are compared lexicographically.
 | `\|.` | 2 | Add key with value `null`
 | `\|\|+` | 2 | Union dictionaries, merging values at key collisions with `+`
 | `\|\|-` | 2 | Union dictionaries, merging values at key collisions with `-`
+| `\|\|++` | 2 | Union dictionaries, merging values at key collisions with `++`
 | `-.`, `discard` | 2 | Remove key
 | `insert`, `\|..` | 2 | Add key-value pair
 | `&&` | 2 | Intersect sets; keeps values from left
 | `--` | 2 | Removes right keys from left dictionary
+| `L`, `V`, `B` | any | Make a list, vector, or bytes out of the arguments.
+| `rearrange` | 2 or 3 | Reshape nested sequences einops-style, e.g. `([[1, 2], [3, 4]] rearrange "a b -> b a") == [[1, 3], [2, 4]]`. Parentheses group dimensions into one. Third argument, which can be specified by chaining with `with`, is a dictionary of dimension sizes.
 
 ### Streams (~lazy sequences)
 
@@ -150,12 +163,14 @@ These functions don't vectorize. Sequences are compared lexicographically.
 - `compress`/`decompress`
 - `join`: join a sequence of values by a string
 - `split`: split a string by another
+- `rsplit`: split a string by another, from the right
+- `split_re`: split a string by a regex
 - `starts_with` `ends_with`
 - `words`: split by runs of whitespace
 - `unwords`: join by space
 - `lines`: split by newlines; if a trailing newline exists, it's ignored
 - `unlines`: join by newlines and add a trailing newline
-- `strip` `strip_start` `strip_end`. Synonymous with `trim` etc.; I haven't decided yet.
+- `strip` `strip_start` `strip_end`. Synonymous with `trim` `trim_start` `trim_end`; I haven't decided yet.
 - `search`: find a regex, or `null`. If the regex has capture groups then return a list of captured strings, else return the found string.
 - `search_all`: find all nonoverlapping occurrences of a regex. If the regex has capture groups then return a list of lists of captured strings, else return a list of found strings.
 - `replace`: replace a regex everywhere by a replacement string.
@@ -163,6 +178,7 @@ These functions don't vectorize. Sequences are compared lexicographically.
 
 ## Types
 
+- `nulltype`
 - `number`: `int` `rational` `float` `complex`
 - `str` `list` `dict` `vector` `bytes`
 - `stream`
@@ -184,6 +200,7 @@ The `is` functions tests if something is of a type e.g. `3 is int`
 | - | - | - |
 | `id` | 1 | Identity function, returns its sole argument.
 | `const` | 2 | Constant function, always returns its second argument. Can be partially applied.
+| `flip` | 1 | Swap a function's two arguments: `flip(f)(a, b) = f(b, a)`
 | `.` | 2 | Reverse function application; calls second argument on first.
 | `then` | 2 | Reverse function application; calls second argument on first.
 | `.>` | 2 | Reverse function application; calls second argument on first.
@@ -196,6 +213,7 @@ The `is` functions tests if something is of a type e.g. `3 is int`
 | `***` | any | Parallel function composition: `(f *** g)(a1, a2) = [f(a1), g(a2)]`
 | `&&&` | any | Fanout function composition: `(f &&& g)(...) = [f(...), g(...)]`
 | `equals` | any | Wacky equality helper. `(f equals g)(...) = f(...) == g(...)` where if `f` or `g` are not functions they get used directly.
+| `lift` | any | The same thing for any function, which goes last: `lift(f, g, h)(...) = h(f(...), g(...))`
 
 ### Higher-order functions on sequences
 
@@ -208,6 +226,9 @@ Functions are usually the last argument.
 | `map_keys` | 2 | (Eagerly) Map second function over each key of first dictionary, preserving values, to produce a new dict
 | `map_values` | 2 | (Eagerly) Map second function over each value of first dictionary, preserving keys, to produce a new dict
 | `flatten` | 1 | Flatten one level, producing a list
+| `mapmap`, `map2` | 2 | (Eagerly) Map second function over each element of each element of first
+| `mapply` | 2 | (Eagerly) Map second function over each element of first, splatting each element
+| `vector_map` | 2 | (Eagerly) Map second function over each element of first, producing a vector
 | `flat_map` | 2 | (Eagerly) Map second function over each element of first and then flatten
 | `filter` | 2 | New sequence of same type with only elements satisfying a predicate
 | `filter_keys` | 2 | Filter keys of dictionary
@@ -219,11 +240,14 @@ Functions are usually the last argument.
 | `all` | 1 or 2 | Whether all elements are truthy / satisfy the predicate
 | `count` | 1 or 2 | Number of elements that are truthy / satisfy the predicate
 | `count_distinct` | 1 or 2 | Count distinct results after mapping
+| `sum` | 1 or 2 | Sum of elements, optionally after mapping
+| `product` | 1 or 2 | Product of elements, optionally after mapping
+| `classify` | 2 | Dictionary from each result of the function to the same-type sequence of elements producing it, e.g. `([1, 2, 3, 4] classify even) == {0: [1, 3], 1: [2, 4]}`
 | `group` | 1 or 2 | Split up sequence into same-type sequences of adjacent elements that are equal / satisfy a binary relation with the previous/next item in the group. Second argument can also be a positive integer to just make the same-type sequences the same size (the last group may be short).
 | `group'` | 1 or 2 | Same, but errors if the sequence's length isn't evenly divisible.
 | `group_all` | 1 or 2 | Split up sequence into subsequences of elements that satisfy a binary relation with each other (`group` where elements don't have to be adjacent)
-| `zip` | any | Zip two or more sequences with an optional function.
-| `ziplongest` | any | Zip two or more sequences with an optional function. If a function is provided, it's used to reduce each batch of elements pairwise instead of just called with all at once.
+| `zip` | any | Zip two or more sequences with an optional function (chainable with `with`).
+| `ziplongest` | any | Zip two or more sequences with an optional function (chainable with `with`). If a function is provided, it's used to reduce each batch of elements pairwise instead of just called with all at once.
 | `pairwise` | 2 | Zip a sequence with its own tail via a function.
 | `merge` | any | Merge two or more dictionaries, with an optional function. Without a function, values from later dictionaries overwrite earlier ones when their keys collide; with a function, the values are combined with it.
 | `fold` | 2 or 3 | Fold a sequence by a function, with an optional starting value (chainable with `from`).
@@ -238,6 +262,7 @@ Functions are usually the last argument.
 - `write`: Output arguments
 - `input`: read one line
 - `read`: read until EOF
+- `read_bytes`: read until EOF as bytes
 - `read_compressed`: read gzipped
 - `interact`: Read all input, call the argument with it, then output the result. If multiple arguments, just runs 'em left to right
 - `interact_lines`: Read all input as a list of lines, call the argument with it, then output the result, one thing per line. If multiple arguments, just runs 'em left to right
@@ -282,6 +307,7 @@ Most of these were specifically put here for Cryptopals.
 - `eval`
 - `vars`: dictionary of all vars in the current environment (writing to it doesn't do anything)
 - `assert`: assert a condition is true else throw an error
+- `throw'`: throw the argument as a string
 - `memoize`: make a function memoized
 - `is_big`: does an int internally use the small int or big int representation
 - `HtmlTag(tag_name, children, attributes)`: struct that gets rendered as an html element by the WASM frontend
